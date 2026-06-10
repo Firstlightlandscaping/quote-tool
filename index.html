@@ -836,6 +836,8 @@ async function loadFromSupabase() {
         materials: matMap[d.code]||[], _new: true
       });
     });
+    // Heal stale/wrong stored mat costs — matCostPerUnit is always derived from materials
+    dels.forEach(d => { d.matCostPerUnit = computeMatCostPerUnit(d); });
   } else {
     // Empty database — push all base data
     toast('First run — uploading base data to Supabase...');
@@ -927,7 +929,22 @@ async function initSupabase() {
   toast('✓ All data uploaded to Supabase! ' + dels.length + ' deliverables, ' + mpl.length + ' materials.');
 }
 
-async function saveDelToSupabase(d) {
+// Per-deliverable save queue. saveDelToSupabase does a non-atomic DELETE-then-INSERT
+// of the materials rows. Several handlers fire two saves for the same deliverable from
+// a single user action (e.g. updateMat()+recalcDelCost() on one onchange), and without
+// serialisation the two DELETEs both run before either INSERT, so both INSERTs land =
+// duplicated material rows. Chaining per code guarantees each DELETE+INSERT pair
+// completes before the next begins.
+const _delSaveChains = {};
+function saveDelToSupabase(d) {
+  const code = d.code;
+  const prev = _delSaveChains[code] || Promise.resolve();
+  const next = prev.catch(() => {}).then(() => _saveDelToSupabaseImpl(d));
+  _delSaveChains[code] = next;
+  return next;
+}
+
+async function _saveDelToSupabaseImpl(d) {
   // Upsert deliverable
   await sb('POST', 'deliverables', [{
     code: d.code, name: d.name, category: d.category||'', unit: d.unit||'',
@@ -2774,7 +2791,7 @@ function renderPM() {
       <td style="min-width:200px"><input type="text" value="${(d.name||'').replace(/"/g,'&quot;')}" onchange="updateDel('${d.code}','name',this.value)"></td>
       <td style="font-size:11px;color:var(--i3)">${d.category||''}</td>
       <td><input type="text" value="${d.unit||''}" onchange="updateDel('${d.code}','unit',this.value)" style="width:60px"></td>
-      <td class="r"><input type="number" id="pm-cost-${d.code}" value="${(d.matCostPerUnit||0).toFixed(2)}" min="0" step="0.01" onchange="updateDel('${d.code}','matCostPerUnit',parseFloat(this.value))" style="width:80px;text-align:right"></td>
+      <td class="r"><input type="number" id="pm-cost-${d.code}" value="${computeMatCostPerUnit(d).toFixed(2)}" readonly title="Auto-calculated from materials (incl. 10% markup) — edit the materials below to change it" style="width:80px;text-align:right;background:transparent;border:none;color:var(--i2);cursor:default;font-family:'DM Mono',monospace"></td>
       <td>
         <div style="display:flex;align-items:flex-start;gap:4px;min-width:220px;max-width:380px">
           <textarea rows="2" style="flex:1;font-size:12px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;resize:none;font-family:inherit;line-height:1.4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" placeholder="Enter client-facing description..." oninput="updateDel('${d.code}','xeroDescription',this.value)" onfocus="this.style.whiteSpace='normal';this.rows=12;this.style.overflow='auto'" onblur="this.style.whiteSpace='nowrap';this.rows=2;this.style.overflow='hidden'">${(d.xeroDescription||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
@@ -2812,6 +2829,7 @@ function renderMatEditor(code) {
         <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);border-bottom:1px solid var(--bd)">Description</th>
         <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);border-bottom:1px solid var(--bd)">Qty / unit</th>
         <th style="padding:6px 10px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);border-bottom:1px solid var(--bd)">Unit</th>
+        <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);border-bottom:1px solid var(--bd)">Unit price (£)<br><span style="font-weight:400;text-transform:none;letter-spacing:0;color:#15803D">incl. 10%</span></th>
         <th style="padding:6px 10px;text-align:right;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);border-bottom:1px solid var(--bd)">Line total (£)</th>
         <th style="padding:6px 10px;border-bottom:1px solid var(--bd)" class="no-print"></th>
       </tr></thead><tbody>`;
@@ -2819,9 +2837,10 @@ function renderMatEditor(code) {
       html+=`<tr style="border-bottom:1px solid #F0F0EE">
         <td style="padding:6px 10px"><input type="text" value="${(m.stockCode||'').replace(/"/g,'&quot;')}" onchange="updateMat('${code}',${i},'stockCode',this.value)" style="width:90px;font-family:'DM Mono',monospace;font-size:11px"></td>
         <td style="padding:6px 10px"><input type="text" value="${(m.description||'').replace(/"/g,'&quot;')}" onchange="updateMat('${code}',${i},'description',this.value)" style="min-width:220px"></td>
-        <td style="padding:6px 10px;text-align:right"><input type="number" value="${m.qtyPerUnit}" min="0" step="0.001" onchange="updateMat('${code}',${i},'qtyPerUnit',parseFloat(this.value)||0);recalcDelCost('${code}')" style="width:80px;text-align:right"></td>
+        <td style="padding:6px 10px;text-align:right"><input type="number" value="${m.qtyPerUnit}" min="0" step="0.001" onchange="updateMatQty('${code}',${i},this.value)" style="width:80px;text-align:right"></td>
         <td style="padding:6px 10px"><input type="text" value="${(m.unit||'').replace(/"/g,'&quot;')}" onchange="updateMat('${code}',${i},'unit',this.value)" style="width:70px"></td>
-        <td style="padding:6px 10px;text-align:right"><input type="number" value="${m.pricePerUnit}" min="0" step="0.0001" onchange="updateMat('${code}',${i},'pricePerUnit',parseFloat(this.value)||0);recalcDelCost('${code}')" style="width:85px;text-align:right"></td>
+        <td style="padding:6px 10px;text-align:right"><input type="number" value="${matChargedUnit(m).toFixed(4)}" min="0" step="0.0001" onchange="updateMatUnitPrice('${code}',${i},this.value)" style="width:90px;text-align:right" title="Charged price per ${m.unit||'unit'}, incl. 10% markup"></td>
+        <td id="em-line-${code}-${i}" style="padding:6px 10px;text-align:right;font-family:'DM Mono',monospace">£${matLineTotal(m).toFixed(2)}</td>
         <td style="padding:6px 10px;white-space:nowrap" class="no-print">
           <button class="btn btn-outline btn-sm" onclick="moveMatUp('${code}',${i})" style="padding:2px 5px" title="Move up">▲</button>
           <button class="btn btn-outline btn-sm" onclick="moveMatDn('${code}',${i})" style="padding:2px 5px;margin-left:2px" title="Move down">▼</button>
@@ -2866,6 +2885,29 @@ function updateMat(code, idx, key, val) {
   saveDelEdits(code);
 }
 
+// Editor: change a material's qty. Unit price stays fixed; line total recomputes.
+function updateMatQty(code, idx, val) {
+  const d=dels.find(x=>x.code===code); if(!d||!d.materials[idx])return;
+  const m=d.materials[idx];
+  ensureUnitPrice(m);
+  m.qtyPerUnit = parseFloat(val)||0;
+  m.pricePerUnit = Math.round(matChargedUnit(m)*10000)/10000; // keep stored as charged unit price
+  recalcDelCost(code);
+  const lt=document.getElementById('em-line-'+code+'-'+idx);
+  if(lt) lt.textContent='£'+matLineTotal(m).toFixed(2);
+}
+// Editor: change a material's unit price (charged, incl. 10%). Line total recomputes.
+function updateMatUnitPrice(code, idx, val) {
+  const d=dels.find(x=>x.code===code); if(!d||!d.materials[idx])return;
+  const m=d.materials[idx];
+  const charged = parseFloat(val)||0;
+  m.trueUnitPrice = Math.round((charged/1.1)*1000000)/1000000; // supplier unit price
+  m.pricePerUnit  = Math.round(charged*10000)/10000;           // charged unit price
+  recalcDelCost(code);
+  const lt=document.getElementById('em-line-'+code+'-'+idx);
+  if(lt) lt.textContent='£'+matLineTotal(m).toFixed(2);
+}
+
 function deleteMat(code, idx) {
   const d=dels.find(x=>x.code===code); if(!d)return;
   d.materials.splice(idx,1);
@@ -2892,7 +2934,7 @@ function emFilterMpl(delCode) {
 function emMatSelected(delCode) {
   const sel=document.getElementById('em-sel-'+delCode), item=mpl.find(m=>m.code===sel.value);
   const prev=document.getElementById('em-prev-'+delCode);
-  if(item){ prev.innerHTML=`<strong>${item.description}</strong> — ${item.unit} — supplier: £${(item.pricePerUnit||0).toFixed(2)} | <span style="color:#15803D;font-weight:600">charged: £${Math.round((item.pricePerUnit||0)*1.1*100)/100}</span>`; document.getElementById('em-qty-'+delCode).focus(); }
+  if(item){ prev.innerHTML=`<strong>${item.description}</strong> — ${item.unit} — supplier: £${(item.pricePerUnit||0).toFixed(4)} | <span style="color:#15803D;font-weight:600">charged: £${(Math.round((item.pricePerUnit||0)*1.1*10000)/10000).toFixed(4)}</span>`; document.getElementById('em-qty-'+delCode).focus(); }
   else prev.innerHTML='';
 }
 
@@ -2915,13 +2957,37 @@ function addMatToDel(code) {
   toast('Added: '+item.description);
 }
 
+// ── CANONICAL MATERIAL PRICING ──────────────────────────────────────────────
+// A material's price is stored one of two ways depending on its age:
+//   • trueUnitPrice set  → it IS the supplier unit price (per kg/m²) — the modern form.
+//   • trueUnitPrice null → legacy/seed row: pricePerUnit holds the supplier LINE TOTAL,
+//                          so the unit price is pricePerUnit / qtyPerUnit.
+// These helpers normalise both into one consistent set of figures, so the editor
+// display and the cost calculation can never disagree.
+function matSupplierUnit(m) {
+  const t = m.trueUnitPrice;
+  if (t !== undefined && t !== null && t !== '') return parseFloat(t) || 0;
+  const q = parseFloat(m.qtyPerUnit) || 0, p = parseFloat(m.pricePerUnit) || 0;
+  return q > 0 ? p / q : p;
+}
+function matChargedUnit(m) { return matSupplierUnit(m) * 1.1; }                          // incl. 10% markup
+function matLineTotal(m)   { return (parseFloat(m.qtyPerUnit) || 0) * matChargedUnit(m); } // charged line total
+// Pin a legacy row to the modern form before editing qty/price, so the unit price
+// stays fixed when qty changes (otherwise pricePerUnit/qty would drift).
+function ensureUnitPrice(m) {
+  if (m.trueUnitPrice === undefined || m.trueUnitPrice === null || m.trueUnitPrice === '') {
+    m.trueUnitPrice = matSupplierUnit(m);
+  }
+}
+
+// matCostPerUnit is always the sum of the charged line totals — never typed by hand.
+function computeMatCostPerUnit(d) {
+  return Math.round((d.materials||[]).reduce((s,m) => s + matLineTotal(m), 0) * 100) / 100;
+}
+
 function recalcDelCost(code) {
   const d=dels.find(x=>x.code===code); if(!d)return;
-  const total=(d.materials||[]).reduce((s,m)=>{
-    const line = m.trueUnitPrice!==undefined ? (parseFloat(m.qtyPerUnit)||0)*(parseFloat(m.trueUnitPrice)||0) : (parseFloat(m.pricePerUnit)||0);
-    return s+line;
-  },0);
-  d.matCostPerUnit=Math.round(total*1.1*100)/100;
+  d.matCostPerUnit=computeMatCostPerUnit(d);
   const inp=document.getElementById('pm-cost-'+code);
   if(inp) inp.value=d.matCostPerUnit.toFixed(2);
   saveDelEdits(code);
@@ -3261,13 +3327,13 @@ async function saveNewDel() {
 
   if (dels.find(d => d.code === code)) { toast('Code ' + code + ' already exists'); return; }
 
-  const matTotal = ndMats.reduce((s,m) => s + (parseFloat(m.pricePerUnit)||0), 0);
   const newDel = {
     code, name, category, unit,
-    matCostPerUnit: Math.round(matTotal * 100) / 100,
+    matCostPerUnit: 0,
     xeroDescription: xdesc,
     materials: [...ndMats], _new: true
   };
+  newDel.matCostPerUnit = computeMatCostPerUnit(newDel);
 
   dels.push(newDel);
   // Sort dels by code so new deliverable appears in correct position in dropdown
@@ -3301,15 +3367,15 @@ function renderMPL() {
       return (a.code||'').localeCompare(b.code||'', undefined, {numeric:true});
     });
   document.getElementById('mpl-body').innerHTML=filtered.map(m=>{
-    const charged=Math.round((m.pricePerUnit||0)*1.1*100)/100;
+    const charged=Math.round((m.pricePerUnit||0)*1.1*10000)/10000;
     const stale=m.dateUpdated?'':'color:#DC2626';
     return `<tr>
       <td style="font-family:'DM Mono',monospace;font-size:11px">${m.code}</td>
       <td><input type="text" value="${(m.description||'').replace(/"/g,'&quot;')}" onchange="updateMPL('${m.code}','description',this.value)"></td>
       <td><input type="text" value="${m.unit||''}" onchange="updateMPL('${m.code}','unit',this.value)" style="width:65px"></td>
       <td><input type="text" value="${(m.supplier||'').replace(/"/g,'&quot;')}" placeholder="Supplier name..." onchange="updateMPL('${m.code}','supplier',this.value)" style="width:110px"></td>
-      <td class="r"><input type="number" value="${(m.pricePerUnit||0).toFixed(2)}" min="0" step="0.01" onchange="updateMPLPrice('${m.code}',parseFloat(this.value))" style="width:90px;text-align:right"></td>
-      <td class="r" style="background:#F0FDF4;font-weight:600;color:#15803D;font-family:'DM Mono',monospace;font-size:12px">£${charged.toFixed(2)}</td>
+      <td class="r"><input type="number" value="${(m.pricePerUnit||0).toFixed(4)}" min="0" step="0.0001" onchange="updateMPLPrice('${m.code}',parseFloat(this.value))" style="width:90px;text-align:right"></td>
+      <td class="r" style="background:#F0FDF4;font-weight:600;color:#15803D;font-family:'DM Mono',monospace;font-size:12px">£${charged.toFixed(4)}</td>
       <td style="font-size:11px;${stale}"><input type="text" value="${m.dateUpdated||''}" readonly style="width:88px;background:transparent;border:none;font-size:11px;color:inherit;cursor:default" title="Auto-set when price updated"></td>
       <td><input type="text" value="${(m.updatedBy||'').replace(/"/g,'&quot;')}" placeholder="Name..." onchange="updateMPL('${m.code}','updatedBy',this.value)" style="width:100px"></td>
       <td class="no-print"><button class="btn btn-red btn-sm" onclick="deleteMPL('${m.code}')">Delete</button></td>
@@ -3343,16 +3409,11 @@ async function updateMPLPrice(code, val) {
     for (const d of affected) {
       d.materials = (d.materials||[]).map(mat => {
         if (!mat.stockCode || mat.stockCode.trim() !== code.trim()) return mat;
-        const newPPU = Math.round(newCharged * (parseFloat(mat.qtyPerUnit)||0) * 10000) / 10000;
-        return {...mat, trueUnitPrice: newCharged, pricePerUnit: newPPU};
+        // trueUnitPrice = supplier unit price (consistent with addMatToDel); pricePerUnit
+        // = charged unit price. matCostPerUnit applies the markup once, via the helper.
+        return {...mat, trueUnitPrice: newSupplierPrice, pricePerUnit: newCharged};
       });
-      const total = (d.materials||[]).reduce((s,mat) => {
-        const line = mat.trueUnitPrice !== undefined
-          ? (parseFloat(mat.qtyPerUnit)||0) * (parseFloat(mat.trueUnitPrice)||0)
-          : (parseFloat(mat.pricePerUnit)||0);
-        return s + line;
-      }, 0);
-      d.matCostPerUnit = Math.round(total * 100) / 100;
+      d.matCostPerUnit = computeMatCostPerUnit(d);
       await saveDelEdits(d.code);
     }
     toast('\u2713 ' + affected.length + ' deliverable' + (affected.length>1?'s':'') + ' updated');
@@ -3795,16 +3856,14 @@ function moveMatUp(code, idx) {
   const d = dels.find(x => x.code === code);
   if (!d || idx <= 0) return;
   [d.materials[idx-1], d.materials[idx]] = [d.materials[idx], d.materials[idx-1]];
-  recalcDelCost(code);
-  saveDelEdits(code);
+  recalcDelCost(code); // already persists via saveDelEdits
   renderMatEditor(code);
 }
 function moveMatDn(code, idx) {
   const d = dels.find(x => x.code === code);
   if (!d || idx >= d.materials.length - 1) return;
   [d.materials[idx], d.materials[idx+1]] = [d.materials[idx+1], d.materials[idx]];
-  recalcDelCost(code);
-  saveDelEdits(code);
+  recalcDelCost(code); // already persists via saveDelEdits
   renderMatEditor(code);
 }
 
