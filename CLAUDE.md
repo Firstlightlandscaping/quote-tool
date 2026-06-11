@@ -242,6 +242,22 @@ preserves user-defined line order across save/reload.
 
 
 
+10\. \*\*Grouped deliverable labour edit duplicated the lab tag\*\*
+
+&#x20;  Group member rows rendered their lab tag with no id, so updateDelEdit() couldn't
+
+&#x20;  find it and inserted a second tag (old value + new value both shown). Fixed —
+
+&#x20;  member lab tag now has id="lab-tag-{id}" (+ lab-tag-anchor-{id}) so it updates in
+
+&#x20;  place. Also added ids to member qty/unit/amount cells and group header
+
+&#x20;  unit/amount/labmat cells, and extended updateDelEdit() to patch them live so a
+
+&#x20;  grouped deliverable's labour edit updates its own cost and the group total instantly
+
+
+
 \## Features
 
 
@@ -479,4 +495,12 @@ README.md         — basic repo description
 \- Fixed misc item labour edits not updating unit price/total live in the inline panel (see Known Bugs Fixed #9)
 
 \- Added patchMiscLineDom() — live DOM patching for misc lines, matching updateDelEdit() for deliverable lines
+
+
+
+\### Grouped Deliverable Labour Edit Fix (June 2026)
+
+\- Fixed duplicated lab tag when editing labour on a grouped deliverable (see Known Bugs Fixed #10)
+
+\- Group member rows now have ids (lab-tag, member-qty/unit/amt) and group header cells have ids (group-unit/amt/labmat); updateDelEdit() patches them so a member's labour edit updates its cost and the group total live
 

@@ -1568,6 +1568,28 @@ function updateDelEdit(id) {
     labTagEl.remove();
   }
 
+  // For group members, patch the member's own price/amount cells and the group header
+  // totals live (these are display-only cells, so the input-patching above can't reach them)
+  if (l.groupMember) {
+    const gid = l.groupMember;
+    const memberQty = document.getElementById('member-qty-' + id);
+    if (memberQty) memberQty.textContent = qty;
+    const memberUnit = document.getElementById('member-unit-' + id);
+    if (memberUnit) memberUnit.textContent = '£' + unitPrice.toFixed(2);
+    const memberAmt = document.getElementById('member-amt-' + id);
+    if (memberAmt) memberAmt.textContent = '£' + (qty * unitPrice).toFixed(2);
+    const members = lines.filter(x => x.groupMember === gid);
+    const gTot = members.reduce((s, x) => s + amt(x), 0);
+    const gLab = members.reduce((s, x) => s + (x.labTotal || 0), 0);
+    const gMat = members.reduce((s, x) => s + (x.matCost * x.qty), 0);
+    const gUnit = document.getElementById('group-unit-' + gid);
+    if (gUnit) gUnit.textContent = '£' + gTot.toFixed(2);
+    const gAmt = document.getElementById('group-amt-' + gid);
+    if (gAmt) gAmt.textContent = '£' + gTot.toFixed(2);
+    const gLabMat = document.getElementById('group-labmat-' + gid);
+    if (gLabMat) gLabMat.textContent = '🛠 Labour: £' + gLab.toFixed(2) + ' | Mat: £' + gMat.toFixed(2);
+  }
+
   isDirty = true;
   recalc();
 }
@@ -2233,7 +2255,7 @@ function renderLines() {
               <div class="l-xdesc" style="margin-top:3px">
                 <input type="text" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd)">
               </div>
-              <div class="l-lab no-print" style="color:var(--i3)">🛠 Labour: £${groupLab.toFixed(2)} | Mat: £${groupMat.toFixed(2)}</div>
+              <div class="l-lab no-print" id="group-labmat-${l.groupId}" style="color:var(--i3)">🛠 Labour: £${groupLab.toFixed(2)} | Mat: £${groupMat.toFixed(2)}</div>
             </div>
           </div>
           <!-- PRINT ONLY: matches normal deliverable format — bold heading + regular description -->
@@ -2243,7 +2265,7 @@ function renderLines() {
           </div>
         </td>
         <td class="r" style="vertical-align:top;padding-top:12px">1</td>
-        <td class="r" style="vertical-align:top;padding-top:12px;font-family:'DM Mono',monospace">£${groupTotal.toFixed(2)}</td>
+        <td class="r" id="group-unit-${l.groupId}" style="vertical-align:top;padding-top:12px;font-family:'DM Mono',monospace">£${groupTotal.toFixed(2)}</td>
         <td class="r" style="vertical-align:top;padding-top:12px">
           <select class="no-print" style="width:58px;padding:4px 3px;border:1px solid var(--bd);border-radius:4px;font-size:11px" onchange="upGroupVat('${l.groupId}',this.value)">
             <option value="20"${groupVat===20?' selected':''}>20%</option>
@@ -2251,7 +2273,7 @@ function renderLines() {
           </select>
           <span class="print-only">${groupVat}%</span>
         </td>
-        <td class="r" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${groupTotal.toFixed(2)}</td>
+        <td class="r" id="group-amt-${l.groupId}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${groupTotal.toFixed(2)}</td>
       </tr>`;
 
       // Render constituent items if expanded
@@ -2268,13 +2290,13 @@ function renderLines() {
             <td style="min-width:200px;padding-left:28px">
               <div class="l-code" style="opacity:.7">${gl.code||''}</div>
               <div class="l-name" style="color:var(--i2)">${gl.name}</div>
-              ${(gl.labDays||gl.labRate)?`<div class="l-lab">✱ ${gl.labDays||0}d × £${gl.labRate||0}/day = £${(gl.labTotal||0).toFixed(2)}</div>`:''}
+              ${(gl.labDays||gl.labRate)?`<div class="l-lab" id="lab-tag-${gl.id}">✱ ${gl.labDays||0}d × £${gl.labRate||0}/day = £${(gl.labTotal||0).toFixed(2)}</div>`:''}<span id="lab-tag-anchor-${gl.id}"></span>
               ${(!gl.misc&&gl.matCost)?`<div id="mat-tag-${gl.id}" style="display:inline-block;margin-top:3px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${(gl.matCost*gl.qty).toFixed(2)}</div>`:''}
             </td>
-            <td class="r" style="color:var(--i2)">${gl.qty}</td>
-            <td class="r" style="color:var(--i2)">£${gl.unitPrice.toFixed(2)}</td>
+            <td class="r" id="member-qty-${gl.id}" style="color:var(--i2)">${gl.qty}</td>
+            <td class="r" id="member-unit-${gl.id}" style="color:var(--i2)">£${gl.unitPrice.toFixed(2)}</td>
             <td class="r" style="color:var(--i3);font-size:11px">${gl.vat}%</td>
-            <td class="r" style="color:var(--i2);font-family:'DM Mono',monospace">£${ga.toFixed(2)}</td>
+            <td class="r" id="member-amt-${gl.id}" style="color:var(--i2);font-family:'DM Mono',monospace">£${ga.toFixed(2)}</td>
           </tr>
           <tr id="lab-edit-row-${gl.id}" style="display:none">
             <td colspan="8" style="padding:0">
