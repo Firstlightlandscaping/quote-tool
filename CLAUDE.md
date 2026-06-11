@@ -120,6 +120,12 @@ preserves user-defined line order across save/reload.
 
 \- Members cannot be dragged out of groups, nothing can be dragged into a group
 
+\- Per-group ungroup: each group header has a ↩ Ungroup button (removeGroup) that ungroups only that group; Ungroup all (ungroupAll) still clears every group
+
+\- Delete group: the × on a group header calls deleteGroup() — removes the group AND its line items (with confirm). removeGroup() only ungroups, keeping the items as individual lines
+
+\- Add to existing group: + Add line on the header (showAddToGroupDialog) moves selected ungrouped quote lines in; the Add Line Item panel has an "Add to group" select (refreshAddGroupSelect) that routes a new deliverable straight into a group. Both go through moveLinesToGroup(), which keeps members contiguous after the header and re-derives header unitPrice/labTotal
+
 
 
 \### Totals Calculation
@@ -227,6 +233,8 @@ preserves user-defined line order across save/reload.
 \- Arrow buttons (▲▼) for single-step moves
 
 \- Group selected lines into named groups with collapse/expand
+
+\- Ungroup an individual group (↩ Ungroup), delete a group with its items (×), or add existing/new lines into an existing group
 
 \- Group templates for saving/reusing common groups
 
@@ -407,4 +415,18 @@ README.md         — basic repo description
 \- Added expand button for client description in Price Manager
 
 \- Added search filter for material picker in deliverable editor
+
+
+
+\### Group Editing Session (June 2026)
+
+\- Added per-group ↩ Ungroup button (removeGroup) — ungroups one group without affecting others; Ungroup all retained
+
+\- Repurposed the group header × to deleteGroup() — deletes the group AND its line items (with confirm)
+
+\- Added + Add line on group headers (showAddToGroupDialog) to move existing ungrouped lines into a group
+
+\- Added "Add to group" select in the Add Line Item panel to add a new deliverable straight into a group
+
+\- New shared helper moveLinesToGroup() keeps members contiguous after the header and re-derives header totals
 
