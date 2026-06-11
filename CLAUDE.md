@@ -214,6 +214,18 @@ preserves user-defined line order across save/reload.
 
 
 
+8\. \*\*Misc component markup compounding on edit\*\*
+
+&#x20;  editMiscComponent() loaded the charged price into the Supplier cost field and left
+
+&#x20;  the Charged field unset, so each Edit→Update re-applied +10% (e.g. grit sand 100kg
+
+&#x20;  drifted 5.61 → 6.17 → 6.79). Fixed — edit now loads supplierCost into the supplier
+
+&#x20;  field and cost into the charged field, so edits round-trip with no re-markup
+
+
+
 \## Features
 
 
@@ -240,7 +252,7 @@ preserves user-defined line order across save/reload.
 
 \- Optional items toggle — shown on quote but excluded from totals
 
-\- Misc items with component breakdown
+\- Misc items with component breakdown — components can be added from the Master Price List (Option 1: search/filter picker, supplier price + 10% markup, description auto-appended to the client description) or entered manually (Option 2: free-text, supplier price + 10% auto-charged). Both feed the same component list; mat cost is always the sum of components (read-only)
 
 \- Overview bar showing Materials Cost, Labour Total, Materials Profit (markup)
 
@@ -429,4 +441,18 @@ README.md         — basic repo description
 \- Added "Add to group" select in the Add Line Item panel to add a new deliverable straight into a group
 
 \- New shared helper moveLinesToGroup() keeps members contiguous after the header and re-derives header totals
+
+
+
+\### Misc Item Material Picker Session (June 2026)
+
+\- Added a Master Price List picker to the misc item builder (Option 1) — search/filter, select material, qty, supplier price + 10% markup; description auto-appends as a new line to the client description (appendMiscXdesc, never overwrites)
+
+\- Restored the manual/free-text component form (Option 2) side by side with the picker; both always visible and feed the same component list
+
+\- Made the misc Mat. cost field read-only — always the sum of components (materials + manual)
+
+\- Manual component descriptions now also append to the client description on add
+
+\- Fixed misc component markup compounding on edit (see Known Bugs Fixed #8)
 
