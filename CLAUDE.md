@@ -152,6 +152,8 @@ preserves user-defined line order across save/reload.
 
 \- lab-tag has id="lab-tag-{id}" and lab-tag-anchor span for DOM patching
 
+\- patchMiscLineDom() does the same live DOM patching for misc lines (unit price input, amt-cell-{id} amount cell, misc-edit-unitprice-{id} panel field, lab tag) so labour edits update live without collapsing the open misc edit panel
+
 
 
 \### Saving and Loading
@@ -223,6 +225,20 @@ preserves user-defined line order across save/reload.
 &#x20;  drifted 5.61 → 6.17 → 6.79). Fixed — edit now loads supplierCost into the supplier
 
 &#x20;  field and cost into the charged field, so edits round-trip with no re-markup
+
+
+
+9\. \*\*Misc item labour not updating unit price/total live in inline edit\*\*
+
+&#x20;  updateMiscField() recomputed unitPrice for labour but only called recalc() (summary
+
+&#x20;  only) — the line's unit price input, Amount cell and lab tag stayed stale (materials
+
+&#x20;  worked because they call renderLines()). Fixed — updateMiscField() now calls
+
+&#x20;  patchMiscLineDom() to patch the row in place (no re-render, panel stays open),
+
+&#x20;  matching the updateDelEdit() approach used for deliverable lines
 
 
 
@@ -455,4 +471,12 @@ README.md         — basic repo description
 \- Manual component descriptions now also append to the client description on add
 
 \- Fixed misc component markup compounding on edit (see Known Bugs Fixed #8)
+
+
+
+\### Misc Labour Live-Update Fix (June 2026)
+
+\- Fixed misc item labour edits not updating unit price/total live in the inline panel (see Known Bugs Fixed #9)
+
+\- Added patchMiscLineDom() — live DOM patching for misc lines, matching updateDelEdit() for deliverable lines
 

@@ -1597,7 +1597,48 @@ function updateMiscField(id, field, val) {
     if (l.qty > 0) l.unitPrice = l.matCost + (l.labTotal / l.qty);
   }
   isDirty = true;
+  // Patch the row DOM directly (like updateDelEdit for deliverable lines) so unit price,
+  // amount and lab tag update live without re-rendering and collapsing the open edit panel.
+  patchMiscLineDom(l);
   recalc();
+}
+
+// Live-update the visible bits of a misc line after an inline edit (no re-render).
+function patchMiscLineDom(l) {
+  const id = l.id;
+  const tbody = document.getElementById('lines-body');
+  if (tbody) {
+    tbody.querySelectorAll('input[type="number"]').forEach(inp => {
+      const oc = inp.getAttribute('onchange') || '';
+      if (oc.includes('upQty(' + id + ',') && document.activeElement !== inp) inp.value = (l.qty||0);
+      if (oc.includes('upPrice(' + id + ',') && document.activeElement !== inp) inp.value = (l.unitPrice||0).toFixed(2);
+    });
+  }
+  // Per-line amount cell
+  const amtCell = document.getElementById('amt-cell-' + id);
+  if (amtCell) amtCell.textContent = '£' + ((l.qty||0) * (l.unitPrice||0)).toFixed(2);
+  // Unit price field inside the edit panel (don't clobber it while it's being typed in)
+  const panelUnit = document.getElementById('misc-edit-unitprice-' + id);
+  if (panelUnit && document.activeElement !== panelUnit) panelUnit.value = (l.unitPrice||0).toFixed(2);
+  // Green labour tag on the row — update, create if missing, or remove (matches updateDelEdit)
+  const labTagEl = document.getElementById('lab-tag-' + id);
+  if ((l.labTotal||0) > 0) {
+    const labHtml = '✱ ' + (l.labDays||0) + 'd × £' + (l.labRate||0) + '/day = £' + (l.labTotal||0).toFixed(2);
+    if (labTagEl) {
+      labTagEl.textContent = labHtml;
+    } else {
+      const anchor = document.getElementById('lab-tag-anchor-' + id);
+      if (anchor && anchor.parentNode) {
+        const tag = document.createElement('div');
+        tag.id = 'lab-tag-' + id;
+        tag.className = 'l-lab';
+        tag.textContent = labHtml;
+        anchor.parentNode.insertBefore(tag, anchor);
+      }
+    }
+  } else if (labTagEl) {
+    labTagEl.remove();
+  }
 }
 
 function removeLineComponent(lineId, compIdx) {
@@ -2340,7 +2381,7 @@ function renderLines() {
         </select>
         <span class="print-only" style="display:none;text-align:right">${l.vat}%</span>
       </td>
-      <td class="r" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${a.toFixed(2)}</td>
+      <td class="r" id="amt-cell-${l.id}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${a.toFixed(2)}</td>
     </tr>`;
 
     // Add inline full edit row for non-misc deliverable lines
@@ -2404,7 +2445,7 @@ function renderLines() {
                   <input type="text" value="${l.unit||''}" onchange="updateMiscField(${l.id},'unit',this.value)">
                 </div>
                 <div class="fg" style="margin:0"><label>Unit price (£)</label>
-                  <input type="number" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" onchange="updateMiscField(${l.id},'unitPrice',parseFloat(this.value)||0)">
+                  <input type="number" id="misc-edit-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" onchange="updateMiscField(${l.id},'unitPrice',parseFloat(this.value)||0)">
                 </div>
                 <div class="fg" style="margin:0"><label>VAT</label>
                   <select onchange="updateMiscField(${l.id},'vat',parseInt(this.value))">
