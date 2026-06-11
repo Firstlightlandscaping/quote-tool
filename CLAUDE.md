@@ -258,6 +258,16 @@ preserves user-defined line order across save/reload.
 
 
 
+11\. \*\*Regular deliverable labour edit didn't update the line Amount on the quote\*\*
+
+&#x20;  updateDelEdit() patched the unit price input, lab tag and summary but not the line's
+
+&#x20;  own Amount GBP cell, so the quote line total stayed stale until re-render/save.
+
+&#x20;  Fixed — updateDelEdit() now also patches amt-cell-{id} to qty × unitPrice
+
+
+
 \## Features
 
 
@@ -503,4 +513,12 @@ README.md         — basic repo description
 \- Fixed duplicated lab tag when editing labour on a grouped deliverable (see Known Bugs Fixed #10)
 
 \- Group member rows now have ids (lab-tag, member-qty/unit/amt) and group header cells have ids (group-unit/amt/labmat); updateDelEdit() patches them so a member's labour edit updates its cost and the group total live
+
+
+
+\### Regular Deliverable Line Amount Fix (June 2026)
+
+\- Fixed regular (ungrouped) deliverable labour edit not updating the line's Amount GBP cell on the quote (see Known Bugs Fixed #11)
+
+\- updateDelEdit() now patches amt-cell-{id} live alongside the unit price, lab tag and summary total
 

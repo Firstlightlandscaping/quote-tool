@@ -1539,6 +1539,10 @@ function updateDelEdit(id) {
     });
   }
 
+  // Patch the line's Amount GBP cell (regular lines; group members use member-amt below)
+  const amtCell = document.getElementById('amt-cell-' + id);
+  if (amtCell) amtCell.textContent = '£' + (qty * unitPrice).toFixed(2);
+
   // Update mat tag
   const matTagEl = document.getElementById('mat-tag-' + id);
   if (matTagEl) matTagEl.textContent = 'Mat: £' + (matCost * qty).toFixed(2);
