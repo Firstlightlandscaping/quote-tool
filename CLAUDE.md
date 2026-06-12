@@ -55,16 +55,16 @@ sort_order column on quote_lines (added June 2026). Lines saved with index posit
 - visibleLines = lines.filter(l => !l.groupMember)
 - VAT applied per-line
 - Group amount column shows ex-VAT like other lines
-- Overview bar (Materials Cost / Labour Total / Materials Profit): recalc() skips group headers (members counted individually) AND skips qty=0 lines (`if(!l.qty)return`) — a qty=0 line contributes £0 to the Subtotal (amt=qty×unitPrice), so its stale matCost/labTotal must not leak into the Overview. Note: Overview is a true-cost view; it only equals the Subtotal when every line's unitPrice = matCost + labTotal/qty. Manual unit-price overrides (esp. on misc items) legitimately make Overview ≠ Subtotal.
+- Overview bar (Materials Cost / Labour Total / Materials Profit): recalc() skips group headers (members counted individually) AND skips qty=0 lines (`if(!l.qty)return`) — a qty=0 line contributes £0 to the Subtotal (amt=qty×unitPrice), so its stale matCost/labTotal must not leak into the Overview. Note: Overview is a true-cost view; it only equals the Subtotal when every line's unitPrice = matCost + labTotal/qty. Misc lines always satisfy this (unit price is auto-derived — see Misc items). Manual unit-price overrides on deliverable lines (the row/edit-panel unit-price input is still free-text for non-misc) legitimately make Overview ≠ Subtotal.
 
 ### DOM Performance
 - reorderDomRows() moves existing TR elements instead of renderLines() on reorder (avoids 2-min reload)
 - updateDelEdit() patches DOM directly for deliverable labour edits (unit price, lab-tag-{id}/lab-tag-anchor, amt-cell-{id}, plus member/group-header cells for grouped lines) — avoids re-render loop, keeps edit panel open
-- patchMiscLineDom() does equivalent live patching for misc lines (unit price input, amt-cell-{id}, misc-edit-unitprice-{id}, lab tag, and mat tag via mat-tag-{id}/mat-tag-anchor-{id})
+- patchMiscLineDom() does equivalent live patching for misc lines (read-only row unit-price input row-unitprice-{id}, amt-cell-{id}, read-only panel field misc-edit-unitprice-{id}, lab tag, and mat tag via mat-tag-{id}/mat-tag-anchor-{id})
 
 ### Saving and Loading
 - saveQuote() writes sort_order:idx on every line
-- loadQuote() repairs stale group header unitPrices from members before render
+- loadQuote() reconciles misc unit prices (recomputes to components + labour, flags count in load toast), then repairs stale group header unitPrices from members, before render
 - sqAmt(l, sqLines) used in renderSaved for accurate group totals in saved quotes list
 
 ## Features
@@ -75,7 +75,8 @@ sort_order column on quote_lines (added June 2026). Lines saved with index posit
 - Inline edit panel for labour (days × rate) and mat cost override; lab tag (green) and mat tag show breakdowns
 - Drag handle + arrow buttons for reordering; groups move as blocks
 - Group/ungroup/delete groups, group templates, add lines to existing groups
-- Misc items: component breakdown from MPL picker (search/filter, supplier price +10% markup, auto-appends description) or manual free-text (also +10%, auto-appends); mat cost = read-only sum of components. The misc builder's mat-cost field (mc-mat) is readonly/auto-from-components — there is NO free-text material cost for new misc items. Legacy misc lines created before that change can have an orphaned matCost>0 with no components; the misc edit panel surfaces an editable "Material cost (£)" field ONLY for that legacy case (no components AND matCost>0) so old values can be cleared/corrected — it does NOT appear for new misc items (matCost=0), preventing new free-text material costs. Editing it (updateMiscField 'matCost') does not change the unit price.
+- Misc items: component breakdown from MPL picker (search/filter, supplier price +10% markup, auto-appends description) or manual free-text (also +10%, auto-appends); mat cost = read-only sum of components. The misc builder's mat-cost field (mc-mat) is readonly/auto-from-components — there is NO free-text material cost for new misc items. Legacy misc lines created before that change can have an orphaned matCost>0 with no components; the misc edit panel surfaces an editable "Material cost (£)" field ONLY for that legacy case (no components AND matCost>0) so old values can be cleared/corrected — it does NOT appear for new misc items (matCost=0), preventing new free-text material costs.
+- Misc unit price is AUTO-DERIVED, never typed: unitPrice = matCost (components total) + (labDays×labRate)/qty, computed by miscUnitPrice(l). Both the row unit-price input and the edit-panel "Unit price (£)" field are readonly (labelled "auto"); deliverable lines keep their editable unit-price input. updateMiscField recomputes unitPrice on every edit (qty, labDays, labRate, or the legacy matCost field — so editing the legacy material cost now DOES reconcile the unit price, reversing the old behaviour). removeLineComponent/saveLineComponent/addMisc all set unitPrice via the same formula; loadQuote reconciles any stored drift on open. Keeps the misc charged amount in lockstep with components + labour so the Overview reconciles.
 - Overview bar: Materials Cost, Labour Total, Materials Profit
 - Subtotal, VAT, Total GBP
 

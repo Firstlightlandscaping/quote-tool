@@ -1614,14 +1614,22 @@ function toggleMiscEdit(id) {
   row.style.display = row.style.display === 'none' ? '' : 'none';
 }
 
+// Misc unit price is ALWAYS derived — components total (matCost) + labour per unit.
+// It is never independently editable, so this is the single source of truth for it.
+function miscUnitPrice(l) {
+  return (l.matCost || 0) + (l.qty > 0 ? (l.labTotal || 0) / l.qty : 0);
+}
+
 function updateMiscField(id, field, val) {
   const l = lines.find(x => x.id === id);
   if (!l) return;
   l[field] = val;
   if (field === 'labDays' || field === 'labRate') {
     l.labTotal = (l.labDays||0) * (l.labRate||0);
-    if (l.qty > 0) l.unitPrice = l.matCost + (l.labTotal / l.qty);
   }
+  // Unit price is auto-derived from components + labour on every edit (qty, labour, or
+  // legacy matCost) so the row, Overview and Subtotal always reconcile — never set by hand.
+  l.unitPrice = miscUnitPrice(l);
   isDirty = true;
   // Patch the row DOM directly (like updateDelEdit for deliverable lines) so unit price,
   // amount and lab tag update live without re-rendering and collapsing the open edit panel.
@@ -1637,9 +1645,11 @@ function patchMiscLineDom(l) {
     tbody.querySelectorAll('input[type="number"]').forEach(inp => {
       const oc = inp.getAttribute('onchange') || '';
       if (oc.includes('upQty(' + id + ',') && document.activeElement !== inp) inp.value = (l.qty||0);
-      if (oc.includes('upPrice(' + id + ',') && document.activeElement !== inp) inp.value = (l.unitPrice||0).toFixed(2);
     });
   }
+  // Read-only auto unit-price field on the row (misc lines have no upPrice handler)
+  const rowUnit = document.getElementById('row-unitprice-' + id);
+  if (rowUnit && document.activeElement !== rowUnit) rowUnit.value = (l.unitPrice||0).toFixed(2);
   // Per-line amount cell
   const amtCell = document.getElementById('amt-cell-' + id);
   if (amtCell) amtCell.textContent = '£' + ((l.qty||0) * (l.unitPrice||0)).toFixed(2);
@@ -1693,7 +1703,7 @@ function removeLineComponent(lineId, compIdx) {
   l.miscComponents.splice(compIdx, 1);
   // Recalc mat cost from remaining components
   l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
-  l.unitPrice = l.matCost + (l.qty > 0 ? l.labTotal/l.qty : 0);
+  l.unitPrice = miscUnitPrice(l);
   renderLines();
   recalc();
 }
@@ -1796,7 +1806,7 @@ function saveLineComp(lineId, compIdx) {
     toast('Component added');
   }
   l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
-  l.unitPrice = l.matCost + (l.qty > 0 ? l.labTotal/l.qty : 0);
+  l.unitPrice = miscUnitPrice(l);
   document.getElementById('line-comp-dialog').remove();
   isDirty = true;
   renderLines();
@@ -2417,7 +2427,9 @@ function renderLines() {
         <span class="print-only" style="font-family:'DM Mono',monospace;display:none;text-align:right">${l.qty}</span>
       </td>
       <td class="r" style="vertical-align:top;padding-top:12px">
-        <input type="number" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" onchange="upPrice(${l.id},this.value)" style="width:88px">
+        ${l.misc
+          ? `<input type="number" id="row-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" readonly title="Auto-calculated: components total + labour. Edit components or labour via ✏️ to change it." style="width:88px;background:var(--bg);color:var(--i2);cursor:default">`
+          : `<input type="number" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" onchange="upPrice(${l.id},this.value)" style="width:88px">`}
         <span class="print-only" style="font-family:'DM Mono',monospace;display:none;text-align:right">${l.unitPrice.toFixed(2)}</span>
       </td>
       <td class="r" style="vertical-align:top;padding-top:12px">
@@ -2490,8 +2502,8 @@ function renderLines() {
                 <div class="fg" style="margin:0"><label>Unit</label>
                   <input type="text" value="${l.unit||''}" onchange="updateMiscField(${l.id},'unit',this.value)">
                 </div>
-                <div class="fg" style="margin:0"><label>Unit price (£)</label>
-                  <input type="number" id="misc-edit-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" onchange="updateMiscField(${l.id},'unitPrice',parseFloat(this.value)||0)">
+                <div class="fg" style="margin:0"><label>Unit price (£) <span style="font-weight:400;color:var(--i3);font-size:10px">auto</span></label>
+                  <input type="number" id="misc-edit-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" readonly title="Auto-calculated — components total + (labour days × day rate). Edit components or labour below to change it." style="background:var(--bg);color:var(--i2);cursor:default">
                 </div>
                 <div class="fg" style="margin:0"><label>VAT</label>
                   <select onchange="updateMiscField(${l.id},'vat',parseInt(this.value))">
@@ -2786,6 +2798,14 @@ function loadQuote(ref) {
   document.getElementById('qh-summary').innerHTML=q.summaryHtml||'';
   lines=q.lines.map(l=>({...l}));
   uid=lines.reduce((m,l)=>Math.max(m,l.id),uid);
+  // Reconcile misc unit prices BEFORE group-header repair — unit price is always derived from
+  // components (matCost) + labour, so correct any stored value that has drifted out of sync.
+  let _miscFixed = 0;
+  lines.forEach(l => {
+    if (!l.misc) return;
+    const correct = miscUnitPrice(l);
+    if (Math.abs((l.unitPrice || 0) - correct) > 0.005) { l.unitPrice = correct; _miscFixed++; }
+  });
   // Repair stale group header unitPrices on load
   lines.forEach(l => {
     if (l.groupId && !l.groupMember) {
@@ -2798,7 +2818,7 @@ function loadQuote(ref) {
   const _ugb = document.getElementById('ungroup-btn');
   if (_ugb) _ugb.style.display = lines.some(l=>l.groupId) ? 'inline-flex' : 'none';
   showTab('quote',document.querySelectorAll('.tab')[0]);
-  toast('Loaded: '+ref);
+  toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
 }
 async function deleteQuote(ref) {
   if(!confirm('Delete quote '+ref+'?'))return;
