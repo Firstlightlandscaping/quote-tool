@@ -1716,6 +1716,11 @@ function showLineCompDialog(lineId, compIdx) {
   const c = isEdit ? (l.miscComponents||[])[compIdx] : {};
   const supplierCost = isEdit ? (c.supplierCost !== undefined ? c.supplierCost : (c.cost ? c.cost / 1.1 : 0)) : 0;
   const chargedCost = isEdit ? (c.cost || 0) : 0;
+  // Components added from the price list (Option 1) are locked to the MPL price — supplier
+  // cost can't be hand-edited here (and Charged, which derives from it, is locked too) so the
+  // cost can't silently drift out of sync with the price list. To change it, edit the material
+  // in the Price Manager. Manually-added components (Option 2) stay fully editable.
+  const costLocked = isEdit && !!c.fromMpl;
 
   const existing = document.getElementById('line-comp-dialog');
   if (existing) existing.remove();
@@ -1740,14 +1745,15 @@ function showLineCompDialog(lineId, compIdx) {
           <input type="text" id="lcd-unit" value="${c.unit||'item'}" placeholder="item, bag...">
         </div>
         <div class="fg" style="margin:0">
-          <label style="font-size:11px">Supplier cost (£)</label>
-          <input type="number" id="lcd-cost" value="${supplierCost.toFixed(2)}" min="0" step="0.01" oninput="lcdUpdateCharged()">
+          <label style="font-size:11px">Supplier cost (£)${costLocked ? ' <span style="color:var(--i3);font-weight:600">🔒 price list</span>' : ''}</label>
+          <input type="number" id="lcd-cost" value="${supplierCost.toFixed(2)}" min="0" step="0.01" ${costLocked ? 'readonly title="From price list — locked. To change this price, edit the material in the Price Manager." style="background:var(--bg);color:var(--i2);cursor:default"' : 'oninput="lcdUpdateCharged()"'}>
         </div>
       </div>
+      ${costLocked ? '<div style="font-size:11px;color:var(--i3);margin:-2px 0 10px">This component was added from the price list, so its supplier cost is locked to the MPL price. Edit the material in the Price Manager to change it.</div>' : ''}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <div class="fg" style="margin:0">
           <label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label>
-          <input type="number" id="lcd-charged" value="${chargedCost.toFixed(2)}" min="0" step="0.01" style="background:#F0FDF4;color:#15803D;font-weight:600" oninput="lcdUpdateCost()">
+          <input type="number" id="lcd-charged" value="${chargedCost.toFixed(2)}" min="0" step="0.01" style="background:#F0FDF4;color:#15803D;font-weight:600${costLocked ? ';opacity:.7;cursor:default' : ''}" ${costLocked ? 'readonly' : 'oninput="lcdUpdateCost()"'}>
         </div>
         <div class="fg" style="margin:0">
           <label>Supplier name</label>
@@ -1788,6 +1794,9 @@ function saveLineComp(lineId, compIdx) {
   const supplierCost = parseFloat(document.getElementById('lcd-cost').value) || 0;
   const chargedCost = parseFloat(document.getElementById('lcd-charged').value) || (supplierCost * 1.1);
   const comp = {
+    // Preserve provenance flags (fromMpl/mplCode) on the existing component so a price-list
+    // component stays recognised as such after editing — keeps its supplier cost locked.
+    ...(compIdx >= 0 ? (l.miscComponents||[])[compIdx] : {}),
     desc,
     qty: parseFloat(document.getElementById('lcd-qty').value) || 1,
     unit: document.getElementById('lcd-unit').value.trim() || 'item',
@@ -1817,8 +1826,162 @@ function editLineComponent(lineId, compIdx) {
   showLineCompDialog(lineId, compIdx);
 }
 
+// Push a finished component onto an existing misc line and re-derive its mat cost + unit price.
+// Mirrors saveLineComp's add path; shared by both options of the add-component dialog.
+function pushComponentToLine(lineId, comp) {
+  const l = lines.find(x => x.id === lineId);
+  if (!l) return false;
+  if (!l.miscComponents) l.miscComponents = [];
+  l.miscComponents.push(comp);
+  l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
+  l.unitPrice = miscUnitPrice(l);
+  isDirty = true;
+  renderLines();
+  recalc();
+  return true;
+}
+
+// "+ Add" on an existing misc item — offers BOTH Option 1 (price list) and Option 2 (manual),
+// matching the initial misc-item creation UI. Each option adds to the line immediately and the
+// dialog stays open so several components can be added in one go; "Done" closes it.
 function addComponentToLine(lineId) {
-  showLineCompDialog(lineId, -1);
+  const l = lines.find(x => x.id === lineId);
+  if (!l) return;
+  const existing = document.getElementById('line-comp-dialog');
+  if (existing) existing.remove();
+
+  const panel = document.createElement('div');
+  panel.id = 'line-comp-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:660px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3);max-height:90vh;overflow-y:auto">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">
+        <h3 style="margin:0;font-size:15px">Add Component</h3>
+        <span style="font-size:11px;color:var(--i3)">Add from the price list or enter manually — both add to the item</span>
+      </div>
+      <!-- OPTION 1: add a material from the master price list -->
+      <div style="background:#F8FAFC;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:10px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 1 — From price list</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <div class="fg" style="flex:1;min-width:240px;margin:0">
+            <label style="font-size:11px">Select material from price list</label>
+            <input type="text" id="aclm-search" placeholder="Filter by code or name..." autocomplete="off" oninput="aclmFilterMpl()" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px 8px">
+            <select id="aclm-select" onchange="aclmSelected()" style="width:100%"><option value="">— select a material —</option></select>
+          </div>
+          <div class="fg" style="width:90px;margin:0"><label style="font-size:11px">Qty</label><input type="number" id="aclm-qty" placeholder="e.g. 1" min="0" step="0.001"></div>
+          <div style="align-self:flex-end"><button class="btn btn-primary btn-sm" onclick="aclmAddMaterial(${lineId})">+ Add material</button></div>
+        </div>
+        <div id="aclm-prev" style="font-size:12px;color:var(--i2);margin-top:6px"></div>
+      </div>
+      <!-- OPTION 2: add a manual / free-text component (not in the price list) -->
+      <div style="background:#F8FAFC;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:14px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 2 — Add manually (not in price list)</div>
+        <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
+          <div class="fg" style="margin:0"><label style="font-size:11px">Description</label><input type="text" id="aclc-desc" placeholder="e.g. Silver Birch 12-14cm"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Qty</label><input type="number" id="aclc-qty" value="1" min="0" step="0.01"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Unit</label><input type="text" id="aclc-unit" placeholder="tree, bag..."></div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
+          <div class="fg" style="margin:0"><label style="font-size:11px">Supplier cost (£)</label><input type="number" id="aclc-cost" value="0" min="0" step="0.01" oninput="aclcUpdateCharged()"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="aclc-charged" value="0.00" min="0" step="0.01" style="background:#F0FDF4;color:#15803D;font-weight:600" oninput="aclcUpdateCost()"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><input type="text" id="aclc-supplier" placeholder="e.g. Hillier"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="aclc-url" placeholder="https://..."></div>
+        </div>
+        <div style="margin-bottom:8px">
+          <div class="fg" style="margin:0"><label style="font-size:11px">Notes</label><input type="text" id="aclc-notes" placeholder="e.g. check availability, order 2 weeks ahead..."></div>
+        </div>
+        <button class="btn btn-primary btn-sm" onclick="aclcAddManual(${lineId})">+ Add component</button>
+      </div>
+      <div style="display:flex;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('line-comp-dialog').remove()">Done</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  aclmFilterMpl();
+  document.getElementById('aclm-search').focus();
+}
+
+// — Option 1 (price list) handlers for the add-to-existing-line dialog —
+function aclmFilterMpl() {
+  const sel = document.getElementById('aclm-select');
+  if (!sel) return;
+  const q = (document.getElementById('aclm-search').value || '').toLowerCase().trim();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a material —</option>' +
+    mpl.filter(m => !q ||
+      m.code.toLowerCase().includes(q) ||
+      (m.description||'').toLowerCase().includes(q) ||
+      (m.category||'').toLowerCase().includes(q)
+    ).map(m => `<option value="${m.code}"${m.code===prev?' selected':''}>${m.code} — ${m.description} (${m.unit}, £${(m.pricePerUnit||0).toFixed(2)})</option>`).join('');
+}
+function aclmSelected() {
+  const sel = document.getElementById('aclm-select'), item = mpl.find(m => m.code === sel.value);
+  const prev = document.getElementById('aclm-prev');
+  if (item) {
+    const charged = Math.round((item.pricePerUnit||0)*1.1*10000)/10000;
+    prev.innerHTML = `<strong>${item.description}</strong> — ${item.unit} — supplier: £${(item.pricePerUnit||0).toFixed(4)} | <span style="color:#15803D;font-weight:600">charged: £${charged.toFixed(4)}</span>`;
+    document.getElementById('aclm-qty').focus();
+  } else prev.innerHTML = '';
+}
+function aclmAddMaterial(lineId) {
+  const sel = document.getElementById('aclm-select'), item = mpl.find(m => m.code === sel.value);
+  if (!item) { toast('Select a material from the list first'); return; }
+  const qty = parseFloat(document.getElementById('aclm-qty').value);
+  if (!qty || qty <= 0) { toast('Enter a quantity greater than 0'); return; }
+  const supplierCost = item.pricePerUnit || 0;
+  const chargedCost = Math.round(supplierCost * 1.1 * 10000) / 10000; // +10% markup, same as everywhere
+  pushComponentToLine(lineId, {
+    desc: item.description || item.code,
+    qty: qty,
+    unit: item.unit || 'item',
+    cost: chargedCost,          // charged price (with markup) — feeds mat cost
+    supplierCost: supplierCost, // raw supplier price — feeds profit calc
+    supplier: item.supplier || '',
+    url: '',
+    notes: '',
+    fromMpl: true,              // provenance: locks supplier cost on edit
+    mplCode: item.code
+  });
+  // Reset the picker and keep the dialog open for further additions
+  sel.value = '';
+  document.getElementById('aclm-qty').value = '';
+  document.getElementById('aclm-prev').innerHTML = '';
+  const srch = document.getElementById('aclm-search'); if (srch) srch.value = '';
+  aclmFilterMpl();
+  toast('Added: ' + (item.description || item.code));
+}
+// — Option 2 (manual) handlers for the add-to-existing-line dialog —
+function aclcUpdateCharged() {
+  const cost = parseFloat(document.getElementById('aclc-cost').value) || 0;
+  document.getElementById('aclc-charged').value = (cost * 1.1).toFixed(2);
+}
+function aclcUpdateCost() {
+  const charged = parseFloat(document.getElementById('aclc-charged').value) || 0;
+  document.getElementById('aclc-cost').value = (charged / 1.1).toFixed(2);
+}
+function aclcAddManual(lineId) {
+  const desc = document.getElementById('aclc-desc').value.trim();
+  if (!desc) { toast('Enter a description'); return; }
+  const supplierCost = parseFloat(document.getElementById('aclc-cost').value) || 0;
+  const chargedCost = parseFloat(document.getElementById('aclc-charged').value) || (supplierCost * 1.1);
+  pushComponentToLine(lineId, {
+    desc,
+    qty: parseFloat(document.getElementById('aclc-qty').value) || 1,
+    unit: document.getElementById('aclc-unit').value.trim() || 'item',
+    cost: chargedCost,          // charged price (with 10% markup)
+    supplierCost: supplierCost, // raw supplier cost — used in profit calculation
+    supplier: document.getElementById('aclc-supplier').value.trim(),
+    url: document.getElementById('aclc-url').value.trim(),
+    notes: document.getElementById('aclc-notes').value.trim()
+    // no fromMpl flag — manual component, supplier cost stays editable
+  });
+  // Clear the manual form and keep the dialog open
+  ['aclc-desc','aclc-unit','aclc-supplier','aclc-url','aclc-notes'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  const q=document.getElementById('aclc-qty'); if(q) q.value='1';
+  const c=document.getElementById('aclc-cost'); if(c) c.value='0';
+  const ch=document.getElementById('aclc-charged'); if(ch) ch.value='0.00';
+  document.getElementById('aclc-desc').focus();
+  toast('Component added');
 }
 
 function toggleMiscComps(id) {
@@ -1890,7 +2053,9 @@ function addMplMaterialToMisc() {
     supplierCost: supplierCost, // raw supplier price — feeds profit calc
     supplier: item.supplier || '',
     url: '',
-    notes: ''
+    notes: '',
+    fromMpl: true,              // provenance: came from the price list (Option 1) — supplier cost is locked on edit
+    mplCode: item.code
   });
   // Append the material description as a new line to the client-facing description (never overwrite)
   appendMiscXdesc(item.description || item.code);
