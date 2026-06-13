@@ -1539,6 +1539,12 @@ function updateDelEdit(id) {
     });
   }
 
+  // Patch print-only qty/unit-price spans (baked at renderLines time — keep print in sync with the builder)
+  const qtyPrint = document.getElementById('qty-print-' + id);
+  if (qtyPrint) qtyPrint.textContent = qty;
+  const unitPrint = document.getElementById('unitprice-print-' + id);
+  if (unitPrint) unitPrint.textContent = unitPrice.toFixed(2);
+
   // Patch the line's Amount GBP cell (regular lines; group members use member-amt below)
   const amtCell = document.getElementById('amt-cell-' + id);
   if (amtCell) amtCell.textContent = '£' + (qty * unitPrice).toFixed(2);
