@@ -1653,6 +1653,11 @@ function patchMiscLineDom(l) {
   // Read-only auto unit-price field on the row (misc lines have no upPrice handler)
   const rowUnit = document.getElementById('row-unitprice-' + id);
   if (rowUnit && document.activeElement !== rowUnit) rowUnit.value = (l.unitPrice||0).toFixed(2);
+  // Print-only qty/unit-price spans (baked at renderLines time — keep them in sync so print matches the builder)
+  const qtyPrint = document.getElementById('qty-print-' + id);
+  if (qtyPrint) qtyPrint.textContent = (l.qty||0);
+  const unitPrint = document.getElementById('unitprice-print-' + id);
+  if (unitPrint) unitPrint.textContent = (l.unitPrice||0).toFixed(2);
   // Per-line amount cell
   const amtCell = document.getElementById('amt-cell-' + id);
   if (amtCell) amtCell.textContent = '£' + ((l.qty||0) * (l.unitPrice||0)).toFixed(2);
@@ -2385,7 +2390,7 @@ function initDragDrop() {
   });
 }
 
-function upQty(id,v) { const l=lines.find(x=>x.id===id); if(!l)return; l.qty=parseFloat(v)||0; if(l.misc){l.unitPrice=miscUnitPrice(l); patchMiscLineDom(l);} else if(l.qty>0){l.unitPrice=l.matCost+(l.labTotal/l.qty);} if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true; recalc(); }
+function upQty(id,v) { const l=lines.find(x=>x.id===id); if(!l)return; l.qty=parseFloat(v)||0; if(l.misc){l.unitPrice=miscUnitPrice(l); patchMiscLineDom(l);} else { if(l.qty>0){l.unitPrice=l.matCost+(l.labTotal/l.qty);} const qp=document.getElementById('qty-print-'+id); if(qp)qp.textContent=(l.qty||0); const up=document.getElementById('unitprice-print-'+id); if(up)up.textContent=(l.unitPrice||0).toFixed(2); } if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true; recalc(); }
 function upPrice(id,v) { const l=lines.find(x=>x.id===id); if(l){l.unitPrice=parseFloat(v)||0; if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true;recalc();} }
 function upVat(id,v) { const l=lines.find(x=>x.id===id); if(l){l.vat=parseInt(v)||0;isDirty=true;recalc();} }
 function upXdesc(id,v) {
@@ -2597,13 +2602,13 @@ function renderLines() {
       </td>
       <td class="r" style="vertical-align:top;padding-top:12px">
         <input type="number" value="${l.qty}" min="0.01" step="0.01" onchange="upQty(${l.id},this.value)" style="width:68px">
-        <span class="print-only" style="font-family:'DM Mono',monospace;display:none;text-align:right">${l.qty}</span>
+        <span class="print-only" id="qty-print-${l.id}" style="font-family:'DM Mono',monospace;display:none;text-align:right">${l.qty}</span>
       </td>
       <td class="r" style="vertical-align:top;padding-top:12px">
         ${l.misc
           ? `<input type="number" id="row-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" readonly title="Auto-calculated: components total + labour. Edit components or labour via ✏️ to change it." style="width:88px;background:var(--bg);color:var(--i2);cursor:default">`
           : `<input type="number" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" onchange="upPrice(${l.id},this.value)" style="width:88px">`}
-        <span class="print-only" style="font-family:'DM Mono',monospace;display:none;text-align:right">${l.unitPrice.toFixed(2)}</span>
+        <span class="print-only" id="unitprice-print-${l.id}" style="font-family:'DM Mono',monospace;display:none;text-align:right">${l.unitPrice.toFixed(2)}</span>
       </td>
       <td class="r" style="vertical-align:top;padding-top:12px">
         <select onchange="upVat(${l.id},this.value)" style="width:58px;padding:4px 3px;border:1px solid var(--bd);border-radius:4px;font-size:11px">
