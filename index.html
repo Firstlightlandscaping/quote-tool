@@ -2595,14 +2595,15 @@ function renderLines() {
             <div>
               <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:2px">GROUP — ${groupLines.length} items <button onclick="editGroupHeader(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;padding:0;margin-left:4px" title="Edit group name/description">✏️</button><button onclick="showAddToGroupDialog('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--bl);text-transform:none;letter-spacing:0;font-weight:600" title="Add an existing line from this quote into this group">+ Add line</button><button onclick="removeGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--i2);text-transform:none;letter-spacing:0;font-weight:600" title="Ungroup — return items as individual lines (items kept)">↩ Ungroup</button></div>
               <div class="l-name" style="font-weight:700">${l.name}</div>
-              <div class="l-xdesc" style="margin-top:3px">
-                <input type="text" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd)">
+              <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
+                <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
+                <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
               </div>
               <div class="l-lab no-print" id="group-labmat-${l.groupId}" style="color:var(--i3)">🛠 Labour: £${groupLab.toFixed(2)} | Mat: £${groupMat.toFixed(2)}</div>
             </div>
           </div>
           <!-- PRINT ONLY: matches normal deliverable format — bold heading + regular description -->
-          <div class="print-only" style="text-align:left">
+          <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
             <div class="l-name">${l.name}</div>
             ${(l.xdesc && l.xdesc !== l.name) ? `<div class="l-xdesc" style="margin-top:2px">${l.xdesc}</div>` : ''}
           </div>
@@ -4183,8 +4184,8 @@ function editGroupHeader(lineId) {
         <input type="text" id="ge-name" value="${(l.name||'').replace(/"/g,'&quot;')}" style="width:100%">
       </div>
       <div class="fg" style="margin-bottom:16px">
-        <label>Client description (shown on quote)</label>
-        <textarea id="ge-desc" rows="3" style="width:100%">${l.xdesc||l.name||''}</textarea>
+        <label>Client description (shown on quote) <button type="button" onclick="openTextareaXdescModal('ge-desc','CLIENT DESCRIPTION')" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3);margin-left:6px" title="Expand editor">⤢ Expand</button></label>
+        <textarea id="ge-desc" rows="7" style="width:100%;resize:vertical">${(l.xdesc||l.name||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('group-edit-dialog').remove()">Cancel</button>
@@ -4352,6 +4353,45 @@ function saveNdXdescModal() {
   document.getElementById('xdesc-modal').remove();
 }
 
+// Generic full-screen expand editor for any client-description textarea identified by id.
+// Used by modals that aren't tied to a quote line — currently the Edit-group modal's
+// Client description field. Reads/writes the textarea by id; on Save it copies the text
+// back to that textarea (the host modal's own Save then persists it). z-index 10000 keeps
+// it above the host modal (group-edit-dialog is 9999).
+function openTextareaXdescModal(textareaId, title) {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const existing = document.getElementById('xdesc-modal');
+  if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'xdesc-modal';
+  panel.dataset.targetTa = textareaId;
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:10000;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">${title||'CLIENT DESCRIPTION'}</div>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 10px">This text prints on the quote. Internal name never shown to client.</p>
+      <textarea id="generic-xdesc-modal-ta" rows="8" style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical">${(ta.value||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+        <button class="btn btn-outline" onclick="document.getElementById('xdesc-modal').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveTextareaXdescModal()">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  const mta = document.getElementById('generic-xdesc-modal-ta');
+  mta.focus();
+  mta.setSelectionRange(mta.value.length, mta.value.length);
+}
+
+function saveTextareaXdescModal() {
+  const panel = document.getElementById('xdesc-modal');
+  const mta = document.getElementById('generic-xdesc-modal-ta');
+  if (!panel || !mta) return;
+  const ta = document.getElementById(panel.dataset.targetTa);
+  if (ta) ta.value = mta.value;
+  panel.remove();
+}
+
 function openXdescModal(id) {
   const l = lines.find(x => x.id === id);
   if (!l) return;
@@ -4484,8 +4524,8 @@ function showGroupDialog(selected) {
         <input type="text" id="gd-name" placeholder="e.g. Rendered Raised Bed" style="width:100%">
       </div>
       <div class="fg" style="margin-bottom:10px">
-        <label>Client description (shown on quote)</label>
-        <textarea id="gd-desc" rows="3" placeholder="e.g. Rendered raised bed in 4 inch blockwork with K-Rend finish..." style="width:100%"></textarea>
+        <label>Client description (shown on quote) <button type="button" onclick="openTextareaXdescModal('gd-desc','CLIENT DESCRIPTION')" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3);margin-left:6px" title="Expand editor">⤢ Expand</button></label>
+        <textarea id="gd-desc" rows="7" placeholder="e.g. Rendered raised bed in 4 inch blockwork with K-Rend finish..." style="width:100%;resize:vertical"></textarea>
       </div>
       <div class="fg" style="margin-bottom:16px;display:flex;align-items:center;gap:8px">
         <input type="checkbox" id="gd-save-template" style="cursor:pointer">
