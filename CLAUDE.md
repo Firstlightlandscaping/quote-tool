@@ -49,6 +49,7 @@ sort_order column on quote_lines (added June 2026). Lines saved with index posit
 - Per-group ↩ Ungroup (removeGroup) vs Ungroup all (ungroupAll)
 - × on group header = deleteGroup() (removes group + items, with confirm); removeGroup() only ungroups
 - moveLinesToGroup() handles adding lines to existing groups (via header's + Add line, or "Add to group" select in Add Line Item panel) — keeps members contiguous, re-derives header totals
+- Edit panel for group members is type-aware: deliverable members get the reduced inline labour editor (lab-edit-row, updateDelEdit), but MISC members get the FULL "Edit misc item" panel (Description, Client desc, Qty, auto Unit price, Labour, Components) — same as ungrouped misc. The misc panel `<tr>` is built by the shared helper miscEditPanelRow(l) (keyed off l.id so toggleMiscEdit/updateMiscField/patchMiscLineDom work identically grouped or not); renderLines uses it for both the ungrouped misc path and the misc branch of the group-member loop, and the member's ✏️ button calls toggleMiscEdit for misc / toggleLabEdit otherwise. Editing a grouped misc item's VAT via this panel sets that member's vat individually (the header VAT dropdown still mirrors member[0]); VAT is applied per-line in recalc so totals stay correct.
 
 ### Totals Calculation
 - recalc() uses effectiveAmt() not amt() for group headers
@@ -60,7 +61,7 @@ sort_order column on quote_lines (added June 2026). Lines saved with index posit
 ### DOM Performance
 - reorderDomRows() moves existing TR elements instead of renderLines() on reorder (avoids 2-min reload)
 - updateDelEdit() patches DOM directly for deliverable labour edits (unit price, lab-tag-{id}/lab-tag-anchor, amt-cell-{id}, plus member/group-header cells for grouped lines) — avoids re-render loop, keeps edit panel open
-- patchMiscLineDom() does equivalent live patching for misc lines (read-only row unit-price input row-unitprice-{id}, amt-cell-{id}, read-only panel field misc-edit-unitprice-{id}, lab tag, and mat tag via mat-tag-{id}/mat-tag-anchor-{id})
+- patchMiscLineDom() does equivalent live patching for misc lines (read-only row unit-price input row-unitprice-{id}, amt-cell-{id}, read-only panel field misc-edit-unitprice-{id}, lab tag, and mat tag via mat-tag-{id}/mat-tag-anchor-{id}). For misc lines inside a group it ALSO patches the member display cells (member-qty/unit/amt-{id}) and the group-header cells (group-unit/amt/labmat-{gid}) and re-syncs header.unitPrice — mirroring updateDelEdit's grouped-member handling — so editing a grouped misc item updates group totals live without a re-render
 - Print-only qty/unit-price spans (qty-print-{id}, unitprice-print-{id}) are baked into each row at renderLines() time and shown only in the print/PDF view (the editable inputs are no-print). Any live DOM patch that changes qty/unitPrice WITHOUT a full re-render must also patch these spans, or print shows stale values while the builder shows the new ones. Three paths sync them: patchMiscLineDom() (misc), the non-misc branch of upQty() (deliverable row-qty edits), and updateDelEdit() (deliverable edit-panel changes — qty/mat/labour). All recompute unitPrice and must patch the spans.
 
 ### Saving and Loading

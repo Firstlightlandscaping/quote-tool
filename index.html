@@ -1709,6 +1709,31 @@ function patchMiscLineDom(l) {
   } else if (matTagEl) {
     matTagEl.remove();
   }
+  // If this misc line is inside a group, patch the member's display-only cells and the
+  // group header totals live (these cells aren't reachable by the input-patching above),
+  // mirroring updateDelEdit's group handling for deliverable members.
+  if (l.groupMember) {
+    const gid = l.groupMember;
+    const memberQty = document.getElementById('member-qty-' + id);
+    if (memberQty) memberQty.textContent = (l.qty||0);
+    const memberUnit = document.getElementById('member-unit-' + id);
+    if (memberUnit) memberUnit.textContent = '£' + (l.unitPrice||0).toFixed(2);
+    const memberAmt = document.getElementById('member-amt-' + id);
+    if (memberAmt) memberAmt.textContent = '£' + ((l.qty||0) * (l.unitPrice||0)).toFixed(2);
+    const members = lines.filter(x => x.groupMember === gid);
+    const gTot = members.reduce((s, x) => s + amt(x), 0);
+    const gLab = members.reduce((s, x) => s + (x.labTotal || 0), 0);
+    const gMat = members.reduce((s, x) => s + lineMat(x), 0);
+    // Keep the group header's stored unitPrice in sync (effectiveAmt/recalc also do this)
+    const header = lines.find(x => x.groupId === gid && !x.groupMember);
+    if (header) header.unitPrice = gTot;
+    const gUnit = document.getElementById('group-unit-' + gid);
+    if (gUnit) gUnit.textContent = '£' + gTot.toFixed(2);
+    const gAmt = document.getElementById('group-amt-' + gid);
+    if (gAmt) gAmt.textContent = '£' + gTot.toFixed(2);
+    const gLabMat = document.getElementById('group-labmat-' + gid);
+    if (gLabMat) gLabMat.textContent = '🛠 Labour: £' + gLab.toFixed(2) + ' | Mat: £' + gMat.toFixed(2);
+  }
 }
 
 function removeLineComponent(lineId, compIdx) {
@@ -2430,6 +2455,81 @@ function amt(l) { return l.qty*(l.unitPrice||0); }
 // but misc items store matCost as the FIXED components total (qty is only a display
 // divisor, never a multiplier) — so misc materials must NOT be scaled by qty.
 function lineMat(l) { return l.misc ? (l.matCost||0) : (l.matCost||0)*(l.qty||0); }
+// Full "Edit misc item" panel row. Shared by ungrouped misc lines AND misc lines inside
+// a group — a grouped misc item must show the full misc editor (Description, Client desc,
+// Qty, auto Unit price, Labour, Components), NOT the reduced deliverable inline editor.
+// All IDs key off l.id, so toggleMiscEdit/updateMiscField/patchMiscLineDom work identically
+// whether the line is grouped or not.
+function miscEditPanelRow(l) {
+  return `<tr id="misc-edit-row-${l.id}" style="display:none">
+        <td colspan="8" style="padding:0">
+          <div style="padding:14px;background:#FFFBF0;border-left:3px solid var(--br);border-bottom:1px solid var(--bd)">
+            <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--br);margin-bottom:12px">Edit misc item</div>
+            <div style="display:grid;gap:10px">
+              <div class="fg" style="margin:0"><label>Description (internal)</label>
+                <input type="text" value="${(l.name||'').replace(/"/g,'&quot;')}" onchange="updateMiscField(${l.id},'name',this.value)" style="width:100%">
+              </div>
+              <div class="fg" style="margin:0"><label>Client description (shown on quote)</label>
+                <textarea rows="3" onchange="updateMiscField(${l.id},'xdesc',this.value)" style="width:100%">${l.xdesc||''}</textarea>
+              </div>
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
+                <div class="fg" style="margin:0"><label>Qty</label>
+                  <input type="number" value="${l.qty}" min="0.01" step="0.01" onchange="updateMiscField(${l.id},'qty',parseFloat(this.value)||1)">
+                </div>
+                <div class="fg" style="margin:0"><label>Unit</label>
+                  <input type="text" value="${l.unit||''}" onchange="updateMiscField(${l.id},'unit',this.value)">
+                </div>
+                <div class="fg" style="margin:0"><label>Unit price (£) <span style="font-weight:400;color:var(--i3);font-size:10px">auto</span></label>
+                  <input type="number" id="misc-edit-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" readonly title="Auto-calculated — components total + (labour days × day rate). Edit components or labour below to change it." style="background:var(--bg);color:var(--i2);cursor:default">
+                </div>
+                <div class="fg" style="margin:0"><label>VAT</label>
+                  <select onchange="updateMiscField(${l.id},'vat',parseInt(this.value))">
+                    <option value="20" ${l.vat===20?'selected':''}>20%</option>
+                    <option value="0" ${l.vat===0?'selected':''}>0%</option>
+                  </select>
+                </div>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+                <div class="fg" style="margin:0"><label>Labour days</label>
+                  <input type="number" value="${l.labDays||0}" min="0" step="0.5" onchange="updateMiscField(${l.id},'labDays',parseFloat(this.value)||0)">
+                </div>
+                <div class="fg" style="margin:0"><label>Day rate (£)</label>
+                  <input type="number" value="${l.labRate||0}" min="0" step="1" onchange="updateMiscField(${l.id},'labRate',parseFloat(this.value)||0)">
+                </div>
+              </div>
+              <div style="padding:10px;background:white;border-radius:6px;border:1px solid var(--bd)">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+                  <span style="font-size:11px;font-weight:700;color:var(--i3)">COMPONENTS</span>
+                  <button class="btn btn-outline btn-sm" onclick="addComponentToLine(${l.id})">+ Add</button>
+                </div>
+                <div id="line-comps-edit-${l.id}">
+                  ${(l.miscComponents||[]).map((c,ci) => `
+                    <div style="display:flex;align-items:center;gap:6px;padding:6px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
+                      <div style="flex:1">
+                        <div style="font-weight:600">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
+                        ${c.cost ? `<div style="color:var(--i3)">£${c.cost}/unit · £${(c.qty*c.cost).toFixed(2)} total</div>` : ''}
+                        ${c.supplier ? `<div style="color:var(--i3)">${c.supplier}</div>` : ''}
+                        ${c.url ? `<a href="${c.url}" target="_blank" style="color:var(--br)">🔗 Link</a>` : ''}
+                      </div>
+                      <button class="btn btn-outline btn-sm" onclick="editLineComponent(${l.id},${ci})">Edit</button>
+                      <button class="btn btn-red btn-sm" onclick="removeLineComponent(${l.id},${ci})">×</button>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
+              ${(!(l.miscComponents && l.miscComponents.length) && (l.matCost || 0) > 0)
+                ? `<div class="fg" style="margin:0"><label>Material cost (£) <span style="font-weight:400;color:#B45309;font-size:10px">⚠ legacy value — no components. Clear it, or add components above.</span></label>
+                    <input type="number" id="misc-edit-matcost-${l.id}" value="${(l.matCost||0).toFixed(2)}" min="0" step="0.01" onchange="updateMiscField(${l.id},'matCost',parseFloat(this.value)||0)" style="width:100%" title="Legacy free-text material cost on a misc item with no components. New misc items derive materials from components only — this field only appears to let you clear or correct old values.">
+                  </div>`
+                : ''}
+              <div style="text-align:right">
+                <button class="btn btn-primary btn-sm" onclick="toggleMiscEdit(${l.id})">✓ Done</button>
+              </div>
+            </div>
+          </div>
+        </td>
+      </tr>`;
+}
 function renderLines() {
   const tb = document.getElementById('lines-body');
   if (!lines.length) { tb.innerHTML=`<tr><td colspan="8"><div class="empty-lines">No items yet — use the builder below to add line items.</div></td></tr>`; recalc(); return; }
@@ -2502,7 +2602,7 @@ function renderLines() {
             <td class="no-print"></td>
             <td class="no-print"></td>
             <td class="no-print" style="vertical-align:middle;padding-left:20px">
-              <button class="btn btn-outline btn-sm" onclick="toggleLabEdit(${gl.id})" style="font-size:10px;padding:2px 6px;margin-bottom:2px" title="Edit">✏️</button><br>
+              <button class="btn btn-outline btn-sm" onclick="${gl.misc?`toggleMiscEdit(${gl.id})`:`toggleLabEdit(${gl.id})`}" style="font-size:10px;padding:2px 6px;margin-bottom:2px" title="Edit">✏️</button><br>
               <button class="del-btn" onclick="rmFromGroup(${gl.id})">×</button>
             </td>
             <td style="min-width:200px;padding-left:28px">
@@ -2515,8 +2615,9 @@ function renderLines() {
             <td class="r" id="member-unit-${gl.id}" style="color:var(--i2)">£${gl.unitPrice.toFixed(2)}</td>
             <td class="r" style="color:var(--i3);font-size:11px">${gl.vat}%</td>
             <td class="r" id="member-amt-${gl.id}" style="color:var(--i2);font-family:'DM Mono',monospace">£${ga.toFixed(2)}</td>
-          </tr>
-          <tr id="lab-edit-row-${gl.id}" style="display:none">
+          </tr>`;
+          // Misc group members get the FULL misc edit panel; deliverables get the inline labour editor.
+          rendered += gl.misc ? miscEditPanelRow(gl) : `<tr id="lab-edit-row-${gl.id}" style="display:none">
             <td colspan="8" style="padding:0">
               <div style="padding:12px 16px 12px 44px;background:#F8FAFC;border-left:3px solid #3B82F6;border-bottom:1px solid var(--bd)">
                 <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#3B82F6;margin-bottom:10px">EDIT: ${gl.name}</div>
@@ -2667,75 +2768,7 @@ function renderLines() {
     }
     // Add expand edit panel row for misc items
     if (l.misc) {
-      const compsJson = JSON.stringify(l.miscComponents||[]).replace(/`/g,'\\`').replace(/\\$/g,'\\$');
-      rendered += `<tr id="misc-edit-row-${l.id}" style="display:none">
-        <td colspan="8" style="padding:0">
-          <div style="padding:14px;background:#FFFBF0;border-left:3px solid var(--br);border-bottom:1px solid var(--bd)">
-            <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--br);margin-bottom:12px">Edit misc item</div>
-            <div style="display:grid;gap:10px">
-              <div class="fg" style="margin:0"><label>Description (internal)</label>
-                <input type="text" value="${(l.name||'').replace(/"/g,'&quot;')}" onchange="updateMiscField(${l.id},'name',this.value)" style="width:100%">
-              </div>
-              <div class="fg" style="margin:0"><label>Client description (shown on quote)</label>
-                <textarea rows="3" onchange="updateMiscField(${l.id},'xdesc',this.value)" style="width:100%">${l.xdesc||''}</textarea>
-              </div>
-              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
-                <div class="fg" style="margin:0"><label>Qty</label>
-                  <input type="number" value="${l.qty}" min="0.01" step="0.01" onchange="updateMiscField(${l.id},'qty',parseFloat(this.value)||1)">
-                </div>
-                <div class="fg" style="margin:0"><label>Unit</label>
-                  <input type="text" value="${l.unit||''}" onchange="updateMiscField(${l.id},'unit',this.value)">
-                </div>
-                <div class="fg" style="margin:0"><label>Unit price (£) <span style="font-weight:400;color:var(--i3);font-size:10px">auto</span></label>
-                  <input type="number" id="misc-edit-unitprice-${l.id}" value="${l.unitPrice.toFixed(2)}" min="0" step="0.01" readonly title="Auto-calculated — components total + (labour days × day rate). Edit components or labour below to change it." style="background:var(--bg);color:var(--i2);cursor:default">
-                </div>
-                <div class="fg" style="margin:0"><label>VAT</label>
-                  <select onchange="updateMiscField(${l.id},'vat',parseInt(this.value))">
-                    <option value="20" ${l.vat===20?'selected':''}>20%</option>
-                    <option value="0" ${l.vat===0?'selected':''}>0%</option>
-                  </select>
-                </div>
-              </div>
-              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
-                <div class="fg" style="margin:0"><label>Labour days</label>
-                  <input type="number" value="${l.labDays||0}" min="0" step="0.5" onchange="updateMiscField(${l.id},'labDays',parseFloat(this.value)||0)">
-                </div>
-                <div class="fg" style="margin:0"><label>Day rate (£)</label>
-                  <input type="number" value="${l.labRate||0}" min="0" step="1" onchange="updateMiscField(${l.id},'labRate',parseFloat(this.value)||0)">
-                </div>
-              </div>
-              <div style="padding:10px;background:white;border-radius:6px;border:1px solid var(--bd)">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
-                  <span style="font-size:11px;font-weight:700;color:var(--i3)">COMPONENTS</span>
-                  <button class="btn btn-outline btn-sm" onclick="addComponentToLine(${l.id})">+ Add</button>
-                </div>
-                <div id="line-comps-edit-${l.id}">
-                  ${(l.miscComponents||[]).map((c,ci) => `
-                    <div style="display:flex;align-items:center;gap:6px;padding:6px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
-                      <div style="flex:1">
-                        <div style="font-weight:600">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
-                        ${c.cost ? `<div style="color:var(--i3)">£${c.cost}/unit · £${(c.qty*c.cost).toFixed(2)} total</div>` : ''}
-                        ${c.supplier ? `<div style="color:var(--i3)">${c.supplier}</div>` : ''}
-                        ${c.url ? `<a href="${c.url}" target="_blank" style="color:var(--br)">🔗 Link</a>` : ''}
-                      </div>
-                      <button class="btn btn-outline btn-sm" onclick="editLineComponent(${l.id},${ci})">Edit</button>
-                      <button class="btn btn-red btn-sm" onclick="removeLineComponent(${l.id},${ci})">×</button>
-                    </div>
-                  `).join('')}
-                </div>
-              </div>
-              ${(!(l.miscComponents && l.miscComponents.length) && (l.matCost || 0) > 0)
-                ? `<div class="fg" style="margin:0"><label>Material cost (£) <span style="font-weight:400;color:#B45309;font-size:10px">⚠ legacy value — no components. Clear it, or add components above.</span></label>
-                    <input type="number" id="misc-edit-matcost-${l.id}" value="${(l.matCost||0).toFixed(2)}" min="0" step="0.01" onchange="updateMiscField(${l.id},'matCost',parseFloat(this.value)||0)" style="width:100%" title="Legacy free-text material cost on a misc item with no components. New misc items derive materials from components only — this field only appears to let you clear or correct old values.">
-                  </div>`
-                : ''}
-              <div style="text-align:right">
-                <button class="btn btn-primary btn-sm" onclick="toggleMiscEdit(${l.id})">✓ Done</button>
-              </div>
-            </div>
-          </div>
-        </td>
-      </tr>`;
+      rendered += miscEditPanelRow(l);
     }
   });
 
