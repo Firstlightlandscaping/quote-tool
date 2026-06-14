@@ -462,7 +462,7 @@ tr.dragging td{background:var(--brp)!important}
                 </div>
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
                   <div class="fg" style="margin:0"><label style="font-size:11px">Supplier cost (£)</label><input type="number" id="mcc-cost" value="0" min="0" step="0.01" oninput="updateMccCharged()"></div>
-                  <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="mcc-charged" value="0.00" min="0" step="0.01" style="background:#F0FDF4;color:#15803D;font-weight:600" oninput="updateMccCost()"></div>
+                  <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="mcc-charged" value="0.00" min="0" step="0.01" readonly title="Auto-calculated as supplier cost + 10%" style="background:#F0FDF4;color:#15803D;font-weight:600;opacity:.7;cursor:default"></div>
                   <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><input type="text" id="mcc-supplier" placeholder="e.g. Hillier"></div>
                   <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="mcc-url" placeholder="https://..."></div>
                 </div>
@@ -1823,7 +1823,7 @@ function showLineCompDialog(lineId, compIdx) {
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px">
         <div class="fg" style="margin:0">
           <label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label>
-          <input type="number" id="lcd-charged" value="${chargedCost.toFixed(2)}" min="0" step="0.01" style="background:#F0FDF4;color:#15803D;font-weight:600${costLocked ? ';opacity:.7;cursor:default' : ''}" ${costLocked ? 'readonly' : 'oninput="lcdUpdateCost()"'}>
+          <input type="number" id="lcd-charged" value="${chargedCost.toFixed(2)}" min="0" step="0.01" readonly title="Auto-calculated as supplier cost + 10%" style="background:#F0FDF4;color:#15803D;font-weight:600;opacity:.7;cursor:default">
         </div>
         <div class="fg" style="margin:0">
           <label>Supplier name</label>
@@ -1986,7 +1986,7 @@ function addComponentToLine(lineId) {
         </div>
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
           <div class="fg" style="margin:0"><label style="font-size:11px">Supplier cost (£)</label><input type="number" id="aclc-cost" value="0" min="0" step="0.01" oninput="aclcUpdateCharged()"></div>
-          <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="aclc-charged" value="0.00" min="0" step="0.01" style="background:#F0FDF4;color:#15803D;font-weight:600" oninput="aclcUpdateCost()"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="aclc-charged" value="0.00" min="0" step="0.01" readonly title="Auto-calculated as supplier cost + 10%" style="background:#F0FDF4;color:#15803D;font-weight:600;opacity:.7;cursor:default"></div>
           <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><input type="text" id="aclc-supplier" placeholder="e.g. Hillier"></div>
           <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="aclc-url" placeholder="https://..."></div>
         </div>
