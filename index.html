@@ -1773,11 +1773,17 @@ function removeLineComponent(lineId, compIdx) {
 }
 
 function showLineCompDialog(lineId, compIdx) {
-  // compIdx = -1 means adding new, >= 0 means editing existing
-  const l = lines.find(x => x.id === lineId);
-  if (!l) return;
+  // compIdx = -1 means adding new, >= 0 means editing existing.
+  // lineId === 'builder' edits a component in the global miscComponents array (the
+  // unsaved "Add Misc Item" builder panel) instead of a saved line — so the Edit
+  // Component modal (with locked/editable supplier cost) is used consistently whether
+  // the misc item has been added to the quote yet or not.
+  const isBuilder = lineId === 'builder';
+  const l = isBuilder ? null : lines.find(x => x.id === lineId);
+  if (!isBuilder && !l) return;
+  const comps = isBuilder ? miscComponents : (l.miscComponents||[]);
   const isEdit = compIdx >= 0;
-  const c = isEdit ? (l.miscComponents||[])[compIdx] : {};
+  const c = isEdit ? comps[compIdx] : {};
   const supplierCost = isEdit ? (c.supplierCost !== undefined ? c.supplierCost : (c.cost ? c.cost / 1.1 : 0)) : 0;
   const chargedCost = isEdit ? (c.cost || 0) : 0;
   // Components added from the price list (Option 1) are locked to the MPL price — supplier
@@ -1834,7 +1840,7 @@ function showLineCompDialog(lineId, compIdx) {
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('line-comp-dialog').remove()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveLineComp(${lineId}, ${compIdx})">${isEdit ? 'Save changes' : 'Add component'}</button>
+        <button class="btn btn-primary" onclick="saveLineComp(${isBuilder ? "'builder'" : lineId}, ${compIdx})">${isEdit ? 'Save changes' : 'Add component'}</button>
       </div>
     </div>`;
   document.body.appendChild(panel);
@@ -1851,8 +1857,12 @@ function lcdUpdateCost() {
 }
 
 function saveLineComp(lineId, compIdx) {
-  const l = lines.find(x => x.id === lineId);
-  if (!l) return;
+  // lineId === 'builder' targets the global miscComponents array (unsaved "Add Misc Item"
+  // builder panel); otherwise it targets a saved line's miscComponents.
+  const isBuilder = lineId === 'builder';
+  const l = isBuilder ? null : lines.find(x => x.id === lineId);
+  if (!isBuilder && !l) return;
+  const comps = isBuilder ? miscComponents : (l.miscComponents||[]);
   const desc = document.getElementById('lcd-desc').value.trim();
   if (!desc) { toast('Enter a description'); return; }
   const supplierCost = parseFloat(document.getElementById('lcd-cost').value) || 0;
@@ -1860,7 +1870,7 @@ function saveLineComp(lineId, compIdx) {
   const comp = {
     // Preserve provenance flags (fromMpl/mplCode) on the existing component so a price-list
     // component stays recognised as such after editing — keeps its supplier cost locked.
-    ...(compIdx >= 0 ? (l.miscComponents||[])[compIdx] : {}),
+    ...(compIdx >= 0 ? comps[compIdx] : {}),
     desc,
     qty: parseFloat(document.getElementById('lcd-qty').value) || 1,
     unit: document.getElementById('lcd-unit').value.trim() || 'item',
@@ -1870,6 +1880,15 @@ function saveLineComp(lineId, compIdx) {
     url: document.getElementById('lcd-url').value.trim(),
     notes: document.getElementById('lcd-notes').value.trim()
   };
+  // Builder path: write back to the global miscComponents array and refresh the builder UI.
+  if (isBuilder) {
+    if (compIdx >= 0) miscComponents[compIdx] = comp; else miscComponents.push(comp);
+    document.getElementById('line-comp-dialog').remove();
+    renderMiscComponents();
+    updateMiscTotal();
+    toast(compIdx >= 0 ? 'Component updated' : 'Component added');
+    return;
+  }
   if (!l.miscComponents) l.miscComponents = [];
   if (compIdx >= 0) {
     l.miscComponents[compIdx] = comp;
@@ -2226,21 +2245,11 @@ function renderMiscComponents() {
 }
 
 function editMiscComponent(idx) {
-  const c = miscComponents[idx];
-  editingCompIdx = idx;
-  document.getElementById('mcc-desc').value = c.desc||'';
-  document.getElementById('mcc-qty').value = c.qty||1;
-  document.getElementById('mcc-unit').value = c.unit||'';
-  document.getElementById('mcc-cost').value = (c.supplierCost !== undefined ? c.supplierCost : (c.cost ? c.cost/1.1 : 0));
-  document.getElementById('mcc-charged').value = c.cost||0;
-  document.getElementById('mcc-supplier').value = c.supplier||'';
-  document.getElementById('mcc-url').value = c.url||'';
-  document.getElementById('mcc-notes').value = c.notes||'';
-  document.getElementById('mc-comp-form').style.display = 'block';
-  document.getElementById('mcc-desc').focus();
-  // Update button text
-  const btn = document.querySelector('#mc-comp-form .btn-primary');
-  if (btn) btn.textContent = 'Update component';
+  // Open the shared Edit Component modal (same one used for saved misc items) against the
+  // builder's global miscComponents array — keeps cost locking (price-list) / editing
+  // (manual) consistent whether or not the misc item has been added to the quote yet.
+  // (Previously this populated the inline Option 2 form, which bypassed the lock.)
+  showLineCompDialog('builder', idx);
 }
 
 function addMisc() {
