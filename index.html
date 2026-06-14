@@ -69,7 +69,7 @@ textarea{resize:vertical;min-height:50px}
 .lt tr:last-child td{border-bottom:none}
 .l-code{font-family:"DM Mono",monospace;font-size:9px;background:#F4F4F5;color:var(--i3);padding:1px 5px;border-radius:3px;display:inline-block;margin-bottom:2px}
 .l-name{font-weight:600;line-height:1.4;font-size:12px}
-.l-xdesc{font-size:11px;color:var(--i2);line-height:1.5;margin-top:2px;font-weight:400}
+.l-xdesc{font-size:11px;color:var(--i2);line-height:1.5;margin-top:2px;font-weight:400;white-space:pre-line}
 .l-notes{font-size:11px;color:var(--i3);line-height:1.4;margin-top:2px;font-style:italic}
 .l-lab{font-size:10px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:3px;padding:2px 6px;color:#15803D;display:inline-block;margin-top:3px}
 .l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--br);background:var(--brp);padding:1px 5px;border-radius:3px;margin-right:4px}
@@ -1709,6 +1709,31 @@ function patchMiscLineDom(l) {
   } else if (matTagEl) {
     matTagEl.remove();
   }
+  // Client description — keep the inline row input AND the print-only description span in sync
+  // when xdesc is edited from the misc edit panel. The panel textarea calls updateMiscField →
+  // here, but upXdesc (which patches these) only fires from the inline input / expand modal, so
+  // without this a panel edit set l.xdesc while the row + print view kept showing the old text.
+  // Mirrors upXdesc's print-div handling exactly.
+  const xdescInput = document.getElementById('xdesc-input-' + id);
+  if (xdescInput && document.activeElement !== xdescInput) xdescInput.value = (l.xdesc || '');
+  const xdPrint = document.getElementById('xd-print-' + id);
+  if (xdPrint) {
+    const nameDiv = xdPrint.querySelector('.l-name');
+    let xdescDiv = xdPrint.querySelector('.l-xdesc');
+    if (nameDiv) {
+      if (l.xdesc && l.xdesc !== l.name) {
+        if (!xdescDiv) {
+          xdescDiv = document.createElement('div');
+          xdescDiv.className = 'l-xdesc';
+          xdescDiv.style.marginTop = '2px';
+          xdPrint.appendChild(xdescDiv);
+        }
+        xdescDiv.textContent = l.xdesc;
+      } else if (xdescDiv) {
+        xdescDiv.remove();
+      }
+    }
+  }
   // If this misc line is inside a group, patch the member's display-only cells and the
   // group header totals live (these cells aren't reachable by the input-patching above),
   // mirroring updateDelEdit's group handling for deliverable members.
@@ -2470,7 +2495,7 @@ function miscEditPanelRow(l) {
                 <input type="text" value="${(l.name||'').replace(/"/g,'&quot;')}" onchange="updateMiscField(${l.id},'name',this.value)" style="width:100%">
               </div>
               <div class="fg" style="margin:0"><label>Client description (shown on quote)</label>
-                <textarea rows="3" onchange="updateMiscField(${l.id},'xdesc',this.value)" style="width:100%">${l.xdesc||''}</textarea>
+                <textarea id="misc-edit-xdesc-${l.id}" rows="3" onchange="updateMiscField(${l.id},'xdesc',this.value)" style="width:100%">${l.xdesc||''}</textarea>
               </div>
               <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px">
                 <div class="fg" style="margin:0"><label>Qty</label>
@@ -4359,6 +4384,11 @@ function saveXdescModal(id) {
   // Also update the inline input
   const inlineInput = document.getElementById('xdesc-input-' + id);
   if (inlineInput) inlineInput.value = val;
+  // And the Client description textarea in the misc edit panel, if that panel is open — so
+  // all three views stay in sync (panel textarea, expand modal, print/PDF). upXdesc handles
+  // the print div + inline input; the panel textarea isn't reachable from there.
+  const miscPanelTa = document.getElementById('misc-edit-xdesc-' + id);
+  if (miscPanelTa) miscPanelTa.value = val;
   document.getElementById('xdesc-modal').remove();
 }
 
