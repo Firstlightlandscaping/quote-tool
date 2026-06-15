@@ -318,6 +318,7 @@ tr.dragging td{background:var(--brp)!important}
       <div class="no-print" style="margin-top:8px;display:flex;gap:8px">
         <button id="group-btn" class="btn btn-outline btn-sm" onclick="groupSelected()" style="display:none">🔗 Group selected into one item</button>
         <button id="ungroup-btn" class="btn btn-outline btn-sm" onclick="ungroupAll()" style="display:none">↩ Ungroup all</button>
+        <button class="btn btn-outline btn-sm" onclick="addTextNote()" title="Add a text-only note line (no price, not counted in totals)">📝 Add text note</button>
       </div>
     </div>
 
@@ -913,7 +914,8 @@ async function loadFromSupabase() {
         miscComponents: l.misc ? (snapshotMats || []) : undefined,
         groupId: l.group_id||null,
         groupMember: l.group_member||null,
-        groupExpanded: true
+        groupExpanded: true,
+        note: l.is_note||false
       });
     });
     savedQuotes = quoteRows.map(q => ({
@@ -2291,6 +2293,44 @@ function addMisc() {
   toast('Misc item added');
 }
 
+// Text-only note line: a description with no price, excluded from all totals/Overview and
+// printed as plain text with blank price columns. name='' so upXdesc's print sync treats the
+// note text (stored in xdesc) as the printable content (text !== name keeps the .l-xdesc div).
+// Adding a note opens a dialog (heading optional + body) so nothing lands on the quote until
+// Save. Editing an existing note is done inline on its row (heading bar + body textarea).
+function addTextNote() {
+  const existing = document.getElementById('new-note-dialog');
+  if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'new-note-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">📝 Add text note</div>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 14px">A text-only line on the quote — no price, not counted in totals.</p>
+      <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Heading <span style="color:var(--i3)">(optional — prints bold)</span></label>
+      <input type="text" id="new-note-head" placeholder="Leave blank for plain text" style="width:100%;font-size:13px;font-weight:600;padding:9px 10px;border:1px solid var(--bd);border-radius:6px;margin-bottom:14px;box-sizing:border-box">
+      <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Note text</label>
+      <textarea id="new-note-body" rows="6" placeholder="Type the note text shown on the printed quote..." style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical;box-sizing:border-box"></textarea>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('new-note-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveNewNote()">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  const h = document.getElementById('new-note-head');
+  if (h) h.focus();
+}
+function saveNewNote() {
+  const head = (document.getElementById('new-note-head').value||'').trim();
+  const body = (document.getElementById('new-note-body').value||'').trim();
+  if (!head && !body) { toast('Enter a heading or note text'); return; }
+  pushLine({code:'',name:head,xdesc:body,notes:'',qty:0,unitPrice:0,matCost:0,labDays:0,labRate:0,labTotal:0,vat:0,optional:false,misc:false,note:true,unit:'',materials:[]});
+  const dlg = document.getElementById('new-note-dialog');
+  if (dlg) dlg.remove();
+  toast('Text note added');
+}
+
 // ── LINE MANAGEMENT ────────────────────────────────────────────────────────────
 function pushLine(l) { const nl={...l,id:++uid}; lines.push(nl); isDirty=true; renderLines(); return nl.id; }
 function rmLine(id) { lines=lines.filter(l=>l.id!==id); isDirty=true; renderLines(); }
@@ -2483,6 +2523,13 @@ function upXdesc(id,v) {
   if(!l) return;
   l.xdesc=v;
   isDirty=true;
+  // Notes: body lives in xdesc; the heading (l.name) is handled by upNoteHead. Patch the
+  // dedicated body div directly (hide when empty) — don't use the deliverable name/xdesc logic.
+  if (l.note) {
+    const bodyDiv = document.getElementById('note-body-print-'+id);
+    if (bodyDiv) { bodyDiv.textContent = v; bodyDiv.style.display = v ? '' : 'none'; }
+    return;
+  }
   // Update the print-only div immediately so it reflects what was typed
   const printDiv = document.getElementById('xd-print-'+id);
   if (printDiv) {
@@ -2502,6 +2549,17 @@ function upXdesc(id,v) {
       }
     }
   }
+}
+
+// Optional bold heading for a text note (stored in l.name, printed via .l-name). Patches the
+// print-only heading div live and hides it when blank, so a note can be plain text or headed.
+function upNoteHead(id,v) {
+  const l=lines.find(x=>x.id===id);
+  if(!l) return;
+  l.name=v;
+  isDirty=true;
+  const headDiv = document.getElementById('note-head-print-'+id);
+  if (headDiv) { headDiv.textContent = v; headDiv.style.display = v ? '' : 'none'; }
 }
 
 function amt(l) { return l.qty*(l.unitPrice||0); }
@@ -2607,6 +2665,40 @@ function renderLines() {
   lines.forEach(l => {
     // Skip constituent items — they render inside their group
     if (l.groupMember) return;
+
+    // Text-only note line — optional bold heading + body, no price columns, excluded from totals.
+    // No selection checkbox (notes can't be grouped); price cells render empty.
+    if (l.note) {
+      const esc = s => (s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+      const headText = esc(l.name);   // optional bold heading (stored in name)
+      const bodyText = esc(l.xdesc);  // body text (stored in xdesc)
+      rendered += `<tr draggable="true" data-drag-id="${l.id}" data-drag-group="" data-line-id="${l.id}" style="background:#FFFBEB">
+        <td class="no-print" style="vertical-align:middle;padding:0 2px"><div class="drag-handle" title="Drag to reorder"><svg viewBox="0 0 10 16"><circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/><circle cx="3" cy="6.5" r="1.2"/><circle cx="7" cy="6.5" r="1.2"/><circle cx="3" cy="10.5" r="1.2"/><circle cx="7" cy="10.5" r="1.2"/><circle cx="3" cy="14.5" r="1.2"/><circle cx="7" cy="14.5" r="1.2"/></svg></div></td>
+        <td class="no-print" style="vertical-align:middle"><div class="mv"><button onclick="mvUp(${l.id})">▲</button><button onclick="mvDn(${l.id})">▼</button></div></td>
+        <td class="no-print" style="vertical-align:middle"><button class="del-btn" onclick="rmLine(${l.id})">×</button></td>
+        <td style="min-width:200px">
+          <div class="no-print">
+            <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#B45309;margin-bottom:4px">📝 Text note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--i3)">— prints as text, not counted in totals</span></div>
+            <input type="text" id="note-head-${l.id}" value="${(l.name||'').replace(/"/g,'&quot;')}" onchange="upNoteHead(${l.id},this.value)" placeholder="Optional bold heading (leave blank for plain text)..." style="font-size:12px;font-weight:600;color:var(--i1);border:1px dashed var(--bd);width:100%;padding:5px 7px;border-radius:4px;margin-bottom:4px">
+            <div style="display:flex;align-items:flex-start;gap:4px">
+              <textarea id="xdesc-input-${l.id}" onchange="upXdesc(${l.id},this.value)" placeholder="Note text shown on the printed quote..." rows="2" style="font-size:12px;color:var(--i1);border:1px dashed var(--bd);flex:1;font-family:inherit;line-height:1.5;resize:vertical;padding:5px 7px;border-radius:4px">${bodyText}</textarea>
+              <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
+            </div>
+          </div>
+          <!-- PRINT ONLY: same structure as a deliverable row — bold heading (.l-name, hidden when
+               blank) + body (.l-xdesc, hidden when blank). Both patched live by upNoteHead/upXdesc. -->
+          <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
+            <div class="l-name" id="note-head-print-${l.id}" style="${l.name?'':'display:none'}">${headText}</div>
+            <div class="l-xdesc" id="note-body-print-${l.id}" style="margin-top:2px;${l.xdesc?'':'display:none'}">${bodyText}</div>
+          </div>
+        </td>
+        <td class="r"></td>
+        <td class="r"></td>
+        <td class="r"></td>
+        <td class="r"></td>
+      </tr>`;
+      return;
+    }
 
     if (l.groupId && !l.groupMember) {
       // This is a group header line
@@ -2853,8 +2945,9 @@ function effectiveAmt(l) {
 }
 
 function recalc() {
-  // Only count non-member lines (members are counted via their group header)
-  const visibleLines = lines.filter(l => !l.groupMember);
+  // Only count non-member lines (members are counted via their group header).
+  // Text notes carry no price and are excluded from all totals.
+  const visibleLines = lines.filter(l => !l.groupMember && !l.note);
   const allLines = lines; // include members for overview totals
   const sub = visibleLines.reduce((s,l) => s + effectiveAmt(l), 0);
   const vat = visibleLines.reduce((s,l) => s + effectiveAmt(l)*(l.vat/100), 0);
@@ -2868,6 +2961,7 @@ function recalc() {
   let totalMat = 0, totalLab = 0, totalProfit = 0;
   allLines.forEach(l => {
     if (l.groupId && !l.groupMember) return; // skip group headers - members counted individually
+    if (l.note) return; // text notes carry no materials/labour
     if (!l.qty) return; // zero-qty lines contribute £0 to the Subtotal — exclude from overview so stale labour/mat isn't counted
     const matCostTotal = lineMat(l);
     totalMat += matCostTotal;
@@ -2907,8 +3001,8 @@ function renderOrderList() {
   const el = document.getElementById('order-list-content');
   if (!lines.length) { el.innerHTML='<div class="card"><div class="cb empty-lines">No items in current quote.</div></div>'; return; }
   let html = '';
-  const miscLines = lines.filter(l => l.misc);
-  const nonMisc = lines.filter(l => !l.misc);
+  const miscLines = lines.filter(l => l.misc && !l.note);
+  const nonMisc = lines.filter(l => !l.misc && !l.note);
   const seen = new Set();
   nonMisc.forEach(l => {
     if (l.groupMember) return;
@@ -3036,7 +3130,8 @@ async function saveQuote() {
             materials_snapshot: materialsSnapshot,
             group_id: l.groupId||null,
             group_member: l.groupMember||null,
-            is_group_header: !!(l.groupId && !l.groupMember)
+            is_group_header: !!(l.groupId && !l.groupMember),
+            is_note: !!l.note
           };
         }), '');
       }
@@ -4098,7 +4193,9 @@ function downloadXeroCSV() {
 
   const rows = [headers];
   exportLines.forEach((l, i) => {
-    const desc = (l.xdesc || l.name || '').replace(/"/g, '""');
+    // Notes: combine optional heading (name) + body (xdesc). Other lines: client desc or name.
+    const rawDesc = l.note ? [l.name, l.xdesc].filter(Boolean).join(' — ') : (l.xdesc || l.name || '');
+    const desc = rawDesc.replace(/"/g, '""');
     const taxType = l.vat === 20 ? 'OUTPUT2' : 'NONE';
     rows.push([
       i===0 ? `"${cust.replace(/"/g,'""')}"` : '',
@@ -4109,11 +4206,12 @@ function downloadXeroCSV() {
       i===0 ? expDate : '',
       i===0 ? 'Exclusive' : '',
       `"${desc}"`,
-      l.qty,
-      l.unitPrice.toFixed(2),
+      // Notes are description-only lines: no quantity, amount, account code or tax
+      l.note ? '' : l.qty,
+      l.note ? '' : l.unitPrice.toFixed(2),
       '',
-      '200',
-      taxType
+      l.note ? '' : '200',
+      l.note ? '' : taxType
     ]);
   });
   const csv = rows.map(r => r.join(',')).join('\n');
@@ -4136,7 +4234,10 @@ Date: ${date}
 Description	Quantity	Unit Price	VAT%	Amount GBP
 `;
   const exportLines = lines.filter(l => !l.groupMember);
-  exportLines.forEach(l=>txt+=`${l.xdesc||l.name}	${l.qty}	${l.unitPrice.toFixed(2)}	${l.vat}%	${amt(l).toFixed(2)}
+  exportLines.forEach(l=>txt+= l.note
+    ? `${[l.name,l.xdesc].filter(Boolean).join(' — ')}
+`
+    : `${l.xdesc||l.name}	${l.qty}	${l.unitPrice.toFixed(2)}	${l.vat}%	${amt(l).toFixed(2)}
 `);
   const sub=exportLines.reduce((s,l)=>s+amt(l),0), vat=exportLines.reduce((s,l)=>s+amt(l)*(l.vat/100),0);
   txt+=`
@@ -4160,7 +4261,7 @@ function downloadTeamGanttCSV() {
   const nonMiscVisible = lines.filter(l=>!l.misc&&!l.groupMember);
   if (nonMiscVisible.length || lines.filter(l=>!l.misc&&l.groupId&&!l.groupMember).length) {
     const seen = new Set();
-    lines.filter(l=>!l.misc).forEach(l => {
+    lines.filter(l=>!l.misc&&!l.note).forEach(l => {
       if (l.groupMember) return;
       if (l.groupId && !l.groupMember) {
         if (seen.has(l.groupId)) return; seen.add(l.groupId);
@@ -4437,8 +4538,8 @@ function openXdescModal(id) {
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">CLIENT DESCRIPTION — ${l.name}</div>
-      <p style="font-size:11px;color:var(--i3);margin:0 0 10px">This text prints on the quote. Internal name never shown to client.</p>
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">${l.note ? 'TEXT NOTE' : 'CLIENT DESCRIPTION — ' + l.name}</div>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 10px">${l.note ? 'This text prints on the quote as a note, with no price columns.' : 'This text prints on the quote. Internal name never shown to client.'}</p>
       <textarea id="xdesc-modal-ta" rows="8" style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical">${(l.xdesc||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
         <button class="btn btn-outline" onclick="document.getElementById('xdesc-modal').remove()">Cancel</button>
@@ -4755,7 +4856,7 @@ function moveLinesToGroup(lineIds, groupId) {
 function showAddToGroupDialog(groupId) {
   const header = lines.find(l => l.groupId === groupId && !l.groupMember);
   if (!header) return;
-  const candidates = lines.filter(l => !l.groupMember && !l.groupId);
+  const candidates = lines.filter(l => !l.groupMember && !l.groupId && !l.note);
   if (!candidates.length) {
     toast('No ungrouped lines to add. Add a line to the quote first, or use the "Add to group" option when adding a deliverable.');
     return;
