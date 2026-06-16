@@ -2651,7 +2651,7 @@ function miscEditPanelRow(l) {
 }
 function renderLines() {
   const tb = document.getElementById('lines-body');
-  if (!lines.length) { tb.innerHTML=`<tr><td colspan="8"><div class="empty-lines">No items yet — use the builder below to add line items.</div></td></tr>`; recalc(); return; }
+  if (!lines.length) { tb.innerHTML=`<tr><td colspan="8"><div class="empty-lines">No items yet — use the builder below to add line items.</div></td></tr>`; recalc(); refreshAddGroupSelect(); return; }
   // Check if any groups exist
   const hasGroups = lines.some(l => l.groupId);
   const groupBtn = document.getElementById('group-btn');
