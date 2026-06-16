@@ -60,7 +60,7 @@ textarea{resize:vertical;min-height:50px}
 .q-greet{padding:14px 22px;border-bottom:1px solid var(--bd);font-size:12px;color:var(--i2);line-height:1.8}
 .q-sum{padding:12px 22px;border-bottom:1px solid var(--bd)}
 .q-sum-t{font-weight:700;font-size:13px;margin-bottom:3px}
-.q-sum-b{font-size:12px;color:var(--i2);line-height:1.7}
+.q-sum-b{font-size:12px;color:var(--i2);line-height:1.7;white-space:pre-line}
 .q-sum-b[contenteditable]:empty:before{content:attr(data-placeholder);color:var(--i4);pointer-events:none}
 .lt{width:100%;border-collapse:collapse;font-size:12px}
 .lt th{font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--i3);padding:8px 12px;text-align:left;border-bottom:2px solid var(--bd);background:#FAFAFA;white-space:nowrap}
@@ -364,7 +364,7 @@ tr.dragging td{background:var(--brp)!important}
           </select>
         </div>
         <div class="fg"><label>VAT Number</label><input type="text" id="in-vno" value="242 6140 37" oninput="syncH()"></div>
-        <div class="fg"><label>Job Summary</label><input type="text" id="in-sum" placeholder="e.g. Back garden quotation" oninput="syncH();document.getElementById('qh-summary').textContent=this.value"></div>
+        <div class="fg"><label>Job Summary <button type="button" onclick="openTextareaXdescModal('in-sum','JOB SUMMARY','This text prints as the Summary on the quote.')" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3);margin-left:6px" title="Expand editor">⤢ Expand</button></label><textarea id="in-sum" rows="2" placeholder="e.g. Back garden quotation" oninput="syncH();document.getElementById('qh-summary').textContent=this.value"></textarea></div>
       </div>
     </div>
   </div>
@@ -4495,7 +4495,7 @@ function saveNdXdescModal() {
 // Client description field. Reads/writes the textarea by id; on Save it copies the text
 // back to that textarea (the host modal's own Save then persists it). z-index 10000 keeps
 // it above the host modal (group-edit-dialog is 9999).
-function openTextareaXdescModal(textareaId, title) {
+function openTextareaXdescModal(textareaId, title, subtitle) {
   const ta = document.getElementById(textareaId);
   if (!ta) return;
   const existing = document.getElementById('xdesc-modal');
@@ -4507,7 +4507,7 @@ function openTextareaXdescModal(textareaId, title) {
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
       <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">${title||'CLIENT DESCRIPTION'}</div>
-      <p style="font-size:11px;color:var(--i3);margin:0 0 10px">This text prints on the quote. Internal name never shown to client.</p>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 10px">${subtitle||'This text prints on the quote. Internal name never shown to client.'}</p>
       <textarea id="generic-xdesc-modal-ta" rows="8" style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical">${(ta.value||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
         <button class="btn btn-outline" onclick="document.getElementById('xdesc-modal').remove()">Cancel</button>
@@ -4525,7 +4525,7 @@ function saveTextareaXdescModal() {
   const mta = document.getElementById('generic-xdesc-modal-ta');
   if (!panel || !mta) return;
   const ta = document.getElementById(panel.dataset.targetTa);
-  if (ta) ta.value = mta.value;
+  if (ta) { ta.value = mta.value; ta.dispatchEvent(new Event('input', { bubbles: true })); }
   panel.remove();
 }
 
