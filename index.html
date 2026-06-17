@@ -1388,26 +1388,25 @@ function updateAddMatDisplay() {
   if (!selDel) { display.textContent = '—'; if(lbl) lbl.textContent=''; return; }
   const qty = parseFloat(document.getElementById('add-qty').value) || 1;
   const unitCost = selDel.matCostPerUnit || 0;
+  // Always show what one unit is (per m², per 2.5 lin m, …) — internal hint, never on the client quote.
+  // Stays visible at any qty and while overriding, so the builder always knows the pricing basis.
+  if(lbl) lbl.textContent = '(per ' + (selDel.unit || 'unit') + ')';
   // If override is active use that
   if (overrideInput.style.display !== 'none' && overrideInput.value !== '') {
     const ov = parseFloat(overrideInput.value) || 0;
     display.textContent = qty === 1
       ? '£' + ov.toFixed(2)
       : qty + ' × £' + ov.toFixed(2) + ' = £' + (ov * qty).toFixed(2);
-    if(lbl) lbl.textContent = '';
     return;
   }
   if (unitCost === 0) {
     display.textContent = '£0.00';
-    if(lbl) lbl.textContent = '';
     return;
   }
   if (qty === 1) {
     display.textContent = '£' + unitCost.toFixed(2);
-    if(lbl) lbl.textContent = '(per unit)';
   } else {
     display.textContent = qty + ' × £' + unitCost.toFixed(2) + ' = £' + (unitCost * qty).toFixed(2);
-    if(lbl) lbl.textContent = '';
   }
 }
 

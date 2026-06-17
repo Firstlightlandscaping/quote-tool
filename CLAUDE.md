@@ -82,6 +82,7 @@ A third line type (alongside deliverable and misc) flagged `note:true` — a tex
 
 ### Quote Builder (Tab 1)
 - Searchable deliverable dropdown grouped by category, alphabetically sorted
+- Add Line Item panel: the Mat. cost field label shows the selected deliverable's unit as `(per <unit>)` — e.g. `(per m²)`, `(per 2.5 lin m)` — pulled from `selDel.unit` in updateAddMatDisplay() (`add-mat-unit-lbl` span). It's an internal pricing-basis hint so the builder knows what one unit covers without opening the Price Manager. Always visible: stays shown at qty ≥ 2 (next to the `n × £x = £y` breakdown) and while the mat-cost override is active; falls back to `(per unit)` when the deliverable has no unit set, and blanks only when no deliverable is selected. Internal only — the deliverable `unit` is NOT printed on the client quote (it also surfaces in the PM Unit column and the Order List qty line). No schema change; reuses the existing `unit` field.
 - Per-line: qty, unit price, VAT selector, optional toggle
 - Inline edit panel for labour (days × rate) and mat cost override; lab tag (green) and mat tag show breakdowns
 - Drag handle + arrow buttons for reordering; groups move as blocks
