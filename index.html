@@ -592,6 +592,7 @@ tr.dragging td{background:var(--brp)!important}
           <th>Description</th>
           <th style="width:70px">Unit</th>
           <th style="width:120px">Supplier</th>
+          <th class="no-print" style="width:54px">Link</th>
           <th class="r" style="width:105px">Supplier price (£)</th>
           <th class="r" style="width:105px;background:#F0FDF4;color:#15803D">Charged +10% (£)</th>
           <th style="width:95px">Date updated</th>
@@ -873,7 +874,7 @@ async function loadFromSupabase() {
       if (!mplMap[m.code]) return m;
       const s = mplMap[m.code];
       return { ...m, description: s.description||m.description, unit: s.unit||m.unit,
-        supplier: s.supplier||'', pricePerUnit: parseFloat(s.price_per_unit)||m.pricePerUnit,
+        supplier: s.supplier||'', supplierUrl: s.supplier_url||'', pricePerUnit: parseFloat(s.price_per_unit)||m.pricePerUnit,
         dateUpdated: s.date_updated||'', updatedBy: s.updated_by||'',
         archived: s.is_archived || false };
     });
@@ -881,7 +882,7 @@ async function loadFromSupabase() {
     mplRows.filter(s => !mpl.find(m => m.code === s.code)).forEach(s => {
       mpl.push({
         code: s.code, description: s.description||'', unit: s.unit||'',
-        supplier: s.supplier||'', pricePerUnit: parseFloat(s.price_per_unit)||0,
+        supplier: s.supplier||'', supplierUrl: s.supplier_url||'', pricePerUnit: parseFloat(s.price_per_unit)||0,
         dateUpdated: s.date_updated||'', updatedBy: s.updated_by||'',
         category: s.category||'', archived: s.is_archived||false
       });
@@ -933,7 +934,7 @@ async function initSupabase() {
   // Push MPL first (no dependencies)
   const mplRows = mpl.map(m => ({
     code: m.code, description: m.description||'', unit: m.unit||'',
-    supplier: m.supplier||'', price_per_unit: m.pricePerUnit||0,
+    supplier: m.supplier||'', supplier_url: m.supplierUrl||'', price_per_unit: m.pricePerUnit||0,
     date_updated: m.dateUpdated||'', updated_by: m.updatedBy||'', category: m.category||''
   }));
   // Batch insert MPL in chunks of 50
@@ -1030,7 +1031,7 @@ async function saveMPLEdits(code) {
     try {
       await sb('POST', 'mpl', [{
         code: m.code, description: m.description||'', unit: m.unit||'',
-        supplier: m.supplier||'', price_per_unit: m.pricePerUnit||0,
+        supplier: m.supplier||'', supplier_url: m.supplierUrl||'', price_per_unit: m.pricePerUnit||0,
         date_updated: m.dateUpdated||'', updated_by: m.updatedBy||'',
         category: m.category||'', updated_at: new Date().toISOString()
       }], '?on_conflict=code', true);
@@ -1272,7 +1273,7 @@ async function archiveMPL(code) {
     try {
       await sb('POST', 'mpl', [{
         code: m.code, description: m.description||'', unit: m.unit||'',
-        supplier: m.supplier||'', price_per_unit: m.pricePerUnit||0,
+        supplier: m.supplier||'', supplier_url: m.supplierUrl||'', price_per_unit: m.pricePerUnit||0,
         date_updated: m.dateUpdated||'', updated_by: m.updatedBy||'',
         category: m.category||'', is_archived: true, updated_at: new Date().toISOString()
       }], '?on_conflict=code', true);
@@ -1290,7 +1291,7 @@ async function restoreMPL(code) {
     try {
       await sb('POST', 'mpl', [{
         code: m.code, description: m.description||'', unit: m.unit||'',
-        supplier: m.supplier||'', price_per_unit: m.pricePerUnit||0,
+        supplier: m.supplier||'', supplier_url: m.supplierUrl||'', price_per_unit: m.pricePerUnit||0,
         date_updated: m.dateUpdated||'', updated_by: m.updatedBy||'',
         category: m.category||'', is_archived: false, updated_at: new Date().toISOString()
       }], '?on_conflict=code', true);
@@ -3958,6 +3959,7 @@ function renderMPL() {
       <td><input type="text" value="${(m.description||'').replace(/"/g,'&quot;')}" onchange="updateMPL('${m.code}','description',this.value)"></td>
       <td><input type="text" value="${m.unit||''}" onchange="updateMPL('${m.code}','unit',this.value)" style="width:65px"></td>
       <td><input type="text" value="${(m.supplier||'').replace(/"/g,'&quot;')}" placeholder="Supplier name..." onchange="updateMPL('${m.code}','supplier',this.value)" style="width:110px"></td>
+      <td class="no-print" style="text-align:center">${m.supplierUrl ? `<a href="${(m.supplierUrl||'').replace(/"/g,'&quot;')}" target="_blank" rel="noopener" title="${(m.supplierUrl||'').replace(/"/g,'&quot;')}" style="text-decoration:none;font-size:14px">🔗</a> <button onclick="editMplUrl('${m.code}')" title="Edit link" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--i3);padding:0">✎</button>` : `<button onclick="editMplUrl('${m.code}')" title="Add supplier link" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 5px;color:var(--i4)">+ link</button>`}</td>
       <td class="r"><input type="number" value="${(m.pricePerUnit||0).toFixed(4)}" min="0" step="0.0001" onchange="updateMPLPrice('${m.code}',parseFloat(this.value))" style="width:90px;text-align:right"></td>
       <td class="r" style="background:#F0FDF4;font-weight:600;color:#15803D;font-family:'DM Mono',monospace;font-size:12px">£${charged.toFixed(4)}</td>
       <td style="font-size:11px;${stale}"><input type="text" value="${m.dateUpdated||''}" readonly style="width:88px;background:transparent;border:none;font-size:11px;color:inherit;cursor:default" title="Auto-set when price updated"></td>
@@ -4006,6 +4008,16 @@ async function updateMPLPrice(code, val) {
   renderMPL();
 }
 function updateMPL(code, key, val) { const m=mpl.find(x=>x.code===code); if(m){m[key]=val;saveMPLEdits(code);} }
+function editMplUrl(code) {
+  const m = mpl.find(x => x.code === code); if (!m) return;
+  const input = prompt('Supplier URL for ' + code + ' (leave blank to remove):', m.supplierUrl || '');
+  if (input === null) return; // cancelled
+  let v = input.trim();
+  if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v; // ensure protocol (also neutralises javascript: etc.)
+  m.supplierUrl = v;
+  saveMPLEdits(code);
+  renderMPL();
+}
 async function deleteMPL(code) {
   if(!confirm('Delete '+code+'?'))return;
   mpl=mpl.filter(m=>m.code!==code);
@@ -4157,6 +4169,7 @@ function saveNewMat() {
     unit: document.getElementById('nm-unit').value.trim(),
     pricePerUnit: nmPrice,
     supplier: document.getElementById('nm-supplier').value.trim(),
+    supplierUrl: '',
     category: category,
     dateUpdated: nmDate,
     updatedBy: document.getElementById('nm-updby').value.trim()
