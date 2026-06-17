@@ -509,7 +509,7 @@ tr.dragging td{background:var(--brp)!important}
 <!-- ═══ TAB 3: PRICE MANAGER ═══ -->
 <div id="tab-prices" class="tab-panel">
   <div class="card">
-    <div class="ch"><span class="ct">Deliverables — Add / Edit</span><div style="display:flex;align-items:center;gap:10px"><span id="pm-save-status" style="font-size:11px;color:var(--i3)"></span><button class="btn btn-primary btn-sm" onclick="showAddDelForm()">+ New Deliverable</button></div></div>
+    <div class="ch"><span class="ct">Deliverables — Add / Edit</span><div style="display:flex;align-items:center;gap:10px"><span id="pm-save-status" style="font-size:11px;color:var(--i3)"></span><button class="btn btn-primary btn-sm" onclick="showAddDelForm()">+ New Deliverable</button><button class="btn btn-outline btn-sm" onclick="showAddMatForm()" title="Jump to the add-material form below">+ New Material</button></div></div>
     <div class="cb" style="display:flex;gap:8px;margin-bottom:12px">
       <input type="text" id="pm-search" placeholder="Search deliverables..." oninput="renderPM()" style="max-width:280px">
       <select id="pm-cat-filter" onchange="renderPM()" style="max-width:200px"><option value="">All categories</option></select>

@@ -98,7 +98,7 @@ A third line type (alongside deliverable and misc) flagged `note:true` — a tex
 Materials order list from current quote, scaled by deliverable qty, with print button
 
 ### Price Manager (Tab 3)
-Deliverables table (search/category filter, inline edit, full-screen client description editor), materials editor with MPL search and per-material supplier link (URL), add new deliverable, MPL management, new prefix/category creation
+Deliverables table (search/category filter, inline edit, full-screen client description editor), materials editor with MPL search and per-material supplier link (URL), add new deliverable, MPL management, new prefix/category creation. A second "+ New Material" button sits beside "+ New Deliverable" in the Deliverables header (top of the tab) as a no-scroll shortcut — both it and the one in the Materials section call showAddMatForm() (which focuses nm-desc, so the page scrolls down to the form).
 
 ### Saved Quotes (Tab 4)
 List with filter/sort/search, summary bar, open/duplicate/delete, status management
