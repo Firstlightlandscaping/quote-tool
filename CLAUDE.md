@@ -30,7 +30,9 @@ code, name, category, unit, matCostPerUnit, xeroDescription, is_archived
 del_code, idx, stockCode, description, qtyPerUnit, unit, pricePerUnit, trueUnitPrice
 
 ### mpl
-code, description, unit, supplier, pricePerUnit, dateUpdated, updatedBy, category
+code, description, unit, supplier, supplier_url, pricePerUnit, dateUpdated, updatedBy, category
+
+Note: `supplier_url` (text, added June 2026) holds an optional supplier/product-page URL for materials ordered online. Saved as `supplier_url`, loaded to the JS field `supplierUrl`. Surfaced in the Price Manager Materials editor as a no-print "Link" column — clickable 🔗 (opens in a new tab) + ✎ edit when set, or "+ link" when empty. Edited via editMplUrl() (prompts, auto-prepends https://, which also neutralises javascript: input). Wired through every mpl save path (saveMPLEdits, bulk seed, archiveMPL, restoreMPL, new material) and both load mappings.
 
 ### staff
 name
@@ -96,7 +98,7 @@ A third line type (alongside deliverable and misc) flagged `note:true` — a tex
 Materials order list from current quote, scaled by deliverable qty, with print button
 
 ### Price Manager (Tab 3)
-Deliverables table (search/category filter, inline edit, full-screen client description editor), materials editor with MPL search, add new deliverable, MPL management, new prefix/category creation
+Deliverables table (search/category filter, inline edit, full-screen client description editor), materials editor with MPL search and per-material supplier link (URL), add new deliverable, MPL management, new prefix/category creation
 
 ### Saved Quotes (Tab 4)
 List with filter/sort/search, summary bar, open/duplicate/delete, status management
