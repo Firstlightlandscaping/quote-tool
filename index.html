@@ -3098,6 +3098,7 @@ async function saveQuote() {
     document.getElementById('save-status').textContent = 'Getting quote number...';
     currentRef = USE_SUPABASE ? await generateQTRefFromSupabase() : generateQTRef();
     document.getElementById('in-ref').value = currentRef;
+    syncH(); // render the new number into the qh-ref header (builder + print/PDF) immediately
   }
   const ref = currentRef;
   const existing=savedQuotes.findIndex(q=>q.ref===ref);

@@ -74,6 +74,7 @@ A third line type (alongside deliverable and misc) flagged `note:true` — a tex
 
 ### Saving and Loading
 - saveQuote() writes sort_order:idx on every line
+- saveQuote() calls syncH() right after assigning a freshly-generated ref (the `if(!currentRef)` block) so the new quote number renders into the `qh-ref` header span (visible in the builder AND print/PDF) immediately — without it the number stayed `—` until the quote was reloaded from Saved Quotes (loadQuote already syncs). Only the auto-assign path needs it; an existing ref is already synced from load/prior save.
 - loadQuote() reconciles misc unit prices (recomputes to components + labour, flags count in load toast), then repairs stale group header unitPrices from members, before render
 - sqAmt(l, sqLines) used in renderSaved for accurate group totals in saved quotes list
 
