@@ -682,6 +682,13 @@ tr.dragging td{background:var(--brp)!important}
       </div>
     </div>
   </div>
+  <div class="card no-print">
+    <div class="ch"><span class="ct">Data Backup</span><span id="backup-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:8px">
+      <div style="font-size:12px;color:var(--i2)">Downloads a complete copy of <strong>all</strong> data — quotes, deliverables, materials, price list, staff and group templates — as a single JSON file on your computer. Read-only: it never changes anything in the database. Keep one before any bulk change or security work.</div>
+      <div><button class="btn btn-primary btn-sm" id="backup-btn" onclick="backupAllData()">⬇ Download Backup</button></div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ TAB 4: SAVED QUOTES ═══ -->
@@ -789,6 +796,64 @@ async function sb(method, table, data, params, upsert) {
   }
   const text = await res.text();
   return text ? JSON.parse(text) : [];
+}
+
+// ── DATA BACKUP (read-only export of all tables) ──────────────────────────────
+const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates'];
+
+// Fetch EVERY row of a table, paging in case it exceeds PostgREST's per-request cap (~1000).
+// Single-user app with no concurrent writes during a backup, so offset paging is reliable.
+async function fetchAllRows(table) {
+  const pageSize = 1000;
+  let offset = 0, all = [];
+  while (true) {
+    const page = await sb('GET', table, null, `?select=*&limit=${pageSize}&offset=${offset}`);
+    all = all.concat(page);
+    if (!Array.isArray(page) || page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+
+// Download a complete copy of all tables as one JSON file. Read-only — never writes to the DB.
+async function backupAllData() {
+  if (!USE_SUPABASE) { toast('Not connected to Supabase — nothing to back up'); return; }
+  const btn = document.getElementById('backup-btn');
+  const status = document.getElementById('backup-status');
+  if (btn) btn.disabled = true;
+  try {
+    const tables = {}, counts = {};
+    let total = 0;
+    for (let i = 0; i < BACKUP_TABLES.length; i++) {
+      const t = BACKUP_TABLES[i];
+      if (status) status.textContent = `Backing up ${t}… (${i+1}/${BACKUP_TABLES.length})`;
+      const rows = await fetchAllRows(t);
+      tables[t] = rows; counts[t] = rows.length; total += rows.length;
+    }
+    const backup = {
+      app: 'firstlight-quote-tool', version: 1,
+      exportedAt: new Date().toISOString(),
+      source: SUPABASE_URL,           // which DB this came from (live vs sandbox)
+      tableOrder: BACKUP_TABLES, counts, tables
+    };
+    const json = JSON.stringify(backup, null, 2);
+    const d = new Date(), pad = n => String(n).padStart(2, '0');
+    const ts = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    const fname = `firstlight-backup-${ts}.json`;
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = fname;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+    if (status) status.textContent = `✓ ${total} rows → ${fname}`;
+    toast(`✓ Backup downloaded: ${fname} (${total} rows)`);
+  } catch (e) {
+    if (status) status.textContent = '⚠ Backup failed: ' + e.message;
+    toast('Backup failed: ' + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // ── SUPABASE DATA FUNCTIONS ───────────────────────────────────────────────────

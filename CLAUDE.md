@@ -102,6 +102,8 @@ Materials order list from current quote, scaled by deliverable qty, with print b
 ### Price Manager (Tab 3)
 Deliverables table (search/category filter, inline edit, full-screen client description editor), materials editor with MPL search and per-material supplier link (URL), add new deliverable, MPL management, new prefix/category creation. A second "+ New Material" button sits beside "+ New Deliverable" in the Deliverables header (top of the tab) as a no-scroll shortcut — both it and the one in the Materials section call showAddMatForm() (which focuses nm-desc, so the page scrolls down to the form).
 
+A **Data Backup** card sits at the BOTTOM of the tab (deliberately out of the way). Its `⬇ Download Backup` button calls backupAllData() — a READ-ONLY export of all 7 tables (quotes, quote_lines, deliverables, materials, mpl, staff, group_templates) into one timestamped `firstlight-backup-YYYYMMDD-HHMMSS.json` (downloaded to the user's machine). fetchAllRows() pages in 1000-row chunks so large tables can't silently truncate (no table exceeds 1000 yet; materials is closest at ~964). The file records `app`/`version`/`exportedAt`/`source` (which DB it came from) + per-table `counts` + `tables`. `firstlight-backup-*.json` is gitignored so backups (full of customer + pricing data) never land in the public repo. This is Phase 1 of the Backup/Restore security item — RESTORE (import) is Phase 2, to be built and tested against a throwaway sandbox Supabase project before being trusted against live.
+
 ### Saved Quotes (Tab 4)
 List with filter/sort/search, summary bar, open/duplicate/delete, status management
 
@@ -116,7 +118,7 @@ Print CSS hides editing controls. Branded header, client letter format, quote ta
 ## Security Status (as of June 2026) — NOT YET DONE
 - [ ] RLS policies audited (audit done: all 7 tables open to anon read/write/delete — needs fixing)
 - [ ] GitHub repo made private
-- [ ] Backup and restore button added
+- [~] Backup and restore button added — BACKUP done (Data Backup card at bottom of Price Manager → backupAllData(), exports all 7 tables to firstlight-backup-*.json, 1000-row paging, gitignored; verified complete against live row counts). RESTORE = Phase 2, pending (build + test on sandbox first)
 - [ ] Password gate added
 - [ ] Supabase Auth implemented
 - [ ] Supabase credentials removed from index.html
