@@ -689,6 +689,22 @@ tr.dragging td{background:var(--brp)!important}
       <div><button class="btn btn-primary btn-sm" id="backup-btn" onclick="backupAllData()">⬇ Download Backup</button></div>
     </div>
   </div>
+  <div class="card no-print">
+    <div class="ch"><span class="ct">Data Restore</span><span id="restore-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--i2)">Imports a backup JSON back into the <strong>currently-connected</strong> database. <strong>This WRITES data.</strong> Always run the dry run first, and only restore against a <strong>sandbox/test</strong> database — never carelessly against live.</div>
+      <div style="font-size:11px;color:var(--i3)">Connected to: <code id="restore-target" style="font-size:11px">—</code></div>
+      <input type="file" id="restore-file" accept="application/json,.json" onchange="restoreFilePicked(this)" style="font-size:12px">
+      <div style="display:flex;gap:16px;align-items:center;font-size:12px;flex-wrap:wrap">
+        <label style="display:flex;gap:5px;align-items:center;cursor:pointer"><input type="radio" name="restore-mode" value="merge" checked> Merge (upsert — safe default)</label>
+        <label style="display:flex;gap:5px;align-items:center;cursor:pointer"><input type="radio" name="restore-mode" value="wipe"> Wipe &amp; replace (destructive)</label>
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" id="restore-dry-btn" onclick="restoreDryRun()">🔍 Dry run (no writes)</button>
+        <button class="btn btn-primary btn-sm" id="restore-run-btn" onclick="restoreRun()">⬆ Restore</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- ═══ TAB 4: SAVED QUOTES ═══ -->
@@ -853,6 +869,108 @@ async function backupAllData() {
     toast('Backup failed: ' + e.message);
   } finally {
     if (btn) btn.disabled = false;
+  }
+}
+
+// ── DATA RESTORE (import a backup file — write rows back per table) ────────────
+// Parents before children (matters only if FKs are ever added; harmless without).
+const RESTORE_ORDER = ['deliverables','mpl','staff','group_templates','quotes','materials','quote_lines'];
+const RESTORE_CONFLICT = { quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id' };
+let _restoreBackup = null;
+
+// Show which DB we'd write to, and flag if it's the baked-in LIVE url
+function updateRestoreTarget() {
+  const el = document.getElementById('restore-target');
+  if (!el) return;
+  const isLive = SUPABASE_URL === _DEFAULT_URL;
+  el.textContent = SUPABASE_URL + (isLive ? '  ⚠ LIVE' : '  (sandbox/custom)');
+  el.style.color = isLive ? '#DC2626' : '#16A34A';
+}
+
+function restoreFilePicked(input) {
+  updateRestoreTarget();
+  const status = document.getElementById('restore-status');
+  const file = input.files && input.files[0];
+  if (!file) { _restoreBackup = null; return; }
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const b = JSON.parse(reader.result);
+      if (!b || !b.tables || typeof b.tables !== 'object') throw new Error('Not a Firstlight backup (no "tables").');
+      _restoreBackup = b;
+      const total = RESTORE_ORDER.reduce((a,t)=>a+((b.tables[t]||[]).length),0);
+      if (status) { status.textContent = `Loaded ${file.name}: ${total} rows, from ${b.source||'?'} (${b.exportedAt||'?'})`; status.style.color='var(--i2)'; }
+    } catch(e) {
+      _restoreBackup = null;
+      if (status) { status.textContent = '⚠ '+e.message; status.style.color='#DC2626'; }
+    }
+  };
+  reader.readAsText(file);
+}
+
+function restoreMode() {
+  const el = document.querySelector('input[name="restore-mode"]:checked');
+  return el ? el.value : 'merge';
+}
+
+// Read-only preview: reports what WOULD be written, makes no calls
+function restoreDryRun() {
+  updateRestoreTarget();
+  if (!_restoreBackup) { toast('Pick a backup file first'); return; }
+  const b = _restoreBackup;
+  const out = ['DRY RUN — nothing is written.', '',
+    'Target DB : ' + SUPABASE_URL + (SUPABASE_URL===_DEFAULT_URL ? '  ⚠ LIVE' : '  (sandbox/custom)'),
+    'Backup    : ' + (b.source||'?') + '  ' + (b.exportedAt||''),
+    'Mode      : ' + restoreMode(), ''];
+  let total = 0;
+  for (const t of RESTORE_ORDER) { const n=(b.tables[t]||[]).length; total+=n; out.push('  '+t.padEnd(16)+' '+n+' rows'); }
+  out.push('', 'Total: '+total+' rows.');
+  alert(out.join('\n'));
+  const status=document.getElementById('restore-status');
+  if(status){ status.textContent='Dry run OK — '+total+' rows ready ('+restoreMode()+')'; status.style.color='var(--i2)'; }
+}
+
+async function restoreRun() {
+  updateRestoreTarget();
+  if (!_restoreBackup) { toast('Pick a backup file first'); return; }
+  if (!USE_SUPABASE) { toast('Not connected to a database'); return; }
+  const b = _restoreBackup, mode = restoreMode(), target = SUPABASE_URL;
+  const status = document.getElementById('restore-status');
+
+  let msg = 'RESTORE into:\n' + target + '\n\nMode: ' + mode.toUpperCase() + '\n';
+  if (SUPABASE_URL === _DEFAULT_URL) msg += '\n⚠⚠ THIS LOOKS LIKE YOUR LIVE DATABASE ⚠⚠\n';
+  msg += (mode==='wipe')
+    ? '\nThis DELETES all rows in the 7 tables, then inserts the backup.'
+    : '\nThis UPSERTS the backup (adds new rows, overwrites rows with matching keys).';
+  if (!confirm(msg + '\n\nContinue?')) return;
+
+  if (mode === 'wipe') {
+    if (prompt('DESTRUCTIVE. Type  WIPE  to replace ALL data in:\n'+target) !== 'WIPE') { toast('Cancelled'); return; }
+    if (status) status.textContent = 'Backing up current data before wipe…';
+    await backupAllData();   // snapshot current state to disk first
+  }
+
+  ['restore-dry-btn','restore-run-btn'].forEach(id=>{const e=document.getElementById(id); if(e)e.disabled=true;});
+  try {
+    let written = 0;
+    for (const t of RESTORE_ORDER) {
+      const rows = b.tables[t] || [], conflict = RESTORE_CONFLICT[t];
+      if (status) status.textContent = `Restoring ${t}… (${rows.length} rows)`;
+      if (mode === 'wipe') await sb('DELETE', t, null, '?'+conflict+'=not.is.null');
+      for (let i=0; i<rows.length; i+=500) {
+        const slice = rows.slice(i, i+500);
+        if (mode === 'wipe') await sb('POST', t, slice, '');
+        else                 await sb('POST', t, slice, '?on_conflict='+conflict, true);
+        written += slice.length;
+      }
+    }
+    if (status){ status.textContent = `✓ Restore complete — ${written} rows into ${target}`; status.style.color='#16A34A'; }
+    toast('✓ Restore complete: '+written+' rows');
+  } catch(e) {
+    if (status){ status.textContent = '⚠ Restore failed: '+e.message; status.style.color='#DC2626'; }
+    toast('Restore failed: '+e.message);
+  } finally {
+    ['restore-dry-btn','restore-run-btn'].forEach(id=>{const e=document.getElementById(id); if(e)e.disabled=false;});
   }
 }
 
