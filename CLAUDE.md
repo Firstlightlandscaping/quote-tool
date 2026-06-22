@@ -118,11 +118,10 @@ Print CSS hides editing controls. Branded header, client letter format, quote ta
 - TeamGantt: CSV export for scheduling
 
 ## Security Status (as of June 2026) — NOT YET DONE
-- [ ] RLS policies audited (audit done: all 7 tables open to anon read/write/delete — needs fixing)
+- [~] RLS policies — fix SQL (supabase/rls-policies.sql) RUN + PROVEN on SANDBOX 2026-06-22 (anon read→`[]`, anon write→401). NOT yet on LIVE.
 - [ ] GitHub repo made private
 - [x] Backup AND restore buttons added — BOTH done & proven. Backup: Data Backup card → backupAllData() (all 7 tables → firstlight-backup-*.json, 1000-row paging, gitignored, verified vs live). Restore: Data Restore card → restoreRun() (Merge/upsert or Wipe&replace, dry-run, auto-backup-before-wipe, red ⚠ LIVE guard). 6-point sandbox round-trip proof PASSED 2026-06-20. See Price Manager (Tab 3) above for the merge-vs-wipe caveat.
-- [ ] Password gate added
-- [ ] Supabase Auth implemented
+- [~] Supabase Auth + login gate (app side) — BUILT & locally verified 2026-06-22 (email+password; gates the whole app; sb() sends the user token; session persistence + auto-refresh; Log out). Server-side RLS lockdown PROVEN on sandbox; in-app login round-trip + live cutover still pending. Supersedes the old "password gate" idea — a real auth gate, not cosmetic.
 - [ ] Supabase credentials removed from index.html
 - [ ] Supabase key rotated
 
@@ -130,11 +129,29 @@ Print CSS hides editing controls. Branded header, client letter format, quote ta
 1. **Backup (Phase 1)** — DONE.
 2. **Sandbox** (2nd throwaway Supabase project) — IN PROGRESS.
 3. **Restore (Phase 2)** — build + prove on the sandbox before ever trusting it against live.
-4. **RLS + Supabase Auth** — write/apply policies, test on the sandbox first, then live.
+4. **RLS + Supabase Auth** — app code BUILT & locally verified; RLS RUN + anon-lockdown PROVEN on sandbox (2026-06-22). NEXT: create sandbox user → in-app login test → live cutover. See "Step 4 — working state" below.
 5. **Rotate the anon key** — only AFTER RLS is locked (rotating before is pointless; the new key is just as public).
 6. **Make the GitHub repo private.**
 
 **Key architectural truth (don't forget):** this is a static site + Supabase, so the anon key ALWAYS ships to the browser — it's public by design. Security comes from **RLS + Auth, not from hiding the key**. A client-side password gate is cosmetic (it doesn't stop a direct API call with the anon key), and "remove creds from index.html" can't make the key secret — both items mostly dissolve once RLS+Auth are done. Restore protects against **data loss**; an RLS **lockout** is recovered separately via Supabase dashboard owner access (which bypasses RLS).
+
+### Step 4 (RLS + Auth) — working state (2026-06-22)
+**App code DONE & locally verified. Sandbox RLS ENABLED + anon-lockdown PROVEN. Still PENDING: in-app login round-trip on sandbox, then live cutover.** Decisions: email+password (accounts created in the Supabase dashboard, no public signup); anon = full lockdown.
+
+**Built in index.html (all client-side, no build step):**
+- `SESSION` (persisted in localStorage `fl_session`) + auth helpers: `authSignIn` (POST `/auth/v1/token?grant_type=password`), `authRefresh` (`grant_type=refresh_token`), `ensureFreshToken` (refresh if <60s to expiry), `authSignOut` (POST `/auth/v1/logout` + clear), `setSession`/`clearSession`.
+- `sb()` now sends the logged-in user's access token as `Bearer` (the `apikey` header stays the publishable key); on a 401 with a session it does ONE silent refresh + retry, else shows the gate. Every caller (load, save, backup, restore) inherits this — no other call sites changed.
+- `#login-gate` full-screen overlay (branded email+password card) with a red **⚠ LIVE** target indicator (`updateLoginTarget`, mirrors `updateRestoreTarget`). Boot path gates the app: valid session → load as before; else show gate and load NO data. Logged-in email + Log out button in the conn bar (`auth-status` / `updateAuthStatus`). Switching DBs (`saveSetup`) and disconnect (`clearLocalCache`) call `clearSession()` so a token can't leak across databases. The Setup panel floats ABOVE the gate (`showSetup` sets fixed + z-index 20001) and the gate carries a "⚙ Connect to a different database" link, so you can switch DB even while locked out.
+- Local verification (npx serve, default LIVE url, no session): no JS errors; gate shows; LIVE flagged red; **no network to live pre-login** (loadFromSupabase is gated); empty-field validation + the setSession→updateAuthStatus→hideLoginGate→clearSession cycle all pass.
+
+**RLS APPLIED + PROVEN on the SANDBOX (2026-06-22):** ran `supabase/rls-policies.sql` (RLS on + `authenticated`-only `for all using(true) with check(true)` on all 7 tables; no anon policy = denied; the next_qt_number grant/revoke is wrapped to no-op if absent — it IS absent on the sandbox, NOTICE shown, harmless). `rowsecurity=true` confirmed on all 7 tables. Proof via raw anon REST call (sandbox anon key only, no login): BEFORE → quotes returned real customers; AFTER → quotes `[]` + deliverables `[]` (HTTP 200, zero rows), INSERT → HTTP 401 `42501 new row violates row-level security policy`. File has a dashboard rollback (disable-RLS) snippet.
+
+**RESUME HERE (next session):** sandbox RLS is on + proven; the only remaining sandbox step is the in-app login round-trip.
+1. **Create a sandbox login user** — Authentication → Users → Add user; **tick Auto Confirm** (else login = "Email not confirmed"); turn **OFF** public signup. Forgot-password = just delete + recreate the user (the app has NO in-app password reset by design).
+2. **In-app test** — point local at sandbox (gate → "⚙ Connect to a different database" → sandbox URL `https://erbrflbialsyxbjawopy.supabase.co` + the **legacy `eyJ…` anon key**, NOT the publishable key) → log in → verify all 4 tabs load + save a quote + edit a price + backup + restore dry-run; reload stays logged in; log out → gate returns.
+3. **THEN live cutover** — fresh live backup → create live users (Auto Confirm) + disable signup → deploy build (push to main; Pages ~60s; RLS still off so nothing breaks) → verify you can log in on LIVE *before* enabling RLS → run the SQL on live → re-probe anon denied → then step 5 (rotate key) + step 6 (private repo).
+
+**Committed locally on `main`, NOT pushed** (2026-06-22). ⚠ Do NOT push to main until live users exist — pushing deploys the login gate to live and would lock the live app out (data still safe; gate loads no data, and there's no live user to log in with). The `git push origin main` IS the live-cutover deploy step — do it deliberately, only after creating live users. Full plan: plan file `curious-cooking-owl.md`.
 
 ### Backup / Restore + Sandbox — working state (2026-06-20)
 **Done:** Phase 1 backup button shipped (commit 9008c90, local — see Data Backup card above). Verified backup `firstlight-backup-20260620-204536.json` matches live EXACTLY — counts: quotes 13, quote_lines 188, deliverables 253, materials 964, mpl 311, staff 2, group_templates 10 (internal check + live row-count cross-check both PASS). Live schema reconstructed FROM that backup (the PostgREST OpenAPI root `/rest/v1/` needs the service_role key, which we deliberately don't use/hold — only `SUPABASE_ANON_KEY` is in `.env`).
