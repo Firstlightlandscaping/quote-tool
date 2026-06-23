@@ -914,6 +914,7 @@ async function authSignOut() {
     });
   } catch(e) {}
   clearSession();
+  updateAuthStatus();
   showLoginGate();
   toast('Logged out');
 }

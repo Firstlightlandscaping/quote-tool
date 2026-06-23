@@ -121,7 +121,7 @@ Print CSS hides editing controls. Branded header, client letter format, quote ta
 - [~] RLS policies — fix SQL (supabase/rls-policies.sql) RUN + PROVEN on SANDBOX 2026-06-22 (anon read→`[]`, anon write→401). NOT yet on LIVE.
 - [ ] GitHub repo made private
 - [x] Backup AND restore buttons added — BOTH done & proven. Backup: Data Backup card → backupAllData() (all 7 tables → firstlight-backup-*.json, 1000-row paging, gitignored, verified vs live). Restore: Data Restore card → restoreRun() (Merge/upsert or Wipe&replace, dry-run, auto-backup-before-wipe, red ⚠ LIVE guard). 6-point sandbox round-trip proof PASSED 2026-06-20. See Price Manager (Tab 3) above for the merge-vs-wipe caveat.
-- [~] Supabase Auth + login gate (app side) — BUILT & locally verified 2026-06-22 (email+password; gates the whole app; sb() sends the user token; session persistence + auto-refresh; Log out). Server-side RLS lockdown PROVEN on sandbox; in-app login round-trip + live cutover still pending. Supersedes the old "password gate" idea — a real auth gate, not cosmetic.
+- [~] Supabase Auth + login gate (app side) — BUILT + FULLY PROVEN ON SANDBOX 2026-06-23 (email+password; gates the whole app; sb() sends the user token; session persistence + auto-refresh; Log out). In-app round-trip (driven via browser): login → all data loads (253 dels/311 mpl/13 quotes) → authenticated write accepted while anon write stays 401 → reload stays logged in → logout clears session + gate. Only the LIVE cutover remains. Supersedes the old "password gate" idea — a real auth gate, not cosmetic.
 - [ ] Supabase credentials removed from index.html
 - [ ] Supabase key rotated
 
@@ -135,8 +135,8 @@ Print CSS hides editing controls. Branded header, client letter format, quote ta
 
 **Key architectural truth (don't forget):** this is a static site + Supabase, so the anon key ALWAYS ships to the browser — it's public by design. Security comes from **RLS + Auth, not from hiding the key**. A client-side password gate is cosmetic (it doesn't stop a direct API call with the anon key), and "remove creds from index.html" can't make the key secret — both items mostly dissolve once RLS+Auth are done. Restore protects against **data loss**; an RLS **lockout** is recovered separately via Supabase dashboard owner access (which bypasses RLS).
 
-### Step 4 (RLS + Auth) — working state (2026-06-22)
-**App code DONE & locally verified. Sandbox RLS ENABLED + anon-lockdown PROVEN. Still PENDING: in-app login round-trip on sandbox, then live cutover.** Decisions: email+password (accounts created in the Supabase dashboard, no public signup); anon = full lockdown.
+### Step 4 (RLS + Auth) — working state (2026-06-23)
+**App code DONE + FULLY PROVEN ON SANDBOX (login round-trip incl. authed read/write, persistence, logout). Only the LIVE cutover remains.** Decisions: email+password (accounts created in the Supabase dashboard, no public signup); anon = full lockdown.
 
 **Built in index.html (all client-side, no build step):**
 - `SESSION` (persisted in localStorage `fl_session`) + auth helpers: `authSignIn` (POST `/auth/v1/token?grant_type=password`), `authRefresh` (`grant_type=refresh_token`), `ensureFreshToken` (refresh if <60s to expiry), `authSignOut` (POST `/auth/v1/logout` + clear), `setSession`/`clearSession`.
@@ -146,12 +146,18 @@ Print CSS hides editing controls. Branded header, client letter format, quote ta
 
 **RLS APPLIED + PROVEN on the SANDBOX (2026-06-22):** ran `supabase/rls-policies.sql` (RLS on + `authenticated`-only `for all using(true) with check(true)` on all 7 tables; no anon policy = denied; the next_qt_number grant/revoke is wrapped to no-op if absent — it IS absent on the sandbox, NOTICE shown, harmless). `rowsecurity=true` confirmed on all 7 tables. Proof via raw anon REST call (sandbox anon key only, no login): BEFORE → quotes returned real customers; AFTER → quotes `[]` + deliverables `[]` (HTTP 200, zero rows), INSERT → HTTP 401 `42501 new row violates row-level security policy`. File has a dashboard rollback (disable-RLS) snippet.
 
-**RESUME HERE (next session):** sandbox RLS is on + proven; the only remaining sandbox step is the in-app login round-trip.
-1. **Create a sandbox login user** — Authentication → Users → Add user; **tick Auto Confirm** (else login = "Email not confirmed"); turn **OFF** public signup. Forgot-password = just delete + recreate the user (the app has NO in-app password reset by design).
-2. **In-app test** — point local at sandbox (gate → "⚙ Connect to a different database" → sandbox URL `https://erbrflbialsyxbjawopy.supabase.co` + the **legacy `eyJ…` anon key**, NOT the publishable key) → log in → verify all 4 tabs load + save a quote + edit a price + backup + restore dry-run; reload stays logged in; log out → gate returns.
-3. **THEN live cutover** — fresh live backup → create live users (Auto Confirm) + disable signup → deploy build (push to main; Pages ~60s; RLS still off so nothing breaks) → verify you can log in on LIVE *before* enabling RLS → run the SQL on live → re-probe anon denied → then step 5 (rotate key) + step 6 (private repo).
+**SANDBOX FULLY PROVEN (2026-06-23)** — in-app round-trip driven via the preview browser with a sandbox user (info@…): login OK; reads loaded all data (253 dels/311 mpl/13 quotes; all 7 tables read ok); authenticated write accepted by RLS (no-op PATCH on CP006) vs anon write 401; session persists across reload; logout clears session + returns the gate. Sandbox quirks seen (NOT bugs): `next_qt_number` absent → local numbering fallback; the `id`-keyed tables' identity sequences weren't advanced after restore, so an auto-id INSERT collides (23505) — to test inserts on sandbox, pass explicit ids or wipe+reseed. Found + fixed one real bug: `authSignOut` now also calls `updateAuthStatus()` (the conn-bar email/Log out label wasn't clearing on logout).
 
-**Committed locally on `main`, NOT pushed** (2026-06-22). ⚠ Do NOT push to main until live users exist — pushing deploys the login gate to live and would lock the live app out (data still safe; gate loads no data, and there's no live user to log in with). The `git push origin main` IS the live-cutover deploy step — do it deliberately, only after creating live users. Full plan: plan file `curious-cooking-owl.md`.
+**RESUME HERE = LIVE CUTOVER (the only step left):**
+1. Fresh **live backup** (Data Backup button).
+2. Create **live users** (Authentication → Users → Add user, **tick Auto Confirm**) — one each for Neal + partner (separate accounts, both full access — RLS policy is `to authenticated`, no per-user roles); turn **OFF** public signup. Forgot-password = delete + recreate (no in-app reset by design).
+3. Deploy: `git push origin main` (Pages ~60s). RLS still off on live so the app keeps working — but the gate is now live, so **live users must exist first (step 2)**.
+4. **Verify you can log in on LIVE** before touching RLS.
+5. Run `supabase/rls-policies.sql` on **live** (the `next_qt_number` grant should apply here — it exists on live, unlike the sandbox).
+6. Re-probe: raw anon GET → `[]`, anon write → 401.
+7. Then step 5 (rotate anon key) + step 6 (private repo).
+
+**Committed locally on `main` as `3faadaf`, NOT pushed** (2026-06-22). One follow-up fix is UNCOMMITTED on top (2026-06-23): `authSignOut` now calls `updateAuthStatus()`. ⚠ Do NOT push to main until live users exist — pushing deploys the login gate to live and would lock the live app out (data still safe; gate loads no data, and there's no live user to log in with). The `git push origin main` IS the live-cutover deploy step — do it deliberately, only after creating live users. Full plan: plan file `curious-cooking-owl.md`.
 
 ### Backup / Restore + Sandbox — working state (2026-06-20)
 **Done:** Phase 1 backup button shipped (commit 9008c90, local — see Data Backup card above). Verified backup `firstlight-backup-20260620-204536.json` matches live EXACTLY — counts: quotes 13, quote_lines 188, deliverables 253, materials 964, mpl 311, staff 2, group_templates 10 (internal check + live row-count cross-check both PASS). Live schema reconstructed FROM that backup (the PostgREST OpenAPI root `/rest/v1/` needs the service_role key, which we deliberately don't use/hold — only `SUPABASE_ANON_KEY` is in `.env`).
