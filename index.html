@@ -635,7 +635,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
         <thead><tr>
           <th style="width:90px">Code</th>
           <th style="min-width:200px">Name</th>
-          <th style="width:90px">Category</th>
+          <th style="width:140px">Category</th>
           <th style="width:55px">Unit</th>
           <th class="r" style="width:85px">Mat cost/unit</th>
           <th>Client Description (shown on quote)</th>
@@ -4287,7 +4287,7 @@ function renderPM() {
     <tr id="pm-row-${d.code}">
       <td style="font-family:'DM Mono',monospace;font-size:11px">${d.code}</td>
       <td style="min-width:200px"><input type="text" value="${(d.name||'').replace(/"/g,'&quot;')}" onchange="updateDel('${d.code}','name',this.value)"></td>
-      <td><select onchange="changeDelCategory('${d.code}',this.value)" style="font-size:11px;max-width:140px;border:1px solid var(--bd);border-radius:4px;padding:3px 5px;color:var(--i2);background:#fff" title="Re-categorise this deliverable">${catOptions(d.category, allCats)}</select></td>
+      <td><select onchange="changeDelCategory('${d.code}',this.value)" style="font-size:11px;width:130px;border:1px solid var(--bd);border-radius:4px;padding:3px 6px;color:var(--i2);background:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="Re-categorise this deliverable">${catOptions(d.category, allCats)}</select></td>
       <td><input type="text" value="${d.unit||''}" onchange="updateDel('${d.code}','unit',this.value)" style="width:60px"></td>
       <td class="r"><input type="number" id="pm-cost-${d.code}" value="${computeMatCostPerUnit(d).toFixed(2)}" readonly title="Auto-calculated from materials (incl. 10% markup) — edit the materials below to change it" style="width:80px;text-align:right;background:transparent;border:none;color:var(--i2);cursor:default;font-family:'DM Mono',monospace"></td>
       <td>
