@@ -658,10 +658,10 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
           </select>
           <div id="nd-new-cat-row" style="display:none;margin-top:6px;display:none">
             <div style="display:flex;gap:6px;align-items:center">
-              <input type="text" id="nd-new-cat-name" placeholder="Category name (e.g. RENDER)" style="flex:2">
+              <input type="text" id="nd-new-cat-name" placeholder="Category name (e.g. RENDER)" style="flex:2" oninput="ndNewCatNameTyped()">
               <input type="text" id="nd-new-cat-prefix" placeholder="Prefix (e.g. TI)" maxlength="4" style="flex:1;text-transform:uppercase" oninput="this.value=this.value.toUpperCase();ndNewPrefixTyped()">
             </div>
-            <div style="font-size:11px;color:var(--i3);margin-top:4px">Enter a name and 2-4 letter prefix for the new category</div>
+            <div id="nd-new-cat-hint" style="font-size:11px;color:var(--i3);margin-top:4px">Enter a name and 2-4 letter prefix for the new category</div>
           </div>
         </div>
         <div class="fg">
@@ -4275,6 +4275,7 @@ function buildPMCatFilter() {
 }
 function renderPM() {
   const q=document.getElementById('pm-search').value.toLowerCase(), cat=document.getElementById('pm-cat-filter').value;
+  const allCats=[...new Set(dels.map(x=>x.category).filter(Boolean))].sort();
   const filtered=dels
     .filter(d=>{ if(cat&&d.category!==cat)return false; return !q||d.name.toLowerCase().includes(q)||d.code.toLowerCase().includes(q); })
     .sort((a,b)=>{
@@ -4286,7 +4287,7 @@ function renderPM() {
     <tr id="pm-row-${d.code}">
       <td style="font-family:'DM Mono',monospace;font-size:11px">${d.code}</td>
       <td style="min-width:200px"><input type="text" value="${(d.name||'').replace(/"/g,'&quot;')}" onchange="updateDel('${d.code}','name',this.value)"></td>
-      <td style="font-size:11px;color:var(--i3)">${d.category||''}</td>
+      <td><select onchange="changeDelCategory('${d.code}',this.value)" style="font-size:11px;max-width:140px;border:1px solid var(--bd);border-radius:4px;padding:3px 5px;color:var(--i2);background:#fff" title="Re-categorise this deliverable">${catOptions(d.category, allCats)}</select></td>
       <td><input type="text" value="${d.unit||''}" onchange="updateDel('${d.code}','unit',this.value)" style="width:60px"></td>
       <td class="r"><input type="number" id="pm-cost-${d.code}" value="${computeMatCostPerUnit(d).toFixed(2)}" readonly title="Auto-calculated from materials (incl. 10% markup) — edit the materials below to change it" style="width:80px;text-align:right;background:transparent;border:none;color:var(--i2);cursor:default;font-family:'DM Mono',monospace"></td>
       <td>
@@ -4306,6 +4307,36 @@ function renderPM() {
         <div style="padding:14px 16px" id="pm-mats-inner-${d.code}"></div>
       </td>
     </tr>`).join('');
+}
+
+// Build the <option> list for a Price Manager row's editable category dropdown.
+function catOptions(cur, allCats) {
+  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let opts = '<option value=""' + (cur ? '' : ' selected') + '>—</option>';
+  let seen = false;
+  allCats.forEach(c => { const sel = c === cur ? ' selected' : ''; if (sel) seen = true; opts += '<option value="' + esc(c) + '"' + sel + '>' + esc(c) + '</option>'; });
+  if (cur && !seen) opts += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
+  opts += '<option value="__newcat__">＋ New category…</option>';
+  return opts;
+}
+
+// Re-categorise an existing deliverable from the Price Manager. The deliverable's code/prefix is
+// fixed; this only relabels its category — either to an existing one or a brand-new distinct name.
+function changeDelCategory(code, val) {
+  const d = dels.find(x => x.code === code); if (!d) return;
+  if (val === '__newcat__') {
+    const raw = (prompt('New category name for ' + code + ':') || '').trim();
+    if (!raw) { renderPM(); return; }                       // cancelled — reset the dropdown
+    const up = raw.toUpperCase();
+    const match = dels.map(x => x.category).filter(Boolean).find(c => c.trim().toUpperCase() === up);
+    d.category = match || up;                                // snap to existing spelling if it exists
+    saveDelEdits(code);
+    renderPM(); buildPMCatFilter(); buildPills();
+    return;
+  }
+  d.category = val;
+  saveDelEdits(code);
+  buildPMCatFilter(); buildPills();
 }
 
 function toggleMats(code) {
@@ -4552,6 +4583,22 @@ function ndNewPrefixTyped() {
   // Generate first code for this new prefix
   document.getElementById('nd-code').value = prefix + '001';
   document.getElementById('nd-code-hint').textContent = '(first code in new category)';
+}
+
+// Live warning while typing a NEW category name in the Add-Deliverable form: flag a clash with an
+// existing category (which already belongs to another prefix) before they can create a duplicate.
+function ndNewCatNameTyped() {
+  const name = (document.getElementById('nd-new-cat-name').value || '').trim().toUpperCase();
+  const hint = document.getElementById('nd-new-cat-hint'); if (!hint) return;
+  const clash = dels.find(d => (d.category||'').trim().toUpperCase() === name);
+  if (name && clash) {
+    const px = clash.code.match(/^([A-Za-z]+)/)?.[1].toUpperCase() || '?';
+    hint.textContent = '⚠ Category "' + name + '" already exists (prefix ' + px + ') — pick a distinct name, or cancel and select it from the list.';
+    hint.style.color = '#DC2626';
+  } else {
+    hint.textContent = 'Enter a name and 2-4 letter prefix for the new category';
+    hint.style.color = 'var(--i3)';
+  }
 }
 
 function ndCatSelected() {
@@ -4809,6 +4856,14 @@ async function saveNewDel() {
     // Check prefix not already in use
     const prefixInUse = dels.some(d => d.code.match(/^([A-Za-z]+)/)?.[1].toUpperCase() === newPrefix);
     if (prefixInUse) { toast('Prefix ' + newPrefix + ' is already used by another category'); return; }
+    // Block a NEW category whose name already exists under a different prefix — the exact mistake
+    // that put LDS rows under PAVING. Force a distinct name, or use the existing category instead.
+    const nameClash = dels.find(d => (d.category||'').trim().toUpperCase() === newName);
+    if (nameClash) {
+      const cpx = nameClash.code.match(/^([A-Za-z]+)/)?.[1].toUpperCase() || '?';
+      toast('Category "' + newName + '" already exists (prefix ' + cpx + '). Pick a distinct name, or select the existing category from the list to add to it.');
+      return;
+    }
     category = newName;
   }
 
