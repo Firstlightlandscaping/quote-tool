@@ -45,3 +45,9 @@ create policy fl_authenticated_all on public.company_settings
 --    select rowsecurity from pg_tables where tablename='company_settings';   -- expect true
 --    select * from public.company_settings;
 --    -- Anon probe (with the publishable key, no login) must return [] — prove anon is denied.
+
+-- 6. Editable contract terms (2026-06-26): the Contract-of-Works terms move from hardcoded JS into
+--    this row, edited in-app via the Price Manager "Contract Terms" card. Additive + nullable; the
+--    app falls back to its built-in CONTRACT_TERMS until the first in-app Save writes this column.
+alter table public.company_settings add column if not exists contract_terms jsonb;
+--    verify: select id, contract_terms from public.company_settings;   -- null until first in-app save

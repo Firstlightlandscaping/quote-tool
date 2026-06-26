@@ -796,6 +796,19 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
       </div>
     </div>
   </div>
+  <div class="card no-print" id="contract-terms-card">
+    <div class="ch"><span class="ct">Contract Terms</span><span id="ct-edit-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--i2)">The standard terms printed on every <strong>Contract of Works</strong>. Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with. Select text and use <b>B</b> / <i>I</i> / <u>U</u> / • on a clause for formatting.</div>
+      <div id="ct-editor"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--bd);padding-top:10px">
+        <button class="btn btn-primary btn-sm" id="ct-save-btn" onclick="saveContractTerms()">Save terms</button>
+        <button class="btn btn-outline btn-sm" onclick="resetContractTermsEditor()">Reset</button>
+        <button class="btn btn-outline btn-sm" onclick="ctAddSection()">+ Add section</button>
+        <span id="ct-dirty" style="font-size:11px;color:#b45309"></span>
+      </div>
+    </div>
+  </div>
   <div class="card no-print">
     <div class="ch"><span class="ct">Data Backup</span><span id="backup-status" style="font-size:11px;color:var(--i3)"></span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:8px">
@@ -1255,6 +1268,8 @@ async function loadFromSupabase() {
     sb('GET', 'company_settings', null, '?limit=1').catch(() => [])
   ]);
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
+  contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
+  if (document.getElementById('ct-editor')) initContractTermsEditor();
   // Load group templates
   if (templateRows && templateRows.length > 0) {
     groupTemplates = templateRows.map(t => ({ id: t.id, name: t.name, description: t.description||'' }));
@@ -3553,6 +3568,19 @@ const CONTRACT_TERMS = [
   ]}
 ];
 
+// Live terms shown on the contract: from the DB (company_settings.contract_terms) when present &
+// valid, else the hardcoded CONTRACT_TERMS above (seed + fallback). Clause items are sanitized HTML.
+let contractTerms = { version: CONTRACT_TERMS_VERSION, sections: CONTRACT_TERMS };
+function normalizeContractTerms(raw){
+  if (raw && Array.isArray(raw.sections)) {
+    const sections = raw.sections
+      .filter(s => s && typeof s.title === 'string' && Array.isArray(s.items))
+      .map(s => ({ title: s.title, items: s.items.filter(it => typeof it === 'string') }));
+    if (sections.length) return { version: (+raw.version || 1), updatedAt: raw.updatedAt || null, updatedBy: raw.updatedBy || null, sections };
+  }
+  return { version: CONTRACT_TERMS_VERSION, sections: CONTRACT_TERMS.map(s => ({ title: s.title, items: s.items.slice() })) };
+}
+
 // Cover letter body (after "Dear {customer}"). Quote ref is used as the contract Reference.
 const CONTRACT_COVER_TEXT =
   "Thank you for choosing FirstLight Landscaping Ltd.<br><br>" +
@@ -3610,6 +3638,30 @@ function contractGrandTotal(){
 }
 
 function cwEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Plain text of an HTML string (used for emptiness checks in the terms editor).
+function cwStripText(html){ const d=document.createElement('div'); d.innerHTML=String(html==null?'':html); return (d.textContent||'').trim(); }
+// Allow only a small whitelist of inline formatting tags in contract terms; strip everything else
+// (disallowed tags are unwrapped to their text, ALL attributes removed). Blocks script/style/onclick
+// injection and stray markup from breaking the contract layout, even though authors are logged-in staff.
+const CW_ALLOWED_TAGS = { B:1, STRONG:1, I:1, EM:1, U:1, BR:1, UL:1, OL:1, LI:1 };
+function cwSanitizeHtml(html){
+  const root = document.createElement('div');
+  root.innerHTML = String(html==null?'':html);
+  (function walk(node){
+    [...node.childNodes].forEach(child => {
+      if (child.nodeType === 3) return;                              // text node: keep
+      if (child.nodeType !== 1) { node.removeChild(child); return; } // comment/other: drop
+      walk(child);
+      if (CW_ALLOWED_TAGS[child.tagName]) {
+        [...child.attributes].forEach(a => child.removeAttribute(a.name));
+      } else {                                                        // unwrap disallowed tag → keep its text
+        while (child.firstChild) node.insertBefore(child.firstChild, child);
+        node.removeChild(child);
+      }
+    });
+  })(root);
+  return root.innerHTML;
+}
 
 // Clone the live quote line-items table so the contract renders the works EXACTLY like the quote,
 // in the same order. IDs are stripped (the contract is a static snapshot — avoids duplicate IDs).
@@ -3632,11 +3684,13 @@ function cloneTotalsBox(){
   return c.outerHTML;
 }
 // Fixed terms → numbered list, continuous 1..28 across the six sections.
-function renderTermsHtml(){
+function renderTermsHtml(terms){
+  const secs = (terms && Array.isArray(terms.sections) && terms.sections.length) ? terms.sections
+             : ((contractTerms && contractTerms.sections) || CONTRACT_TERMS);
   let n = 0;
-  return '<div class="cw-terms">' + CONTRACT_TERMS.map(sec =>
-    '<div class="cw-section-h">' + sec.title + '</div><ol>' +
-    sec.items.map(it => '<li value="' + (++n) + '">' + cwEsc(it) + '</li>').join('') +
+  return '<div class="cw-terms">' + secs.map(sec =>
+    '<div class="cw-section-h">' + cwEsc(sec.title) + '</div><ol>' +
+    (sec.items||[]).map(it => '<li value="' + (++n) + '">' + cwSanitizeHtml(it) + '</li>').join('') +
     '</ol>'
   ).join('') + '</div>';
 }
@@ -3711,7 +3765,7 @@ function renderContract(opts){
         cloneWorksTable() +
         '<div style="padding:0 8px">' + cloneTotalsBox() + '</div>' +
         // ── Terms (new page) ──
-        '<div class="cw-break">' + renderTermsHtml() + '</div>' +
+        '<div class="cw-break">' + renderTermsHtml(opts.terms || contractTerms) + '</div>' +
         // ── Payment schedule + signatures (new page) ──
         '<div class="cw-break">' +
           '<div class="cw-pad" style="padding:0 36px"><div class="cw-title" style="font-size:26px">Payment Schedule</div></div>' +
@@ -3732,7 +3786,7 @@ function viewSavedContract(ref){
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq || !sq.contractMeta) { toast('No saved contract for ' + ref); return; }
   const m = sq.contractMeta, snap = m.snapshot;
-  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText };
+  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText, terms: m.termsSnapshot || null };
   if (!snap || !snap.lines) { loadQuote(ref); renderContract(optsFromMeta); return; } // old contract: render from current quote
   // Temporarily load the snapshot into the (hidden) builder, render the contract, then restore.
   const ids = ['in-cust','in-a1','in-city','in-post','in-ref','in-vno','in-date'];
@@ -3941,7 +3995,9 @@ async function saveContractSnapshot(opts){
     contractDate: opts.contractDate || g('in-date') || '',
     depositPct: opts.depositPct, completionPct: opts.completionPct, stagedCount: opts.stagedCount,
     schedule: rows, freeText: (opts.freeText||'').trim() || null,
-    termsVersion: CONTRACT_TERMS_VERSION, total,
+    termsVersion: (contractTerms && contractTerms.version) || CONTRACT_TERMS_VERSION,
+    termsSnapshot: contractTerms ? JSON.parse(JSON.stringify({ version: contractTerms.version, sections: contractTerms.sections })) : null,
+    total,
     status: prevStatus || 'Generated',
     // Full snapshot so the contract re-opens EXACTLY as generated, even if the quote later changes
     snapshot: {
@@ -3958,6 +4014,101 @@ async function saveContractSnapshot(opts){
   } catch(e) {
     console.warn('Contract snapshot not saved (run supabase/contract-feature.sql):', e.message);
     toast('Contract generated — snapshot not saved (' + e.message + ')');
+  }
+}
+
+// ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
+// Edits a working copy of contractTerms.sections; Save persists to company_settings.contract_terms.
+// Rich text is limited to the cwSanitizeHtml whitelist (bold/italic/underline/lists).
+let ctWorking = null;   // [{title, items:[html,...]}]
+let ctDirty = false;
+function ctSessionEmail(){ try { return (SESSION && SESSION.user && SESSION.user.email) || ''; } catch(e){ return ''; } }
+function ctStatus(msg){ const e=document.getElementById('ct-edit-status'); if(e) e.textContent = msg||''; }
+function ctMarkDirty(){ ctDirty=true; const e=document.getElementById('ct-dirty'); if(e) e.textContent='● unsaved changes'; }
+function ctClearDirty(){ ctDirty=false; const e=document.getElementById('ct-dirty'); if(e) e.textContent=''; }
+
+function initContractTermsEditor(){
+  ctWorking = JSON.parse(JSON.stringify((contractTerms && contractTerms.sections) || CONTRACT_TERMS));
+  ctClearDirty();
+  ctStatus((contractTerms && contractTerms.version) ? ('v'+contractTerms.version) : '');
+  paintContractTerms();
+}
+function resetContractTermsEditor(){
+  if (ctDirty && !confirm('Discard unsaved changes to the contract terms?')) return;
+  initContractTermsEditor();
+}
+// Pull every clause field + section title from the DOM back into ctWorking (before a structural change).
+function ctSyncFromDom(){
+  if (!ctWorking) return;
+  ctWorking.forEach((sec, si) => {
+    const t = document.getElementById('ct-title-'+si); if (t) sec.title = t.value;
+    (sec.items||[]).forEach((_, ci) => {
+      const el = document.getElementById('ct-ce-'+si+'-'+ci);
+      if (el) sec.items[ci] = cwSanitizeHtml(el.innerHTML);
+    });
+  });
+}
+function paintContractTerms(){
+  const host = document.getElementById('ct-editor'); if (!host) return;
+  if (!ctWorking) ctWorking = [];
+  const btn = (oc, label, title) => '<button type="button" class="btn btn-outline btn-sm" style="padding:2px 7px" onclick="'+oc+'" title="'+title+'">'+label+'</button>';
+  const fmtBtn = (si,ci,cmd,label) => '<button type="button" onmousedown="event.preventDefault()" onclick="ctFormat('+si+','+ci+',\''+cmd+'\')" style="padding:1px 7px;border:1px solid var(--bd);border-radius:4px;background:#fff;cursor:pointer;font-size:12px">'+label+'</button>';
+  let html = '';
+  ctWorking.forEach((sec, si) => {
+    html += '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:10px;background:#FAFAF8">';
+    html += '<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">'
+          + '<input id="ct-title-'+si+'" value="'+cwEsc(sec.title)+'" oninput="ctTitleEdit('+si+',this.value)" style="flex:1;font-weight:700;font-size:12px;letter-spacing:.04em;text-transform:uppercase;padding:4px 7px;border:1px solid var(--bd);border-radius:5px">'
+          + btn('ctMoveSection('+si+',-1)','↑','Move section up') + btn('ctMoveSection('+si+',1)','↓','Move section down') + btn('ctDeleteSection('+si+')','🗑','Delete section')
+          + '</div>';
+    (sec.items||[]).forEach((it, ci) => {
+      html += '<div style="display:flex;gap:6px;align-items:flex-start;margin-bottom:7px">'
+            + '<div style="flex:1">'
+            + '<div style="display:flex;gap:4px;margin-bottom:3px">' + fmtBtn(si,ci,'bold','<b>B</b>') + fmtBtn(si,ci,'italic','<i>I</i>') + fmtBtn(si,ci,'underline','<u>U</u>') + fmtBtn(si,ci,'insertUnorderedList','• List') + '</div>'
+            + '<div id="ct-ce-'+si+'-'+ci+'" contenteditable="true" oninput="ctMarkDirty()" onblur="ctClauseBlur('+si+','+ci+')" onpaste="setTimeout(function(){ctSanitizeField('+si+','+ci+')},0)" style="border:1px solid var(--bd);border-radius:5px;padding:6px 8px;min-height:34px;font-size:12px;line-height:1.45;background:#fff">' + cwSanitizeHtml(it) + '</div>'
+            + '</div>'
+            + '<div style="display:flex;flex-direction:column;gap:3px">' + btn('ctMoveClause('+si+','+ci+',-1)','↑','Move up') + btn('ctMoveClause('+si+','+ci+',1)','↓','Move down') + '<button type="button" class="btn btn-red btn-sm" style="padding:2px 7px" onclick="ctDeleteClause('+si+','+ci+')" title="Delete clause">×</button></div>'
+            + '</div>';
+    });
+    html += btn('ctAddClause('+si+')','+ Add clause','Add a clause to this section') + '</div>';
+  });
+  host.innerHTML = html;
+}
+function ctTitleEdit(si, val){ if(ctWorking[si]){ ctWorking[si].title = val; ctMarkDirty(); } }
+function ctClauseBlur(si, ci){ const el=document.getElementById('ct-ce-'+si+'-'+ci); if(el && ctWorking[si]){ el.innerHTML = cwSanitizeHtml(el.innerHTML); ctWorking[si].items[ci] = el.innerHTML; } }
+function ctSanitizeField(si, ci){ const el=document.getElementById('ct-ce-'+si+'-'+ci); if(el){ el.innerHTML = cwSanitizeHtml(el.innerHTML); ctMarkDirty(); } }
+function ctFormat(si, ci, cmd){ const el=document.getElementById('ct-ce-'+si+'-'+ci); if(!el) return; el.focus(); try{ document.execCommand(cmd,false,null); }catch(e){} ctMarkDirty(); }
+function ctMoveClause(si, ci, dir){ ctSyncFromDom(); const it=ctWorking[si].items, j=ci+dir; if(j<0||j>=it.length) return; const tmp=it[ci]; it[ci]=it[j]; it[j]=tmp; ctMarkDirty(); paintContractTerms(); }
+function ctDeleteClause(si, ci){ ctSyncFromDom(); if(!confirm('Delete this clause?')) return; ctWorking[si].items.splice(ci,1); ctMarkDirty(); paintContractTerms(); }
+function ctAddClause(si){ ctSyncFromDom(); ctWorking[si].items.push(''); ctMarkDirty(); paintContractTerms(); const el=document.getElementById('ct-ce-'+si+'-'+(ctWorking[si].items.length-1)); if(el) el.focus(); }
+function ctMoveSection(si, dir){ ctSyncFromDom(); const j=si+dir; if(j<0||j>=ctWorking.length) return; const tmp=ctWorking[si]; ctWorking[si]=ctWorking[j]; ctWorking[j]=tmp; ctMarkDirty(); paintContractTerms(); }
+function ctDeleteSection(si){ ctSyncFromDom(); if(!confirm('Delete the whole "'+((ctWorking[si]||{}).title||'')+'" section and its clauses?')) return; ctWorking.splice(si,1); ctMarkDirty(); paintContractTerms(); }
+function ctAddSection(){ ctSyncFromDom(); ctWorking.push({ title:'NEW SECTION', items:[''] }); ctMarkDirty(); paintContractTerms(); }
+async function saveContractTerms(){
+  ctSyncFromDom();
+  const sections = (ctWorking||[])
+    .map(s => ({ title:(s.title||'').trim(), items:(s.items||[]).map(cwSanitizeHtml).filter(it => cwStripText(it) !== '') }))
+    .filter(s => s.title || s.items.length);
+  if (!sections.length) { toast('Add at least one section with a clause'); return; }
+  const obj = { version: (((contractTerms && contractTerms.version) || 1) + 1), updatedAt: new Date().toISOString(), updatedBy: ctSessionEmail(), sections };
+  const btn = document.getElementById('ct-save-btn'); if (btn) btn.disabled = true;
+  ctStatus('Saving…');
+  try {
+    if (USE_SUPABASE) {
+      if (companySettings && companySettings.id != null) {
+        await sb('PATCH', 'company_settings', { contract_terms: obj, updated_at: new Date().toISOString() }, '?id=eq.' + encodeURIComponent(companySettings.id));
+      } else {
+        const ins = await sb('POST', 'company_settings', [{ contract_terms: obj }], '', true);
+        if (Array.isArray(ins) && ins[0]) companySettings = ins[0];
+      }
+    }
+    contractTerms = { version: obj.version, updatedAt: obj.updatedAt, updatedBy: obj.updatedBy, sections: obj.sections };
+    if (companySettings) companySettings.contract_terms = obj;
+    initContractTermsEditor();
+    toast('Contract terms saved (v' + obj.version + ')');
+  } catch(e) {
+    ctStatus('Save failed'); toast('Save failed: ' + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
