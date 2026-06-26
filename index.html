@@ -635,7 +635,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
         <thead><tr>
           <th style="width:90px">Code</th>
           <th style="min-width:200px">Name</th>
-          <th style="width:140px">Category</th>
+          <th style="width:90px">Category</th>
           <th style="width:55px">Unit</th>
           <th class="r" style="width:85px">Mat cost/unit</th>
           <th>Client Description (shown on quote)</th>
@@ -4275,7 +4275,6 @@ function buildPMCatFilter() {
 }
 function renderPM() {
   const q=document.getElementById('pm-search').value.toLowerCase(), cat=document.getElementById('pm-cat-filter').value;
-  const allCats=[...new Set(dels.map(x=>x.category).filter(Boolean))].sort();
   const filtered=dels
     .filter(d=>{ if(cat&&d.category!==cat)return false; return !q||d.name.toLowerCase().includes(q)||d.code.toLowerCase().includes(q); })
     .sort((a,b)=>{
@@ -4287,7 +4286,7 @@ function renderPM() {
     <tr id="pm-row-${d.code}">
       <td style="font-family:'DM Mono',monospace;font-size:11px">${d.code}</td>
       <td style="min-width:200px"><input type="text" value="${(d.name||'').replace(/"/g,'&quot;')}" onchange="updateDel('${d.code}','name',this.value)"></td>
-      <td><select onchange="changeDelCategory('${d.code}',this.value)" style="font-size:11px;width:130px;border:1px solid var(--bd);border-radius:4px;padding:3px 6px;color:var(--i2);background:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="Re-categorise this deliverable">${catOptions(d.category, allCats)}</select></td>
+      <td style="font-size:11px;color:var(--i3)">${d.category||''}</td>
       <td><input type="text" value="${d.unit||''}" onchange="updateDel('${d.code}','unit',this.value)" style="width:60px"></td>
       <td class="r"><input type="number" id="pm-cost-${d.code}" value="${computeMatCostPerUnit(d).toFixed(2)}" readonly title="Auto-calculated from materials (incl. 10% markup) — edit the materials below to change it" style="width:80px;text-align:right;background:transparent;border:none;color:var(--i2);cursor:default;font-family:'DM Mono',monospace"></td>
       <td>
@@ -4307,36 +4306,6 @@ function renderPM() {
         <div style="padding:14px 16px" id="pm-mats-inner-${d.code}"></div>
       </td>
     </tr>`).join('');
-}
-
-// Build the <option> list for a Price Manager row's editable category dropdown.
-function catOptions(cur, allCats) {
-  const esc = s => (s||'').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  let opts = '<option value=""' + (cur ? '' : ' selected') + '>—</option>';
-  let seen = false;
-  allCats.forEach(c => { const sel = c === cur ? ' selected' : ''; if (sel) seen = true; opts += '<option value="' + esc(c) + '"' + sel + '>' + esc(c) + '</option>'; });
-  if (cur && !seen) opts += '<option value="' + esc(cur) + '" selected>' + esc(cur) + '</option>';
-  opts += '<option value="__newcat__">＋ New category…</option>';
-  return opts;
-}
-
-// Re-categorise an existing deliverable from the Price Manager. The deliverable's code/prefix is
-// fixed; this only relabels its category — either to an existing one or a brand-new distinct name.
-function changeDelCategory(code, val) {
-  const d = dels.find(x => x.code === code); if (!d) return;
-  if (val === '__newcat__') {
-    const raw = (prompt('New category name for ' + code + ':') || '').trim();
-    if (!raw) { renderPM(); return; }                       // cancelled — reset the dropdown
-    const up = raw.toUpperCase();
-    const match = dels.map(x => x.category).filter(Boolean).find(c => c.trim().toUpperCase() === up);
-    d.category = match || up;                                // snap to existing spelling if it exists
-    saveDelEdits(code);
-    renderPM(); buildPMCatFilter(); buildPills();
-    return;
-  }
-  d.category = val;
-  saveDelEdits(code);
-  buildPMCatFilter(); buildPills();
 }
 
 function toggleMats(code) {
