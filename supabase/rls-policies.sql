@@ -11,20 +11,27 @@
 do $$
 declare t text; p record;
 begin
-  foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates']
+  -- 8 tables: the original 7 + company_settings (bank details — added with the contract feature).
+  foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings']
   loop
-    execute format('alter table public.%I enable row level security', t);
-    -- Drop EVERY existing policy on the table first. Critical on a DB that was set up
-    -- earlier: Supabase/quickstart often leaves a permissive "Public access" policy
-    -- (to {public}, using true) which — because RLS combines policies with OR — would
-    -- silently let anon straight through even with RLS enabled. (Live had exactly this
-    -- on all 7 tables, 2026-06-23.) A fresh project has none, so this is a no-op there.
-    for p in select policyname from pg_policies where schemaname='public' and tablename=t
-    loop
-      execute format('drop policy %I on public.%I', p.policyname, t);
-    end loop;
-    execute format('create policy fl_authenticated_all on public.%I
-                    for all to authenticated using (true) with check (true)', t);
+    begin
+      execute format('alter table public.%I enable row level security', t);
+      -- Drop EVERY existing policy on the table first. Critical on a DB that was set up
+      -- earlier: Supabase/quickstart often leaves a permissive "Public access" policy
+      -- (to {public}, using true) which — because RLS combines policies with OR — would
+      -- silently let anon straight through even with RLS enabled. (Live had exactly this
+      -- on all 7 original tables, 2026-06-23.) A fresh project has none, so this is a no-op there.
+      for p in select policyname from pg_policies where schemaname='public' and tablename=t
+      loop
+        execute format('drop policy %I on public.%I', p.policyname, t);
+      end loop;
+      execute format('create policy fl_authenticated_all on public.%I
+                      for all to authenticated using (true) with check (true)', t);
+    exception
+      when undefined_table then
+        -- company_settings may not exist yet on this DB — create it via contract-feature.sql, then re-run.
+        raise notice 'table % not present — skipping (run contract-feature.sql first).', t;
+    end;
   end loop;
 end $$;
 
@@ -50,7 +57,7 @@ end $$;
 -- do $$
 -- declare t text;
 -- begin
---   foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates']
+--   foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings']
 --   loop
 --     execute format('alter table public.%I disable row level security', t);
 --   end loop;

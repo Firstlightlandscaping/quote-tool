@@ -211,6 +211,91 @@ tr.dragging td{background:var(--brp)!important}
 .setup-steps{font-size:12px;color:var(--i2);line-height:2;margin:10px 0}
 .setup-steps li{margin-left:16px;list-style:decimal}
 .conn-bar{display:flex;align-items:center;gap:10px;padding:8px 16px;background:var(--sf);border-radius:8px;border:1px solid var(--bd);margin-bottom:14px;font-size:12px}
+
+/* ── Contract of Works ───────────────────────────────────────────────────────── */
+#contract-view{display:none}
+#contract-toolbar{display:none}
+body.contract-mode .shell{display:none!important}
+body.contract-mode #contract-view{display:block;background:#f1f5f9;min-height:100vh;padding:24px 0}
+body.contract-mode #contract-toolbar{display:flex;gap:8px;position:fixed;top:14px;right:16px;z-index:16000}
+.cw-doc{max-width:780px;width:100%;margin:0 auto;background:#fff;box-shadow:0 4px 24px rgba(0,0,0,.12);color:#1a1a1a;border-collapse:collapse}
+.cw-body-cell{padding:0;vertical-align:top}
+/* Space BELOW the repeating header — applies on every page (thead reprints), so continuation
+   pages get the same gap as the first page of a section, not crowded text under the logo. */
+.cw-head-cell{padding:0 0 30px 0;vertical-align:top}
+/* Scale just the header so the full badge row fits the PAGE width — WITHOUT scaling the whole doc.
+   That keeps the body text full size, so the terms flow across pages (spacious) like the original,
+   instead of being crammed onto one page. Badges ~86px — close to the quote's size. */
+body.contract-mode .q-brand-header{grid-template-columns:250px 1fr}
+body.contract-mode .q-brand-left{padding:12px 14px}
+body.contract-mode .q-brand-logo{width:62px;height:70px}
+body.contract-mode .q-brand-name{font-size:18px;letter-spacing:1.5px}
+body.contract-mode .q-brand-sub{font-size:9px;letter-spacing:2px}
+body.contract-mode .q-brand-right{gap:8px;padding:0 10px}
+body.contract-mode .q-brand-badge{height:80px;max-width:86px}
+body.contract-mode .q-brand-badge-tall{height:100px;max-width:52px}
+/* Pin both tables to the page width so the cloned quote table can't expand to its wide preferred
+   width in print — which would make the doc wider than the page, forcing the browser to scale
+   EVERYTHING down (cramming the terms onto one page + shrinking the header). Fixed layout keeps the
+   body full-size so the terms flow across multiple pages like the original. */
+body.contract-mode #contract-view table.lt{width:100%;max-width:100%}
+.cw-brand{margin-bottom:6px}
+.cw-title{font-size:30px;font-weight:300;letter-spacing:-1px;color:#1a1a1a;margin:18px 0 14px}
+.cw-meta{display:grid;grid-template-columns:1fr 180px 240px;gap:20px;padding:6px 28px 16px;border-bottom:1px solid var(--bd)}
+.cw-meta .lbl{font-weight:700;color:#1a1a1a;display:block}
+.cw-meta .blk{font-size:12px;line-height:2;color:var(--i2)}
+.cw-letter{padding:16px 28px;font-size:12px;color:var(--i2);line-height:1.8}
+.cw-sum-t{font-size:11px;font-weight:700;letter-spacing:.04em;color:#1a1a1a;padding:0 28px}
+.cw-sum-b{padding:2px 28px 12px;font-size:12px;color:var(--i2);line-height:1.7;white-space:pre-line}
+.cw-works{padding:0}
+.cw-section-h{font-size:13px;font-weight:700;text-decoration:underline;margin:0 0 8px;color:#1a1a1a}
+.cw-terms{padding:2px 36px 0;font-size:11.5px;color:#1a1a1a;line-height:1.5}
+.cw-terms>ol{margin:4px 0 14px;padding-left:24px}
+.cw-terms>ol>li{margin-bottom:7px;padding-left:4px}
+.cw-pay{padding:22px 36px 0;font-size:14px;line-height:2;color:#1a1a1a}
+.cw-pay .pl{display:inline-block;min-width:200px;font-weight:700}
+.cw-bank{padding:14px 36px 0;font-size:13px;color:#1a1a1a;line-height:1.7}
+.cw-bank .h{font-weight:700}
+.cw-sign{padding:18px 36px 30px;font-size:12px;color:#1a1a1a}
+.cw-sign-row{display:grid;grid-template-columns:1fr 1fr 1fr;gap:28px;margin-top:34px}
+.cw-sign-cell .val{min-height:30px;font-size:15px;font-family:'Segoe Script','Brush Script MT',cursive}
+.cw-sign-cell .ln{border-top:1px solid #333;padding-top:4px;font-size:11px}
+.cw-sign-cell .ln b{font-weight:700}
+.cw-foot{text-align:center;font-size:10px;color:var(--i3);padding:14px 0 4px}
+.cw-break{page-break-before:always}
+.cw-slim-head{background:#3f3f46;color:#fff;padding:16px 36px;display:flex;align-items:baseline;gap:12px;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.cw-slim-name{font-size:22px;font-weight:300;letter-spacing:3px}
+.cw-slim-sub{font-size:10px;letter-spacing:2px;color:#d4d4d8}
+/* Contract options dialog */
+.cw-modal-back{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:17000;display:flex;align-items:flex-start;justify-content:center;padding:40px 16px;overflow:auto}
+.cw-modal{background:#fff;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.3);padding:22px;width:100%;max-width:440px}
+.cw-modal h3{font-size:16px;font-weight:700;margin:0 0 2px}
+.cw-modal-sub{font-size:12px;color:var(--i3);margin-bottom:14px;font-family:'DM Mono',monospace}
+.cw-modal .cw-fg{margin-bottom:12px}
+.cw-modal .cw-fg>label{display:block;font-size:12px;font-weight:600;color:var(--i2);margin-bottom:4px}
+.cw-modal input[type=number],.cw-modal input[type=date],.cw-modal textarea{width:100%;padding:7px 9px;border:1px solid var(--bd);border-radius:7px;font-size:13px;font-family:inherit;box-sizing:border-box}
+.cw-row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.cw-hint{font-size:11px;color:var(--i3);margin-left:6px}
+.cw-preview{margin:6px 0 14px;background:#F8FAFC;border:1px solid var(--bd);border-radius:8px;padding:10px 12px}
+.cw-preview-t{font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:6px}
+.cw-preview-tbl{width:100%;font-size:12px;border-collapse:collapse}
+.cw-preview-tbl td{padding:2px 0}
+.cw-preview-tbl td.r{text-align:right;font-family:'DM Mono',monospace}
+.cw-modal-btns{display:flex;gap:8px;justify-content:flex-end}
+/* on-screen preview mirrors the print view for the cloned quote table */
+body.contract-mode #contract-view .no-print{display:none!important}
+body.contract-mode #contract-view .print-only{display:block!important}
+body.contract-mode #contract-view .lt td .print-only{display:block!important;text-align:right}
+body.contract-mode #contract-view .lt td input,body.contract-mode #contract-view .lt td select{display:none!important}
+body.contract-mode #contract-view .lt th.no-print,body.contract-mode #contract-view .lt td.no-print{display:none!important;width:0!important;padding:0!important;border:none!important}
+body.contract-mode #contract-view .group-member-row{display:none!important}
+@media print{
+  body.contract-mode .shell{display:none!important}
+  body.contract-mode #contract-view{display:block!important;background:#fff;padding:0}
+  body.contract-mode .cw-doc{box-shadow:none;max-width:100%;margin:0}
+  body.contract-mode #contract-toolbar{display:none!important}
+  .cw-pay,.cw-sign-row,.cw-bank,.cw-terms li{break-inside:avoid;page-break-inside:avoid}
+}
 </style>
 </head>
 <body>
@@ -249,6 +334,7 @@ tr.dragging td{background:var(--brp)!important}
   <div class="brand"><div class="bd-dot"></div><div><div class="bd-name">First Light Landscaping</div><div class="bd-sub">Quote Tool — 234 deliverables loaded</div></div></div>
   <div class="topbar-btns">
     <button class="btn btn-outline" onclick="window.print()"><svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg> Print / PDF</button>
+    <button class="btn btn-outline" onclick="openContractDialog()" title="Generate a Contract of Works from this Accepted quote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Generate Contract</button>
     <button class="btn btn-outline" onclick="downloadXeroCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download for Xero</button>
     <button class="btn btn-outline" onclick="downloadTeamGanttCSV()" title="Export to TeamGantt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Export to TeamGantt</button>
     <button class="btn btn-primary" onclick="copyXero()"><svg viewBox="0 0 24 24"><path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2M10 10h8a2 2 0 012 2v8a2 2 0 01-2 2h-8a2 2 0 01-2-2v-8a2 2 0 012-2z"/></svg> Copy for Xero</button>
@@ -781,6 +867,13 @@ tr.dragging td{background:var(--brp)!important}
 </div>
 
 </div><!-- /shell -->
+<!-- CONTRACT OF WORKS — built on demand from an Accepted quote; covers the app while previewing -->
+<div id="contract-view"></div>
+<div id="contract-toolbar" class="no-print">
+  <button class="btn btn-primary" onclick="window.print()">⬇ Download PDF</button>
+  <button class="btn btn-outline" onclick="closeContract()">✕ Close</button>
+</div>
+
 <div id="toast"></div>
 
 <script>
@@ -1151,15 +1244,19 @@ async function restoreRun() {
 
 async function loadFromSupabase() {
   // Load all data in parallel
-  const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows] = await Promise.all([
+  const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows] = await Promise.all([
     sb('GET', 'deliverables', null, '?order=code'),
     sb('GET', 'materials', null, '?order=del_code,idx'),
     sb('GET', 'mpl', null, '?order=code'),
     sb('GET', 'quotes', null, '?order=saved.desc'),
     sb('GET', 'quote_lines', null, '?order=quote_ref,sort_order,line_id'),
     sb('GET', 'group_templates', null, '?order=name').catch(() => []),
-    sb('GET', 'staff', null, '?order=name').catch(() => [])
+    sb('GET', 'staff', null, '?order=name').catch(() => []),
+    // Bank details for contracts — lives only in Supabase (behind RLS+Auth), never in this file.
+    // .catch keeps load working if the table/column isn't there yet (run supabase/contract-feature.sql).
+    sb('GET', 'company_settings', null, '?limit=1').catch(() => [])
   ]);
+  companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   // Load group templates
   if (templateRows && templateRows.length > 0) {
     groupTemplates = templateRows.map(t => ({ id: t.id, name: t.name, description: t.description||'' }));
@@ -1281,6 +1378,7 @@ async function loadFromSupabase() {
       city: q.city, post: q.post, sign: q.sign, vno: q.vno,
       sum: q.sum, summaryHtml: q.summary_html, saved: q.saved,
       status: q.status || 'Draft',
+      contractMeta: q.contract_meta || null,
       lines: lineMap[q.ref] || []
     }));
   }
@@ -3404,6 +3502,467 @@ function olToggle(id) {
   if(ch)ch.style.transform=open?'rotate(-90deg)':'rotate(0deg)';
 }
 
+// ══ CONTRACT GENERATION ═══════════════════════════════════════════════════════
+// A Contract of Works PDF generated from an Accepted quote: cover letter → the agreed
+// line items (rendered exactly like the quote) → totals → fixed terms → payment schedule
+// → signature page. Downloaded via browser print-to-PDF, then uploaded to HelloSign.
+
+const CONTRACT_TERMS_VERSION = 1;
+// Fixed standard terms — 28 clauses in 6 sections, numbered continuously 1–28 at render time.
+// Transcribed verbatim from the current Contract of Works, with these source typos corrected:
+// cl.7 "with be removed"→"will be removed", cl.10 "additonal"→"additional",
+// cl.18 "Porcleain"→"Porcelain", cl.23 "Acylic"→"Acrylic" + "we recommend we cleaning"→"we recommend cleaning".
+const CONTRACT_TERMS = [
+  { title: 'TERMS OF AGREEMENT', items: [
+    "A Contract of Works is produced for each project undertaken. This is to be signed by both parties and is a legally binding contract. Firstlight Landscaping Ltd will not carry out any work that is not explicitly stated in the Contract. If the Client notices any aspect of works that has been omitted, please contact Firstlight Landscaping Ltd before signing this Contract.",
+    "Severe weather can affect the work. Although we always endeavour to start on the proposed date, dates are subject to change should we experience severe weather beyond our control. Please note, depending on the severity, this can have a knock-on effect for projects booked several months in advance.",
+    "The Contractor will confirm via email when your project will commence. The Company will never give an exact starting date, but the Client will be given a timeframe in which the project will begin. This timeframe is an estimate and there are several factors that can affect the Company's ability to start on schedule.",
+    "The Contractor strongly recommends that the Client does not reserve time away from work in anticipation of commencement of works on the first day of the timeframe given. The Contractor will confirm an exact starting date 1-2 weeks prior to commencement of works. Once the Company has confirmed an exact starting date, it would be acceptable for the Client to arrange being at home on the first morning of the project. The Contractor will not accept responsibility for any lost earnings or wasted time due to the Client expecting the works to commence on a date that has not been confirmed in writing by the Contractor.",
+    "In the instance that material costs raise significantly (5% or more) between the time of this Contract being signed and the commencement of works, this Contract will need to be adjusted to reflect the increase rate. In this eventuality, the Company will contact the Client in writing to stipulate any necessary price adjustments based on material cost increase."
+  ]},
+  { title: 'PAYMENT', items: [
+    "Payment Schedule for each Project is included in the Contract of Works.",
+    "To secure any work in our Project Schedule, a non-refundable deposit is required. Once we have received verbal or written confirmation of the Client's wish to proceed with Firstlight, the project will be provisionally added to our Project Schedule. If the deposit is not paid within a reasonable amount of time, and/or no contact has been made with the Client we will assume the Client no longer wishes to proceed with the work, and the project will be removed from the Schedule.",
+    "Once paid, the Deposit is subtracted from the Total Project Cost.",
+    "For Projects longer than one working week, the total cost of the Project will be divided across the duration of the project, one payment being due per week. The payment breakdown can be seen at the bottom of the contract.",
+    "Any additional work carried out at the request of the Client will be included in the invoice for the Completion of Works.",
+    "Once payments have been invoiced, they will be due on receipt, excluding the Completion of Works invoice which is due one week from the completion of the works, once the Client is satisfied with the service provided."
+  ]},
+  { title: 'DISPUTE RESOLUTIONS', items: [
+    "If there is any issue that the Client and the Company are unable to resolve, as a BALI registered Company, both the Client and the Company are encouraged to utilise BALI's Dispute Resolution Service, before taking any legal action. For more information see http://www.bali.org.uk/about-bali/dispute-resolution-service.html",
+    "Firstlight Landscaping Ltd cannot be held responsible for any damage to services underground that the Contractor was not previously made aware of on the initial site visit."
+  ]},
+  { title: 'CONSTRUCTION SPECIFICATIONS', items: [
+    "All natural stone paving can vary in colour. The Contractor cannot guarantee the exact shades or tones that will feature in each pack. Any samples provided to the Client are a reflection of the general style and colour available in the natural stone range, but may not perfectly reflect the stone that will be laid during the work.",
+    "The height of all steps will be between 150-210mm. The Contractor has the right to decide a suitable height between 150-210mm for any steps, unless clearly specified otherwise by the Client.",
+    "All coping stones or step flagstones will have an overhang of 30mm, unless clearly specified otherwise by the Client.",
+    "Sandstone Paving will be laid with a 1:80 fall, unless clearly specified otherwise by the Client.",
+    "Porcelain Paving will be laid with a 1:100 fall, unless clearly specified otherwise by the Client.",
+    "Any gravel gaps required will be between 80-150mm wide. The Contractor has the right to decide a suitable width between 80-150mm for any gravel gap, unless clearly specified otherwise by the Client.",
+    "All paling fencing and horizontal cladding installed will have gaps between 15-22mm. The Contractor has the right to decide a suitable width between 15-22mm for all gaps, unless clearly specified by the Client.",
+    "Artificial grass will be laid with the weft facing towards the house, unless clearly specified otherwise by the Client.",
+    "According to building regulations, all external balustrades will be built to 1100mm high above the datum. The datum refers to the area where people will be standing and walking around or on.",
+    "Render discolouration will occur in situations that involve dripping water, splashing from the ground or contact with plants. Maintenance will be required to reduce render discolouration. For K1 Silicone render, we recommend cleaning with an acid descaler, which is available from Chemtek Research Ltd. For Acrylic TC-15 render, we recommend cleaning with a hosepipe or pressure-washer."
+  ]},
+  { title: 'GUARANTEES', items: [
+    "We offer a 3 Year Guarantee for all products and materials installed. Any faulty and/or defective products and materials will be replaced or repaired. Once any issue has been brought to the Company's attention, we will aim to come and assess the issue within 14 days. From the assessment, we aim to resolve the issue within 6 weeks. We do not take responsibility for any damage caused by improper use of the product or material.",
+    "We offer a 3 Year Guarantee for workmanship. Subsidence caused by ground movement, erosion or sink-holes below the sub-base is not covered by this guarantee.",
+    "Pointing/Jointing – For pointing of bricks or the jointing of paving slabs we offer a 2 Year Guarantee. If the pointing/jointing begins to crumble and erode within this period, we will carry out the necessary remedial work.",
+    "Planting and Natural Turf – We do not offer any guarantee for natural products such as turf and plants. The installation of such products is covered by our Workmanship Guarantee. However, we are not responsible for lack of, or inconsistency in growth. After the installation of turf, a care information package will be provided to ensure good results, however any problems due to lack of maintenance or care carried out by the Client are not covered by this guarantee. If this is the case and the Client would like to contact us about their issue, we would be happy to advise on the best solution to the problem, but no work can be carried out as part of a Guarantee."
+  ]},
+  { title: 'GARDEN DESIGNS', items: [
+    "If the work carried out is based on a Design that the Client has provided, the Contractor does not take any responsibility for any damages incurred due to error in the Design itself. We will follow the Design exactly, unless instructed otherwise in writing."
+  ]}
+];
+
+// Cover letter body (after "Dear {customer}"). Quote ref is used as the contract Reference.
+const CONTRACT_COVER_TEXT =
+  "Thank you for choosing FirstLight Landscaping Ltd.<br><br>" +
+  "This Contract of Works specifies the agreed works to be carried out. The starting week of the work " +
+  "will have been confirmed with you via email. For information regarding payment, please see the Payment Schedule.<br><br>" +
+  "The Client hereby agrees to engage Firstlight Landscaping Ltd to provide the Client with the services detailed below.";
+const CONTRACT_CHEQUE_PAYEE = "FirstLight Landscaping Ltd"; // bank account/sort code come from company_settings, never hardcoded
+
+// Bank details, fetched from Supabase (company_settings) after login — never in this file. Set by loadFromSupabase.
+let companySettings = null;
+
+// ── Payment schedule calculator ──────────────────────────────────────────────
+function round2(n){ return Math.round(((+n||0) + Number.EPSILON) * 100) / 100; }
+function money(n){ return '£' + round2(n).toLocaleString('en-GB',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function ordinalWord(n){
+  const w=['zeroth','first','second','third','fourth','fifth','sixth','seventh','eighth','ninth','tenth','eleventh','twelfth'];
+  return w[n] || (n+'th');
+}
+// Standard schedule: deposit% + completion% + the remainder (80% by default) split across N weekly
+// payments. ALWAYS at least one weekly payment: N=1 → Deposit + "Start of works" (the 80%) + Completion.
+// First weekly payment = "Start of works"; the rest = "End of first/second/… week". The LAST weekly
+// payment absorbs the rounding remainder so the milestones always sum to the total exactly.
+// Runs on the VAT-inclusive grand total. (Anything non-standard is handled by the free-text mode.)
+function buildPaymentSchedule(total, opts){
+  opts = opts || {};
+  const depositPct = opts.depositPct != null ? opts.depositPct : 10;
+  const completionPct = opts.completionPct != null ? opts.completionPct : 10;
+  const n = Math.max(1, Math.floor(opts.stagedCount || 1));   // always at least one weekly payment (Start of works)
+  total = round2(total);
+  const deposit = round2(total * depositPct / 100);
+  const completion = round2(total * completionPct / 100);
+  const pool = round2(total - deposit - completion);          // the weekly payments split this
+  const per = round2(pool / n);
+  const rows = [{ label:'Deposit', amount: deposit }];
+  let stagedSum = 0;
+  for (let k=1; k<=n; k++){
+    const label = k===1 ? 'Start of works' : ('End of ' + ordinalWord(k-1) + ' week');
+    const amount = (k===n) ? round2(pool - stagedSum) : per;   // last weekly payment absorbs the rounding remainder
+    stagedSum = round2(stagedSum + amount);
+    rows.push({ label, amount });
+  }
+  rows.push({ label:'Completion of works', amount: completion });
+  return rows;
+}
+// Default text for the free-text override box (mirrors the standard schedule).
+function scheduleToText(total, rows){
+  return ('Total: ' + money(total) + '\n' + rows.map(r => r.label + ': ' + money(r.amount)).join('\n'));
+}
+// VAT-inclusive grand total of the current quote (same basis as recalc()).
+function contractGrandTotal(){
+  const vis = lines.filter(l => !l.groupMember && !l.note);
+  const sub = vis.reduce((s,l) => s + effectiveAmt(l), 0);
+  const vat = vis.reduce((s,l) => s + effectiveAmt(l)*(l.vat/100), 0);
+  return round2(sub + vat);
+}
+
+function cwEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+// Clone the live quote line-items table so the contract renders the works EXACTLY like the quote,
+// in the same order. IDs are stripped (the contract is a static snapshot — avoids duplicate IDs).
+function cloneWorksTable(){
+  const t = document.querySelector('#tab-quote table.lt');
+  if (!t) return '';
+  const c = t.cloneNode(true);
+  // Drop inline edit-panel / expander rows — they use a single full-width colspan cell, while real
+  // line rows always use the 8-cell structure. Catches lab-edit + misc-edit panels (open or collapsed)
+  // so editing UI never leaks into the contract.
+  c.querySelectorAll('tbody tr').forEach(tr => { if (tr.querySelector('td[colspan]')) tr.remove(); });
+  c.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  return '<div class="cw-works" style="overflow-x:auto">' + c.outerHTML + '</div>';
+}
+function cloneTotalsBox(){
+  const t = document.querySelector('#tab-quote .tot-wrap');
+  if (!t) return '';
+  const c = t.cloneNode(true);
+  c.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+  return c.outerHTML;
+}
+// Fixed terms → numbered list, continuous 1..28 across the six sections.
+function renderTermsHtml(){
+  let n = 0;
+  return '<div class="cw-terms">' + CONTRACT_TERMS.map(sec =>
+    '<div class="cw-section-h">' + sec.title + '</div><ol>' +
+    sec.items.map(it => '<li value="' + (++n) + '">' + cwEsc(it) + '</li>').join('') +
+    '</ol>'
+  ).join('') + '</div>';
+}
+
+// Build the full Contract of Works into #contract-view and switch the page into contract mode.
+function renderContract(opts){
+  opts = opts || {};
+  const cust = g('in-cust') || 'Customer';
+  const addr = [g('in-a1'), g('in-city'), g('in-post')].filter(Boolean).map(cwEsc).join('<br>');
+  const ref = g('in-ref') || '—';
+  const vno = g('in-vno') || '242 6140 37';
+  const rawDate = opts.contractDate || g('in-date') || '';
+  const dateStr = rawDate ? new Date(rawDate + 'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '—';
+  const total = contractGrandTotal();
+
+  let payHtml;
+  if (opts.freeText && opts.freeText.trim()) {
+    // Custom: Deposit & Completion are auto; the free text is the MIDDLE payments only.
+    const deposit = round2(total * (opts.depositPct != null ? opts.depositPct : 10) / 100);
+    const completion = round2(total * (opts.completionPct != null ? opts.completionPct : 10) / 100);
+    payHtml = '<div class="cw-pay">' +
+      '<div><span class="pl">Total:</span> ' + money(total) + '</div>' +
+      '<div><span class="pl">Deposit:</span> ' + money(deposit) + '</div>' +
+      formatMiddleLines(opts.freeText) +
+      '<div><span class="pl">Completion of works:</span> ' + money(completion) + '</div>' +
+    '</div>';
+  } else {
+    const rows = buildPaymentSchedule(total, opts);
+    payHtml = '<div class="cw-pay"><div><span class="pl">Total:</span> ' + money(total) + '</div>' +
+      rows.map(r => '<div><span class="pl">' + r.label + ':</span> ' + money(r.amount) + '</div>').join('') + '</div>';
+  }
+
+  const brand = (document.querySelector('#tab-quote .q-brand-header') || {}).outerHTML || '';
+  const fromBlock = (document.getElementById('qa-from') || {}).innerHTML || '';
+  const summaryHtml = (document.getElementById('qh-summary') || {}).innerHTML || '';
+  const bank = companySettings;
+  const bankHtml = bank
+    ? '<div class="cw-bank"><span class="h">Bank Details</span><br>' + (bank.bank_name ? cwEsc(bank.bank_name) + '<br>' : '') +
+      'Account Number: ' + cwEsc(bank.account_number || '') + '<br>Sort Code: ' + cwEsc(bank.sort_code || '') + '</div>' +
+      '<div class="cw-bank">Or via cheque payable to <strong>' + cwEsc(CONTRACT_CHEQUE_PAYEE) + '</strong></div>'
+    : '<div class="cw-bank" style="color:#b45309">⚠ Bank details not set yet. Add a row to <strong>company_settings</strong> in Supabase (see supabase/contract-feature.sql), then regenerate.</div>';
+
+  const signHtml =
+    '<div class="cw-sign">' +
+      '<div>By signing this Contract, the Client agrees to all terms stated above.</div>' +
+      '<div class="cw-sign-row">' +
+        '<div class="cw-sign-cell"><div class="val"></div><div class="ln"><b>Client</b> Signature</div></div>' +
+        '<div class="cw-sign-cell"><div class="val"></div><div class="ln"><b>Client</b> Print</div></div>' +
+        '<div class="cw-sign-cell"><div class="val"></div><div class="ln">Date</div></div>' +
+      '</div>' +
+      '<div style="margin-top:26px">By signing this Contract, the Contractor agrees to carry out all services stated and to comply with the terms stated.</div>' +
+      '<div class="cw-sign-row">' +
+        '<div class="cw-sign-cell"><div class="val"></div><div class="ln"><b>Contractor</b> Signature</div></div>' +
+        '<div class="cw-sign-cell"><div class="val">Neal Baker</div><div class="ln"><b>Contractor</b> Print</div></div>' +
+        '<div class="cw-sign-cell"><div class="val"></div><div class="ln">Date</div></div>' +
+      '</div>' +
+    '</div>';
+
+  const html =
+    '<table class="cw-doc">' +
+      // Branded header in a <thead> → the browser reprints it on EVERY page
+      '<thead><tr><td class="cw-head-cell">' + brand + '</td></tr></thead>' +
+      '<tbody><tr><td class="cw-body-cell">' +
+        // ── Cover + works ──
+        '<div class="cw-meta">' +
+          '<div><div class="cw-title">Contract of Works</div><div class="blk">' + cwEsc(cust) + (addr ? '<br>' + addr : '') + '</div></div>' +
+          '<div class="blk"><span class="lbl">Date</span>' + dateStr + '<div style="height:8px"></div><span class="lbl">Reference</span>' + cwEsc(ref) + '</div>' +
+          '<div class="blk">' + fromBlock + '</div>' +
+        '</div>' +
+        '<div class="cw-letter">Dear ' + cwEsc(cust) + ',<br><br>' + CONTRACT_COVER_TEXT + '</div>' +
+        (summaryHtml.trim() ? '<div class="cw-sum-t">Summary</div><div class="cw-sum-b">' + summaryHtml + '</div>' : '') +
+        cloneWorksTable() +
+        '<div style="padding:0 8px">' + cloneTotalsBox() + '</div>' +
+        // ── Terms (new page) ──
+        '<div class="cw-break">' + renderTermsHtml() + '</div>' +
+        // ── Payment schedule + signatures (new page) ──
+        '<div class="cw-break">' +
+          '<div class="cw-pad" style="padding:0 36px"><div class="cw-title" style="font-size:26px">Payment Schedule</div></div>' +
+          payHtml + bankHtml + signHtml +
+        '</div>' +
+      '</td></tr></tbody>' +
+    '</table>';
+
+  document.getElementById('contract-view').innerHTML = html;
+  document.body.classList.add('contract-mode');
+  window.scrollTo(0, 0);
+}
+function closeContract(){ document.body.classList.remove('contract-mode'); }
+// From Saved Quotes: load the quote into the builder, then open the contract dialog.
+function contractFromSaved(ref){ loadQuote(ref); openContractDialog(); }
+// Re-open a previously generated contract, rendered exactly as it was at generation (from the snapshot).
+function viewSavedContract(ref){
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (!sq || !sq.contractMeta) { toast('No saved contract for ' + ref); return; }
+  const m = sq.contractMeta, snap = m.snapshot;
+  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText };
+  if (!snap || !snap.lines) { loadQuote(ref); renderContract(optsFromMeta); return; } // old contract: render from current quote
+  // Temporarily load the snapshot into the (hidden) builder, render the contract, then restore.
+  const ids = ['in-cust','in-a1','in-city','in-post','in-ref','in-vno','in-date'];
+  const savedLines = lines;
+  const savedFields = {}; ids.forEach(id => savedFields[id] = (document.getElementById(id)||{}).value);
+  const sm = document.getElementById('qh-summary');
+  const savedSummary = sm ? sm.innerHTML : '';
+  try {
+    lines = snap.lines.map(l => ({...l}));
+    const set = (id,v) => { const e=document.getElementById(id); if(e) e.value=v||''; };
+    set('in-cust',snap.customer); set('in-a1',snap.addr1); set('in-city',snap.city); set('in-post',snap.post);
+    set('in-ref',snap.ref); set('in-vno',snap.vno); set('in-date',snap.date);
+    if (sm) sm.innerHTML = snap.summaryHtml || '';
+    renderLines(); recalc(); syncH();
+    renderContract(optsFromMeta);
+  } finally {
+    lines = savedLines;
+    ids.forEach(id => { const e=document.getElementById(id); if(e) e.value = savedFields[id]; });
+    if (sm) sm.innerHTML = savedSummary;
+    renderLines(); recalc(); syncH();
+  }
+}
+// Contract lifecycle status (Generated → Sent → Signed), stored inside contract_meta.
+async function updateContractStatus(ref, status){
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (!sq || !sq.contractMeta) return;
+  sq.contractMeta.status = status;
+  if (USE_SUPABASE) {
+    try { await sb('PATCH', 'quotes', { contract_meta: sq.contractMeta }, '?ref=eq.' + encodeURIComponent(ref)); }
+    catch(e) { toast('Contract status save failed: ' + e.message); }
+  }
+  renderSaved();
+  toast('Contract ' + ref + ' → ' + status);
+}
+
+// ── Contract options dialog ──────────────────────────────────────────────────
+function removeContractDialog(){ const m = document.getElementById('cw-dialog'); if (m) m.remove(); }
+function readScheduleOpts(){
+  return {
+    depositPct: parseFloat((document.getElementById('cw-deposit')||{}).value) || 0,
+    completionPct: parseFloat((document.getElementById('cw-completion')||{}).value) || 0,
+    stagedCount: parseInt((document.getElementById('cw-weeks')||{}).value) || 0
+  };
+}
+// The amount on a payment line = the LAST number on it (optionally £-prefixed), label is the text before.
+// A line with no trailing number has no amount (e.g. a note). Used for both display and the ✓/⚠ check.
+function lineAmount(line){
+  const t = (line||'').trim();
+  const m = t.match(/(?:£\s*)?(\d[\d,]*(?:\.\d+)?)\s*$/);
+  if (!m) return null;
+  const v = parseFloat(m[1].replace(/,/g,''));
+  if (isNaN(v)) return null;
+  return { label: t.slice(0, m.index).replace(/[:\s]+$/,'').trim(), value: v };
+}
+function parseAmounts(text){
+  const out = [];
+  (text||'').split(/\n/).forEach(line => { const a = lineAmount(line); if (a) out.push(a.value); });
+  return out;
+}
+// Render the free-text middle lines like the standard schedule: bold label + amount aligned in a column
+// (via .pl). A line with no amount prints as-is (e.g. a note); amounts are normalised to £ format.
+function formatMiddleLines(text){
+  return (text||'').split(/\n/).map(line => {
+    const t = line.trim();
+    if (!t) return '';
+    const a = lineAmount(line);
+    if (a) return '<div><span class="pl">' + cwEsc(a.label) + (a.label?':':'') + '</span> ' + money(a.value) + '</div>';
+    return '<div>' + cwEsc(t) + '</div>';
+  }).join('');
+}
+// The standard MIDDLE lines only (staged payments between deposit and completion), as text.
+function middleScheduleText(){
+  const total = contractGrandTotal();
+  return buildPaymentSchedule(total, readScheduleOpts()).slice(1, -1).map(r => r.label + ': ' + money(r.amount)).join('\n');
+}
+// Deposit/completion £ + the remainder the middle must cover, from the current dialog % inputs.
+function customParts(){
+  const total = contractGrandTotal();
+  const depPct = parseFloat((document.getElementById('cw-deposit')||{}).value) || 0;
+  const compPct = parseFloat((document.getElementById('cw-completion')||{}).value) || 0;
+  const deposit = round2(total * depPct / 100), completion = round2(total * compPct / 100);
+  return { total, depPct, compPct, deposit, completion, remainder: round2(total - deposit - completion) };
+}
+function cdResetMiddle(){ const ft = document.getElementById('cw-freetext'); if (ft){ ft.value = middleScheduleText(); cdRefresh(); } }
+function cdToggleMode(){
+  const custom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
+  document.getElementById('cw-std-block').style.display = custom ? 'none' : 'block';
+  document.getElementById('cw-custom-block').style.display = custom ? 'block' : 'none';
+  if (custom) { const ft = document.getElementById('cw-freetext'); if (!ft.value.trim()) ft.value = middleScheduleText(); }
+  cdRefresh();
+}
+function cdRefresh(){
+  const custom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
+  const total = contractGrandTotal();
+  const body = document.getElementById('cw-preview-body');
+  if (custom) {
+    // Custom = auto deposit + your MIDDLE lines + auto completion. Check the middle sums to the remainder.
+    const p = customParts();
+    const mid = round2(parseAmounts(document.getElementById('cw-freetext').value).reduce((s,a)=>s+a,0));
+    const diff = round2(p.remainder - mid), ok = Math.abs(diff) < 0.01;
+    body.innerHTML =
+      '<table class="cw-preview-tbl">' +
+      '<tr><td>Total</td><td class="r">' + money(p.total) + '</td></tr>' +
+      '<tr><td>Deposit (' + p.depPct + '%)</td><td class="r">' + money(p.deposit) + '</td></tr>' +
+      '<tr><td>Your middle lines</td><td class="r">' + money(mid) + '</td></tr>' +
+      '<tr><td>Completion (' + p.compPct + '%)</td><td class="r">' + money(p.completion) + '</td></tr>' +
+      '</table>' +
+      '<div style="margin-top:5px;font-size:11px;color:' + (ok ? '#15803D' : '#dc2626') + '">' +
+        (ok ? '✓ Adds up — middle lines match the remainder (' + money(p.remainder) + ')'
+            : '⚠ Middle lines should total ' + money(p.remainder) + ' (remainder after deposit + completion) — off by ' + money(Math.abs(diff))) +
+      '</div>';
+    return;
+  }
+  const rows = buildPaymentSchedule(total, readScheduleOpts());
+  const sum = round2(rows.reduce((s,r)=>s+r.amount,0));
+  body.innerHTML = '<table class="cw-preview-tbl"><tr><td>Total</td><td class="r">' + money(total) + '</td></tr>' +
+    rows.map(r => '<tr><td>' + r.label + '</td><td class="r">' + money(r.amount) + '</td></tr>').join('') + '</table>' +
+    (sum !== total ? '<div style="color:#dc2626;font-size:11px">⚠ milestones sum ' + money(sum) + ' ≠ total</div>' : '');
+}
+function openContractDialog(){
+  if (!lines.length) { toast('Add items or load a quote first'); return; }
+  const ref = g('in-ref');
+  if (!ref) { toast('Save the quote first — it needs a quote number'); return; }
+  const sq = savedQuotes.find(q => q.ref === ref);
+  const status = sq ? (sq.status || 'Draft') : 'Draft';
+  if (status !== 'Accepted') {
+    if (!confirm('Quote ' + ref + ' isn\'t marked Accepted.\n\nMark it Accepted and generate the contract?')) return;
+    updateQuoteStatus(ref, 'Accepted');
+  }
+  removeContractDialog();
+  const total = contractGrandTotal();
+  const cm = sq && sq.contractMeta;   // previously generated contract for this quote, if any
+  // Drift warning: the quote total changed since a contract was last generated from it.
+  if (cm && Math.abs((cm.total||0) - total) > 0.005) {
+    toast('⚠ Quote total changed since the last contract (' + money(cm.total||0) + ' → ' + money(total) + ')');
+  }
+  const labDays = lines.filter(l => !l.note).reduce((s,l) => s + (l.labDays||0), 0);
+  const suggestN = labDays > 0 ? Math.max(1, Math.ceil(labDays/5)) : 3;
+  // Pre-fill from the saved contract if one exists (so re-opening remembers your settings)
+  const date = (cm && cm.contractDate) || g('in-date') || new Date().toISOString().split('T')[0];
+  const dep = cm && cm.depositPct != null ? cm.depositPct : 10;
+  const comp = cm && cm.completionPct != null ? cm.completionPct : 10;
+  const weeks = cm && cm.stagedCount ? cm.stagedCount : suggestN;
+  const isCustom = !!(cm && cm.freeText);
+  const ftVal = (cm && cm.freeText) || '';
+  const cmStatus = (cm && cm.status) || 'Generated';
+  const wrap = document.createElement('div');
+  wrap.id = 'cw-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" onclick="if(event.target===this)removeContractDialog()">' +
+      '<div class="cw-modal">' +
+        '<h3>' + (cm ? 'Contract of Works' : 'Generate Contract of Works') + '</h3>' +
+        '<div class="cw-modal-sub">' + cwEsc(ref) + ' · Total ' + money(total) + ' (inc VAT)</div>' +
+        (cm ? '<div style="font-size:11px;color:var(--i2);background:#F8FAFC;border:1px solid var(--bd);border-radius:7px;padding:7px 9px;margin-bottom:12px">Last generated ' +
+              new Date(cm.generatedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) +
+              ' · <a href="#" onclick="removeContractDialog();viewSavedContract(\'' + ref + '\');return false;"><strong>View last generated</strong></a>' +
+              ' · Status <select onchange="updateContractStatus(\'' + ref + '\',this.value)" style="padding:2px 6px;border-radius:6px;border:1px solid var(--bd);font-size:11px">' +
+              ['Generated','Sent','Signed'].map(s => '<option ' + (s===cmStatus?'selected':'') + '>' + s + '</option>').join('') +
+              '</select></div>' : '') +
+        '<div class="cw-fg"><label>Contract date</label><input type="date" id="cw-date" value="' + date + '"></div>' +
+        '<div class="cw-row2"><div class="cw-fg"><label>Deposit %</label><input type="number" id="cw-deposit" value="' + dep + '" min="0" max="100" oninput="cdRefresh()"></div>' +
+        '<div class="cw-fg"><label>Completion %</label><input type="number" id="cw-completion" value="' + comp + '" min="0" max="100" oninput="cdRefresh()"></div></div>' +
+        '<div style="margin-bottom:12px;font-size:13px">' +
+          '<label style="font-weight:600"><input type="radio" name="cw-mode" value="standard" ' + (isCustom?'':'checked') + ' onchange="cdToggleMode()"> Standard — weekly payments</label>' +
+          '<label style="font-weight:600;margin-left:16px"><input type="radio" name="cw-mode" value="custom" ' + (isCustom?'checked':'') + ' onchange="cdToggleMode()"> Custom (free text)</label>' +
+        '</div>' +
+        '<div class="cw-fg" id="cw-std-block"' + (isCustom?' style="display:none"':'') + '><label>Number of weekly payments</label><input type="number" id="cw-weeks" value="' + weeks + '" min="1" max="12" oninput="cdRefresh()"><span class="cw-hint">suggested ' + suggestN + ' (from labour days ÷ 5)</span></div>' +
+        '<div class="cw-fg" id="cw-custom-block"' + (isCustom?'':' style="display:none"') + '><label>Middle payments — one per line (Deposit &amp; Completion are added automatically)</label><textarea id="cw-freetext" rows="6" oninput="cdRefresh()" placeholder="Start of works: £0.00&#10;End of first week: £0.00">' + cwEsc(ftVal) + '</textarea><a href="#" onclick="cdResetMiddle();return false;" style="font-size:11px">↻ Reset to even split</a></div>' +
+        '<div class="cw-preview"><div class="cw-preview-t">Payment schedule preview</div><div id="cw-preview-body"></div></div>' +
+        '<div class="cw-modal-btns"><button class="btn btn-primary" onclick="doGenerateContract()">' + (cm?'Regenerate &amp; Preview':'Generate &amp; Preview') + '</button>' +
+        '<button class="btn btn-outline" onclick="removeContractDialog()">Cancel</button></div>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(wrap);
+  cdRefresh();
+}
+async function doGenerateContract(){
+  const isCustom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
+  if (isCustom) {
+    // Soft check: middle payments should equal the remainder after deposit + completion.
+    const p = customParts();
+    const mid = round2(parseAmounts((document.getElementById('cw-freetext')||{}).value).reduce((s,a)=>s+a,0));
+    const diff = round2(p.remainder - mid);
+    if (Math.abs(diff) > 0.01 && !confirm('Your middle payments add up to ' + money(mid) + ', but the remainder after deposit + completion is ' + money(p.remainder) + ' (off by ' + money(Math.abs(diff)) + ').\n\nGenerate anyway?')) return;
+  }
+  const opts = {
+    contractDate: (document.getElementById('cw-date')||{}).value || '',
+    depositPct: parseFloat((document.getElementById('cw-deposit')||{}).value) || 0,
+    completionPct: parseFloat((document.getElementById('cw-completion')||{}).value) || 0,
+    stagedCount: parseInt((document.getElementById('cw-weeks')||{}).value) || 0,
+    freeText: isCustom ? ((document.getElementById('cw-freetext')||{}).value || '') : ''
+  };
+  removeContractDialog();
+  renderContract(opts);
+  await saveContractSnapshot(opts);
+}
+// Persist a snapshot of the contract on the quote (best-effort — the PDF is unaffected if this fails).
+async function saveContractSnapshot(opts){
+  const ref = g('in-ref'); if (!ref) return;
+  const total = contractGrandTotal();
+  const rows = (opts.freeText && opts.freeText.trim()) ? null : buildPaymentSchedule(total, opts);
+  const sq = savedQuotes.find(q => q.ref === ref);
+  const prevStatus = sq && sq.contractMeta && sq.contractMeta.status;
+  const meta = {
+    generatedAt: new Date().toISOString(),
+    contractDate: opts.contractDate || g('in-date') || '',
+    depositPct: opts.depositPct, completionPct: opts.completionPct, stagedCount: opts.stagedCount,
+    schedule: rows, freeText: (opts.freeText||'').trim() || null,
+    termsVersion: CONTRACT_TERMS_VERSION, total,
+    status: prevStatus || 'Generated',
+    // Full snapshot so the contract re-opens EXACTLY as generated, even if the quote later changes
+    snapshot: {
+      customer: g('in-cust'), addr1: g('in-a1'), city: g('in-city'), post: g('in-post'),
+      ref: ref, vno: g('in-vno'), date: g('in-date'),
+      summaryHtml: (document.getElementById('qh-summary')||{}).innerHTML || '',
+      lines: JSON.parse(JSON.stringify(lines))
+    }
+  };
+  if (sq) sq.contractMeta = meta;
+  if (!USE_SUPABASE) return;
+  try {
+    await sb('PATCH', 'quotes', { contract_meta: meta }, '?ref=eq.' + encodeURIComponent(ref));
+  } catch(e) {
+    console.warn('Contract snapshot not saved (run supabase/contract-feature.sql):', e.message);
+    toast('Contract generated — snapshot not saved (' + e.message + ')');
+  }
+}
+
 // ── SAVE / LOAD QUOTES ─────────────────────────────────────────────────────────
 async function saveQuoteAsCopy() {
   if (!lines.length) { toast('Add some items first'); return; }
@@ -3454,7 +4013,7 @@ async function saveQuote() {
   const ref = currentRef;
   const existing=savedQuotes.findIndex(q=>q.ref===ref);
   const existingStatus = existing >= 0 ? (savedQuotes[existing].status || 'Draft') : 'Draft';
-  const q={ref,customer:g('in-cust'),date:g('in-date'),addr1:g('in-a1'),city:g('in-city'),post:g('in-post'),sign:g('in-sign'),vno:g('in-vno'),sum:g('in-sum'),summaryHtml:document.getElementById('qh-summary').innerHTML,lines:JSON.parse(JSON.stringify(lines)),saved:new Date().toISOString(),status:existingStatus};
+  const q={ref,customer:g('in-cust'),date:g('in-date'),addr1:g('in-a1'),city:g('in-city'),post:g('in-post'),sign:g('in-sign'),vno:g('in-vno'),sum:g('in-sum'),summaryHtml:document.getElementById('qh-summary').innerHTML,lines:JSON.parse(JSON.stringify(lines)),saved:new Date().toISOString(),status:existingStatus,contractMeta:(existing>=0?savedQuotes[existing].contractMeta:undefined)};
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
     try {
@@ -3687,6 +4246,7 @@ function sqAmt(l, sqLines) {
           <option value="Accepted" ${status==='Accepted'?'selected':''}>Accepted</option>
           <option value="Declined" ${status==='Declined'?'selected':''}>Declined</option>
         </select>
+        ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract'}</button>` : ''}
         <button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();duplicateQuote('${sq.ref}')" style="margin-left:4px" title="Duplicate this quote with a new reference number">⧉ Duplicate</button>
         <button class="btn btn-red btn-sm no-print" onclick="event.stopPropagation();deleteQuote('${sq.ref}')" style="margin-left:4px">Delete</button>
       </div>

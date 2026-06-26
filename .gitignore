@@ -4,3 +4,4 @@ materials-backup-*.json
 firstlight-backup-*.json
 # Internal AI/project notes — kept local, not published to the public repo
 CLAUDE.md
+plan-*.md
