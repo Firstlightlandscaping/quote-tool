@@ -335,9 +335,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
   <div class="topbar-btns">
     <button class="btn btn-outline" onclick="window.print()"><svg viewBox="0 0 24 24"><path d="M6 9V2h12v7M6 18H4a2 2 0 01-2-2v-5a2 2 0 012-2h16a2 2 0 012 2v5a2 2 0 01-2 2h-2"/><path d="M6 14h12v8H6z"/></svg> Print / PDF</button>
     <button class="btn btn-outline" onclick="openContractDialog()" title="Generate a Contract of Works from this Accepted quote"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="9" y1="15" x2="15" y2="15"/></svg>Generate Contract</button>
-    <button class="btn btn-outline" onclick="downloadXeroCSV()"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>Download for Xero</button>
     <button class="btn btn-outline" onclick="downloadTeamGanttCSV()" title="Export to TeamGantt"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:13px;height:13px;display:inline-block;vertical-align:middle;margin-right:4px"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>Export to TeamGantt</button>
-    <button class="btn btn-primary" onclick="copyXero()"><svg viewBox="0 0 24 24"><path d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2M10 10h8a2 2 0 012 2v8a2 2 0 01-2 2h-8a2 2 0 01-2-2v-8a2 2 0 012-2z"/></svg> Copy for Xero</button>
   </div>
 </div>
 
@@ -5123,79 +5121,6 @@ function saveNewMat() {
 
   renderMPL();
   toast('Material ' + code + ' added');
-}
-
-
-function downloadXeroCSV() {
-  if (!lines.length) { toast('No items to export'); return; }
-  const cust = g('in-cust') || '';
-  const ref  = g('in-ref')  || '';
-  const date = g('in-date') || '';
-  const fmtDate = date ? new Date(date + 'T00:00:00').toLocaleDateString('en-GB') : '';
-  const expDate = date ? new Date(new Date(date+'T00:00:00').getTime()+30*24*60*60*1000).toLocaleDateString('en-GB') : '';
-  const headers = ['ContactName','EmailAddress','QuoteNumber','Reference','QuoteDate','ExpiryDate','LineAmountTypes','Description','Quantity','UnitAmount','Discount','AccountCode','TaxType'];
-
-  // Flatten lines — groups show as single line with combined price
-  const exportLines = [];
-  lines.forEach(l => {
-    if (l.groupMember) return; // skip constituent items
-    exportLines.push(l);
-  });
-
-  const rows = [headers];
-  exportLines.forEach((l, i) => {
-    // Notes: combine optional heading (name) + body (xdesc). Other lines: client desc or name.
-    const rawDesc = l.note ? [l.name, l.xdesc].filter(Boolean).join(' — ') : (l.xdesc || l.name || '');
-    const desc = rawDesc.replace(/"/g, '""');
-    const taxType = l.vat === 20 ? 'OUTPUT2' : 'NONE';
-    rows.push([
-      i===0 ? `"${cust.replace(/"/g,'""')}"` : '',
-      '',
-      '', // QuoteNumber blank — Xero assigns FL number automatically
-      i===0 ? `"${ref.replace(/"/g,'""')}"` : '', // Reference = QT number for cross-referencing
-      i===0 ? fmtDate : '',
-      i===0 ? expDate : '',
-      i===0 ? 'Exclusive' : '',
-      `"${desc}"`,
-      // Notes are description-only lines: no quantity, amount, account code or tax
-      l.note ? '' : l.qty,
-      l.note ? '' : l.unitPrice.toFixed(2),
-      '',
-      l.note ? '' : '200',
-      l.note ? '' : taxType
-    ]);
-  });
-  const csv = rows.map(r => r.join(',')).join('\n');
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `Xero_Quote_${ref||'export'}.csv`;
-  document.body.appendChild(a); a.click();
-  document.body.removeChild(a); URL.revokeObjectURL(url);
-  toast('Downloaded: Xero_Quote_' + (ref||'export') + '.csv');
-}
-
-// XERO COPY
-function copyXero() {
-  const cust=g('in-cust')||'Customer', ref=g('in-ref')||'—', date=g('in-date');
-  let txt=`Quote: ${ref}
-Customer: ${cust}
-Date: ${date}
-
-Description	Quantity	Unit Price	VAT%	Amount GBP
-`;
-  const exportLines = lines.filter(l => !l.groupMember);
-  exportLines.forEach(l=>txt+= l.note
-    ? `${[l.name,l.xdesc].filter(Boolean).join(' — ')}
-`
-    : `${l.xdesc||l.name}	${l.qty}	${l.unitPrice.toFixed(2)}	${l.vat}%	${amt(l).toFixed(2)}
-`);
-  const sub=exportLines.reduce((s,l)=>s+amt(l),0), vat=exportLines.reduce((s,l)=>s+amt(l)*(l.vat/100),0);
-  txt+=`
-Subtotal: £${sub.toFixed(2)}
-Total VAT 20%: £${vat.toFixed(2)}
-Total GBP: £${(sub+vat).toFixed(2)}`;
-  navigator.clipboard.writeText(txt).then(()=>toast('Copied for Xero!')).catch(()=>toast('Copy failed — use Print to PDF'));
 }
 
 function downloadTeamGanttCSV() {
