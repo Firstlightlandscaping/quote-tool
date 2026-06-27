@@ -204,6 +204,19 @@ tr.dragging td{background:var(--brp)!important}
   .del-btn,.mv,.l-lab,.drag-handle{display:none!important}
   .q-brand-header{-webkit-print-color-adjust:exact;print-color-adjust:exact}
   .q-brand-left{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  /* Shrink the branded header for print so all 5 accreditation badges fit A4 at Default scale.
+     The on-screen header is ~1012px wide (460px logo column + five ~100px badges) — wider than
+     A4's ~718px printable area — so the right badges were clipped by overflow:hidden (showed only
+     when Scale was set below ~72%). These print-only sizes mirror the Contract PDF header (which
+     already fits); the on-screen builder keeps the full-size header. Brings it to ~640px. */
+  .q-brand-header{grid-template-columns:250px 1fr}
+  .q-brand-left{padding:12px 14px}
+  .q-brand-logo{width:62px;height:70px}
+  .q-brand-name{font-size:18px;letter-spacing:1.5px}
+  .q-brand-sub{font-size:9px;letter-spacing:2px}
+  .q-brand-right{gap:8px;padding:0 10px}
+  .q-brand-badge{height:80px;max-width:86px}
+  .q-brand-badge-tall{height:100px;max-width:52px}
 }
 @media(max-width:640px){
   .g2,.g3,.g4{grid-template-columns:1fr}
@@ -5958,6 +5971,33 @@ function refreshAddGroupSelect() {
 
 window.addEventListener('beforeunload', function(e) {
   if (isDirty) { e.preventDefault(); e.returnValue = 'You have unsaved changes.'; return e.returnValue; }
+});
+
+// ── PDF filename ──────────────────────────────────────────────────────────────
+// Browsers pre-fill the "Save as PDF" filename from document.title. Set a useful
+// name just before the print dialog opens — "QT-0005 John Smith" for a quote,
+// "Contract QT-0005 John Smith" in contract mode, "Order List …" on that tab —
+// then restore the tab title afterwards. One pair of listeners covers every print
+// path: the on-page buttons, the browser menu, and Ctrl+P.
+function pdfFilename(){
+  const val = id => { const e = document.getElementById(id); return e ? (e.value||'').trim() : ''; };
+  const base = [val('in-ref'), val('in-cust')].filter(Boolean).join(' ');
+  const ol = document.getElementById('tab-orderlist');
+  let prefix = '';
+  if (document.body.classList.contains('contract-mode')) prefix = 'Contract';
+  else if (ol && ol.classList.contains('on'))            prefix = 'Order List';
+  let name = (prefix ? prefix + ' ' : '') + base;
+  // Drop characters illegal in Windows/macOS filenames; collapse whitespace.
+  name = name.replace(/[<>:"\/\\|?*\x00-\x1f]/g, '').replace(/\s+/g, ' ').trim();
+  return name || 'First Light — Quote Tool';
+}
+let _printPrevTitle = null;
+window.addEventListener('beforeprint', () => {
+  _printPrevTitle = document.title;
+  document.title = pdfFilename();
+});
+window.addEventListener('afterprint', () => {
+  if (_printPrevTitle !== null) { document.title = _printPrevTitle; _printPrevTitle = null; }
 });
 </script>
 </body>
