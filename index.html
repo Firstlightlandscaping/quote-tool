@@ -3,6 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<!-- Security headers. GitHub Pages can't set real HTTP headers, so these live in <meta>.
+     script/style keep 'unsafe-inline' (the app uses inline on* handlers + inline styles);
+     the value here is locking WHERE the page may load from and send data TO. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self' https://*.supabase.co; object-src 'none'; base-uri 'self'; form-action 'self'; frame-src 'none'; upgrade-insecure-requests">
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>First Light — Quote Tool</title>
 <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -2719,7 +2724,7 @@ function renderMiscComponents() {
         ${c.cost ? `<div style="font-size:11px;color:var(--i3)">Cost: £${(c.supplierCost!==undefined?c.supplierCost:(c.cost/1.1)).toFixed(2)} → Charged: £${c.cost.toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
         <div style="font-size:11px;color:var(--i3);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           ${c.supplier ? `<span>Supplier: ${c.supplier}</span>` : ''}
-          ${c.url ? `<a href="${c.url}" target="_blank" style="color:var(--br)">🔗 Order link</a>` : ''}
+          ${c.url ? `<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Order link</a>` : ''}
           ${c.notes ? `<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.textContent=this.textContent.includes('▶')?'📝 Notes ▼':'📝 Notes ▶'" style="background:none;border:none;cursor:pointer;font-size:10px;color:var(--i3);padding:0">📝 Notes ▶</button><div style="display:none;font-size:11px;color:var(--i2);font-style:italic;width:100%;margin-top:2px">${c.notes}</div>` : ''}
         </div>
       </div>
@@ -3048,7 +3053,7 @@ function miscEditComponentsHtml(l) {
                         <div style="font-weight:600">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
                         ${c.cost ? `<div style="color:var(--i3)">£${c.cost}/unit · £${(c.qty*c.cost).toFixed(2)} total</div>` : ''}
                         ${c.supplier ? `<div style="color:var(--i3)">${c.supplier}</div>` : ''}
-                        ${c.url ? `<a href="${c.url}" target="_blank" style="color:var(--br)">🔗 Link</a>` : ''}
+                        ${c.url ? `<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Link</a>` : ''}
                       </div>
                       <button class="btn btn-outline btn-sm" onclick="editLineComponent(${l.id},${ci})">Edit</button>
                       <button class="btn btn-red btn-sm" onclick="removeLineComponent(${l.id},${ci})">×</button>
@@ -3292,7 +3297,7 @@ function renderLines() {
                 <div style="font-weight:600">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
                 ${c.cost ? `<div style="color:var(--i3)">Supplier: £${(c.supplierCost!==undefined?c.supplierCost:c.cost/1.1).toFixed(2)} · Charged: £${c.cost.toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
                 ${c.supplier ? `<div style="color:var(--i3)">Supplier: ${c.supplier}</div>` : ''}
-                ${c.url ? `<div><a href="${c.url}" target="_blank" style="color:var(--br)">🔗 Supplier link</a></div>` : ''}
+                ${c.url ? `<div><a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Supplier link</a></div>` : ''}
                 ${c.notes ? `<div style="color:var(--i2);font-style:italic">${c.notes}</div>` : ''}
               </div>
             `).join('')}
@@ -3497,7 +3502,7 @@ function renderOrderList() {
       if (comps.length) {
         comps.forEach(c => {
           const lt = (c.cost||0)*(c.qty||0);
-          html += `<div class="ol-misc-comp-row"><div class="ol-misc-comp-main"><div class="ol-misc-comp-name">${c.desc||'-'}</div><div class="ol-misc-comp-detail">${c.qty} ${c.unit||''} x £${(c.cost||0).toFixed(2)} each</div>${c.supplier?`<div class="ol-misc-comp-supplier">Supplier: <strong>${c.supplier}</strong></div>`:''} ${c.url?`<a href="${c.url}" target="_blank" class="ol-misc-comp-link">&#128279; ${c.url}</a>`:''}</div><div class="ol-misc-comp-cost"><div class="ol-misc-comp-unit">£${(c.cost||0).toFixed(2)}/unit</div><div class="ol-misc-comp-total">£${lt.toFixed(2)}</div></div></div>`;
+          html += `<div class="ol-misc-comp-row"><div class="ol-misc-comp-main"><div class="ol-misc-comp-name">${c.desc||'-'}</div><div class="ol-misc-comp-detail">${c.qty} ${c.unit||''} x £${(c.cost||0).toFixed(2)} each</div>${c.supplier?`<div class="ol-misc-comp-supplier">Supplier: <strong>${c.supplier}</strong></div>`:''} ${c.url?`<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" class="ol-misc-comp-link">&#128279; ${cwEsc(c.url)}</a>`:''}</div><div class="ol-misc-comp-cost"><div class="ol-misc-comp-unit">£${(c.cost||0).toFixed(2)}/unit</div><div class="ol-misc-comp-total">£${lt.toFixed(2)}</div></div></div>`;
         });
       } else {
         html += '<div class="ol-misc-no-comps">No components stored.</div>';
@@ -3639,6 +3644,10 @@ function contractGrandTotal(){
 }
 
 function cwEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+// Make a user-entered URL safe to drop into an href: force an http(s) scheme (so a
+// "javascript:"/"data:" value can't run as code) and escape quotes (so it can't break out
+// of the attribute). Mirrors the normalisation already used for material URLs (editMplUrl).
+function safeUrl(u){ u = String(u==null?'':u).trim(); if(!u) return ''; if(!/^https?:\/\//i.test(u)) u = 'https://' + u; return u.replace(/"/g,'&quot;'); }
 // Plain text of an HTML string (used for emptiness checks in the terms editor).
 function cwStripText(html){ const d=document.createElement('div'); d.innerHTML=String(html==null?'':html); return (d.textContent||'').trim(); }
 // Allow only a small whitelist of inline formatting tags in contract terms; strip everything else
