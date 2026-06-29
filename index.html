@@ -2848,6 +2848,11 @@ function reorderDomRows() {
   Array.from(tbody.querySelectorAll('tr[id^="lab-edit-row-"]')).forEach(tr => {
     editRowMap[tr.id.replace('lab-edit-row-', '')] = tr;
   });
+  // Misc lines have a misc-edit-row panel (not a lab-edit-row) — relocate it with its row too,
+  // else after a reorder the panel is orphaned and opens at the top of the quote.
+  Array.from(tbody.querySelectorAll('tr[id^="misc-edit-row-"]')).forEach(tr => {
+    editRowMap[tr.id.replace('misc-edit-row-', '')] = tr;
+  });
   lines.forEach(l => {
     const id = String(l.id);
     if (rowMap[id]) tbody.appendChild(rowMap[id]);
