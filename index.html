@@ -546,7 +546,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
         </summary>
         <div class="misc-panel">
           <div class="mrow">
-            <div class="fg" style="flex:1"><label>Description (internal)</label><input type="text" id="mc-desc" placeholder="e.g. Corten steel water bowl"></div>
+            <div class="fg" style="flex:1"><label>Title (shown on quote)</label><input type="text" id="mc-desc" placeholder="e.g. Corten steel water bowl"></div>
           </div>
           <div class="mrow" style="margin-top:8px">
             <div class="fg" style="flex:1"><label>Client description (shown on quote)</label><textarea id="mc-xdesc" rows="3" placeholder="Client-facing wording shown on the printed quote..." style="width:100%;resize:vertical"></textarea></div>
@@ -2144,6 +2144,12 @@ function patchMiscLineDom(l) {
   // Read-only auto unit-price field on the row (misc lines have no upPrice handler)
   const rowUnit = document.getElementById('row-unitprice-' + id);
   if (rowUnit && document.activeElement !== rowUnit) rowUnit.value = (l.unitPrice||0).toFixed(2);
+  // Item title (the bold line name) — patch the visible row span AND the print-only name so the
+  // builder and the printed quote update live when the title is edited in the misc edit panel.
+  const nameDisp = document.getElementById('name-disp-' + id);
+  if (nameDisp) nameDisp.textContent = l.name || '';
+  const namePrint = document.getElementById('name-print-' + id);
+  if (namePrint) namePrint.textContent = l.name || '';
   // Print-only qty/unit-price spans (baked at renderLines time — keep them in sync so print matches the builder)
   const qtyPrint = document.getElementById('qty-print-' + id);
   if (qtyPrint) qtyPrint.textContent = (l.qty||0);
@@ -3079,7 +3085,7 @@ function miscEditPanelRow(l) {
           <div style="padding:14px;background:#FFFBF0;border-left:3px solid var(--br);border-bottom:1px solid var(--bd)">
             <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--br);margin-bottom:12px">Edit misc item</div>
             <div style="display:grid;gap:10px">
-              <div class="fg" style="margin:0"><label>Description (internal)</label>
+              <div class="fg" style="margin:0"><label>Title (shown on quote)</label>
                 <input type="text" value="${(l.name||'').replace(/"/g,'&quot;')}" onchange="updateMiscField(${l.id},'name',this.value)" style="width:100%">
               </div>
               <div class="fg" style="margin:0"><label>Client description (shown on quote)</label>
@@ -3332,7 +3338,7 @@ function renderLines() {
         <button class="del-btn" onclick="rmLine(${l.id})">×</button>
       </td>
       <td style="min-width:200px">
-        <div class="no-print">${codeTag}<div class="l-name">${optTag}${l.name}</div>
+        <div class="no-print">${codeTag}<div class="l-name">${optTag}<span id="name-disp-${l.id}">${l.name}</span></div>
           <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
             <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
             <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
@@ -3340,7 +3346,7 @@ function renderLines() {
           ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}
         </div>
         <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
-          <div class="l-name">${l.name}</div>
+          <div class="l-name" id="name-print-${l.id}">${l.name}</div>
           ${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc" style="margin-top:2px">' + (l.xdesc) + '</div>' : ''}
         </div>
       </td>
