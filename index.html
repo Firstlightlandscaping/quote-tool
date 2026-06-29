@@ -664,7 +664,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
       <table class="pm-table" id="pm-table">
         <thead><tr>
           <th style="width:90px">Code</th>
-          <th style="min-width:200px">Name</th>
+          <th style="min-width:300px">Name</th>
           <th style="width:90px">Category</th>
           <th style="width:55px">Unit</th>
           <th class="r" style="width:85px">Mat cost/unit</th>
@@ -4560,7 +4560,7 @@ function renderPM() {
   document.getElementById('pm-body').innerHTML = filtered.map(d => `
     <tr id="pm-row-${d.code}">
       <td style="font-family:'DM Mono',monospace;font-size:11px">${d.code}</td>
-      <td style="min-width:200px"><input type="text" value="${(d.name||'').replace(/"/g,'&quot;')}" onchange="updateDel('${d.code}','name',this.value)"></td>
+      <td style="min-width:300px"><input type="text" title="${(d.name||'').replace(/"/g,'&quot;')}" value="${(d.name||'').replace(/"/g,'&quot;')}" onchange="updateDel('${d.code}','name',this.value)"></td>
       <td style="font-size:11px;color:var(--i3)">${d.category||''}</td>
       <td><input type="text" value="${d.unit||''}" onchange="updateDel('${d.code}','unit',this.value)" style="width:60px"></td>
       <td class="r"><input type="number" id="pm-cost-${d.code}" value="${computeMatCostPerUnit(d).toFixed(2)}" readonly title="Auto-calculated from materials (incl. 10% markup) — edit the materials below to change it" style="width:80px;text-align:right;background:transparent;border:none;color:var(--i2);cursor:default;font-family:'DM Mono',monospace"></td>
