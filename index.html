@@ -164,6 +164,19 @@ tr.dragging td{background:var(--brp)!important}
 .ol-member-code{font-family:"DM Mono",monospace;font-size:10px;color:var(--i3);background:#E8EDE9;padding:1px 6px;border-radius:3px;margin-right:6px}
 .ol-member-meta{font-size:11px;color:var(--i3);font-family:"DM Mono",monospace}
 .ol-misc{background:#FFFBF5;border:1px solid #E8D5B7;border-radius:8px;padding:10px 14px;font-size:12px;color:var(--i2)}
+.ol-sup-section{margin-bottom:26px}
+.ol-sup-intro{font-size:11px;color:var(--i3);line-height:1.5;margin:0 0 12px 2px;max-width:760px}
+.ol-sup-wrap{margin-bottom:12px;border-radius:10px;overflow:hidden;border:2px solid #3D5A80}
+.ol-sup-header{background:#3D5A80;padding:11px 16px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;user-select:none}
+.ol-sup-header-left{display:flex;align-items:center;gap:10px}
+.ol-sup-chevron{color:#fff;font-size:13px;transition:transform .2s;display:inline-block}
+.ol-sup-title{font-weight:700;font-size:13px;color:#fff}
+.ol-sup-meta{font-size:11px;color:rgba(255,255,255,.78);font-family:"DM Mono",monospace}
+.ol-sup-badge{background:rgba(255,255,255,.2);color:#fff;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px}
+.ol-sup-src{font-size:10px;color:var(--i3);margin-top:3px;line-height:1.4}
+.ol-sup-warn{color:#B45309;font-weight:600;font-size:11px}
+.ol-sup-wrap.warn{border-color:#D97706}
+.ol-sup-wrap.warn .ol-sup-header{background:#D97706}
 .pm-table{width:100%;border-collapse:collapse;font-size:12px;table-layout:auto}
 .pm-table th{font-size:9px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);padding:7px 10px;text-align:left;border-bottom:2px solid var(--bd);background:#FAFAFA;white-space:nowrap}
 .pm-table th.r{text-align:right}
@@ -3481,10 +3494,88 @@ function olMatTable(l) {
   });
   return h + '</tbody></table>';
 }
+// ── SUPPLIER ROLLUP (Phase 1) ───────────────────────────────────────────────
+// Aggregate every material in the quote BY SUPPLIER, summed + de-duplicated, so the
+// order list shows what you actually order (one line per material per supplier) instead
+// of repeating the same material under each deliverable it appears in. Deliverable
+// materials are scaled by line qty; misc-item components are fixed (NOT scaled, per lineMat).
+// Returns: [{ name, items:[{stockCode,description,unit,totalQty,totalCost,unitPrice,url,sources,mixedUnits}], total, itemCount, unassigned }]
+const SUP_UNASSIGNED = 'Unassigned';   // bucket for materials with no supplier set yet (needs attention)
+function buildSupplierRollup() {
+  const mplSupplier = {}, mplUrl = {};
+  mpl.forEach(m => { if (!m.code) return; if (m.supplier) mplSupplier[m.code] = m.supplier.trim(); if (m.supplierUrl) mplUrl[m.code] = m.supplierUrl; });
+  const suppliers = {};
+  function addItem(name, o) {
+    if (!o.qty) return;
+    name = name || SUP_UNASSIGNED;
+    const s = suppliers[name] || (suppliers[name] = { name, items: {} });
+    const code = (o.stockCode || '').trim();
+    const key = (code || (o.description || '').trim().toLowerCase()) + '|' + (o.unit || '').trim().toLowerCase();
+    const it = s.items[key] || (s.items[key] = { stockCode: code, description: o.description || '', unit: o.unit || '', totalQty: 0, totalCost: 0, url: o.url || '', sources: [], _units: new Set() });
+    it.totalQty += o.qty;
+    it.totalCost += (o.unitPrice || 0) * o.qty;
+    if (o.unit) it._units.add(o.unit.trim());
+    if (o.url && !it.url) it.url = o.url;
+    it.sources.push({ name: o.sourceName || '', qty: Math.round(o.qty * 1000) / 1000, misc: !!o.fromMisc });
+  }
+  // Deliverable materials — scaled by line qty. Skip group headers (their materials live on members).
+  lines.filter(l => !l.misc && !l.note && !(l.groupId && !l.groupMember)).forEach(l => {
+    (l.materials || []).forEach(m => {
+      const qty = Math.round((m.qtyPerUnit * l.qty) * 1000) / 1000;
+      const unitPrice = m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit);
+      addItem(mplSupplier[m.stockCode], { stockCode: m.stockCode, description: m.description, unit: m.unit, qty, unitPrice, url: mplUrl[m.stockCode], sourceName: (l.code ? l.code + ' ' : '') + l.name });
+    });
+  });
+  // Misc-item components — fixed qty, NOT scaled by line qty.
+  lines.filter(l => l.misc && !l.note).forEach(l => {
+    (l.miscComponents || []).forEach(c => {
+      addItem((c.supplier || '').trim(), { stockCode: c.mplCode || '', description: c.desc, unit: c.unit, qty: c.qty || 0, unitPrice: c.cost || 0, url: c.url, sourceName: '📦 ' + l.name, fromMisc: true });
+    });
+  });
+  return Object.keys(suppliers).sort((a, b) => {
+    if (a === SUP_UNASSIGNED) return 1;          // unassigned bucket always sorts last
+    if (b === SUP_UNASSIGNED) return -1;
+    return a.localeCompare(b);
+  }).map(name => {
+    const items = Object.keys(suppliers[name].items).map(k => {
+      const it = suppliers[name].items[k];
+      it.totalQty = Math.round(it.totalQty * 1000) / 1000;
+      it.unitPrice = it.totalQty ? it.totalCost / it.totalQty : 0;
+      it.mixedUnits = it._units.size > 1;
+      delete it._units;
+      return it;
+    }).sort((a, b) => (a.description || '').localeCompare(b.description || ''));
+    return { name, items, total: items.reduce((s, it) => s + it.totalCost, 0), itemCount: items.length, unassigned: name === SUP_UNASSIGNED };
+  });
+}
+function olSupplierRollupHtml() {
+  const rollup = buildSupplierRollup();
+  if (!rollup.length) return '';
+  const grand = rollup.reduce((s, sup) => s + sup.total, 0);
+  let h = `<div class="ol-sup-section"><div class="ch" style="border:none;background:none;padding:0 0 4px 2px"><span class="ct">&#128203; Materials by Supplier</span></div><div class="ol-sup-intro">What to order &mdash; every material aggregated across all deliverables and de-duplicated (the same material used in several deliverables becomes one line). Deliverable quantities are scaled by line qty; misc-item components are fixed. Total materials: &pound;${grand.toFixed(2)}.</div>`;
+  rollup.forEach((sup, i) => {
+    const cid = 'ol-sup-' + i;
+    const title = sup.unassigned ? '&#9888; Unassigned &mdash; needs a supplier' : cwEsc(sup.name);
+    const meta = sup.unassigned
+      ? `${sup.itemCount} material${sup.itemCount !== 1 ? 's' : ''} with no supplier &mdash; set one in the Price Manager (materials) or on the misc component`
+      : `${sup.itemCount} material${sup.itemCount !== 1 ? 's' : ''} &middot; &pound;${sup.total.toFixed(2)}`;
+    h += `<div class="ol-sup-wrap${sup.unassigned ? ' warn' : ''}"><div class="ol-sup-header" onclick="olToggle('${cid}')"><div class="ol-sup-header-left"><span class="ol-sup-chevron" id="${cid}-chev">&#9660;</span><div><div class="ol-sup-title">${title}</div><div class="ol-sup-meta">${meta}</div></div></div><span class="ol-sup-badge">${sup.itemCount}</span></div><div id="${cid}"><table class="ol-mat-table"><thead><tr><th>Stock Code</th><th>Material</th><th class="r">Total Qty</th><th>Unit</th><th class="r">Unit Price</th><th class="r">Total Cost</th></tr></thead><tbody>`;
+    sup.items.forEach(it => {
+      const showSrc = it.sources.length > 1 || it.sources.some(s => s.misc);
+      const src = showSrc ? `<div class="ol-sup-src">${it.sources.length > 1 ? 'Combined from ' + it.sources.length + ' lines: ' : 'From '}${it.sources.map(s => cwEsc(s.name) + ' (' + s.qty + ')').join(', ')}</div>` : '';
+      const warn = it.mixedUnits ? ` <span class="ol-sup-warn" title="This material appears under more than one unit; totals may not be additive &mdash; check before ordering.">&#9888; mixed units</span>` : '';
+      const link = it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="Supplier link" style="text-decoration:none">&#128279;</a>` : '';
+      h += `<tr><td style="font-family:'DM Mono',monospace;font-size:11px">${cwEsc(it.stockCode || '')}</td><td>${cwEsc(it.description || '')}${link}${warn}${src}</td><td class="r" style="font-weight:600">${it.totalQty}</td><td>${cwEsc(it.unit || '')}</td><td class="r">&pound;${it.unitPrice.toFixed(4)}</td><td class="r">&pound;${it.totalCost.toFixed(2)}</td></tr>`;
+    });
+    h += `</tbody></table></div></div>`;
+  });
+  h += `</div>`;
+  return h;
+}
 function renderOrderList() {
   const el = document.getElementById('order-list-content');
   if (!lines.length) { el.innerHTML='<div class="card"><div class="cb empty-lines">No items in current quote.</div></div>'; return; }
-  let html = '';
+  let html = olSupplierRollupHtml();
   const miscLines = lines.filter(l => l.misc && !l.note);
   const nonMisc = lines.filter(l => !l.misc && !l.note);
   const seen = new Set();
