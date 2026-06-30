@@ -3270,7 +3270,7 @@ function renderLines() {
               <div class="l-code" style="opacity:.7">${gl.code||''}</div>
               <div class="l-name" style="color:var(--i2)">${gl.name}</div>
               ${(gl.labDays||gl.labRate)?`<div class="l-lab" id="lab-tag-${gl.id}">✱ ${gl.labDays||0}d × £${gl.labRate||0}/day = £${(gl.labTotal||0).toFixed(2)}</div>`:''}<span id="lab-tag-anchor-${gl.id}"></span>
-              ${(!gl.misc&&gl.matCost)?`<div id="mat-tag-${gl.id}" style="display:inline-block;margin-top:3px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${(gl.matCost*gl.qty).toFixed(2)}</div>`:''}
+              ${(gl.matCost)?`<div id="mat-tag-${gl.id}" style="display:inline-block;margin-top:3px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${lineMat(gl).toFixed(2)}</div>`:''}<span id="mat-tag-anchor-${gl.id}"></span>
             </td>
             <td class="r" id="member-qty-${gl.id}" style="color:var(--i2)">${gl.qty}</td>
             <td class="r" id="member-unit-${gl.id}" style="color:var(--i2)">£${gl.unitPrice.toFixed(2)}</td>
