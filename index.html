@@ -2467,9 +2467,23 @@ function addComponentToLine(lineId) {
         <h3 style="margin:0;font-size:15px">Add Component</h3>
         <span style="font-size:11px;color:var(--i3)">Add from the price list or enter manually — both add to the item</span>
       </div>
-      <!-- OPTION 1: add a material from the master price list -->
+      <!-- OPTION 1: pull in all the materials of an existing deliverable at once -->
       <div style="background:#F8FAFC;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:10px">
-        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 1 — From price list</div>
+        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 1 — From a deliverable (adds its materials)</div>
+        <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+          <div class="fg" style="flex:1;min-width:240px;margin:0">
+            <label style="font-size:11px">Select deliverable</label>
+            <input type="text" id="acld-search" placeholder="Filter by code or name..." autocomplete="off" oninput="acldFilterDels()" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px 8px">
+            <select id="acld-select" onchange="acldSelected()" style="width:100%"><option value="">— select a deliverable —</option></select>
+          </div>
+          <div class="fg" style="width:90px;margin:0"><label style="font-size:11px">Qty</label><input type="number" id="acld-qty" placeholder="e.g. 1" min="0" step="0.001"></div>
+          <div style="align-self:flex-end"><button class="btn btn-primary btn-sm" onclick="acldAddDeliverable(${lineId})">+ Add deliverable</button></div>
+        </div>
+        <div id="acld-prev" style="font-size:12px;color:var(--i2);margin-top:6px"></div>
+      </div>
+      <!-- OPTION 2: add a single material from the master price list -->
+      <div style="background:#F8FAFC;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:10px">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 2 — From price list</div>
         <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
           <div class="fg" style="flex:1;min-width:240px;margin:0">
             <label style="font-size:11px">Select material from price list</label>
@@ -2483,7 +2497,7 @@ function addComponentToLine(lineId) {
       </div>
       <!-- OPTION 2: add a manual / free-text component (not in the price list) -->
       <div style="background:#F8FAFC;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:14px">
-        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 2 — Add manually (not in price list)</div>
+        <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 3 — Add manually (not in price list)</div>
         <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
           <div class="fg" style="margin:0"><label style="font-size:11px">Description</label><input type="text" id="aclc-desc" placeholder="e.g. Silver Birch 12-14cm"></div>
           <div class="fg" style="margin:0"><label style="font-size:11px">Qty</label><input type="number" id="aclc-qty" value="1" min="0" step="0.01"></div>
@@ -2505,10 +2519,75 @@ function addComponentToLine(lineId) {
       </div>
     </div>`;
   document.body.appendChild(panel);
+  acldFilterDels();
   aclmFilterMpl();
-  document.getElementById('aclm-search').focus();
+  document.getElementById('acld-search').focus();
 }
 
+// — Deliverable handlers for the add-to-existing-line dialog (pulls in a deliverable's materials) —
+function acldFilterDels() {
+  const sel = document.getElementById('acld-select');
+  if (!sel) return;
+  const q = (document.getElementById('acld-search').value || '').toLowerCase().trim();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a deliverable —</option>' +
+    dels.filter(d => !q || d.code.toLowerCase().includes(q) || (d.name||'').toLowerCase().includes(q) || (d.category||'').toLowerCase().includes(q))
+      .sort((a,b) => (a.category||'').localeCompare(b.category||'') || (a.code||'').localeCompare(b.code||'', undefined, {numeric:true}))
+      .map(d => { const n=(d.materials||[]).length; return `<option value="${d.code}"${d.code===prev?' selected':''}>${d.code} — ${(d.name||'').replace(/</g,'&lt;')} (${n} mat${n!==1?'s':''})</option>`; }).join('');
+}
+function acldSelected() {
+  const sel = document.getElementById('acld-select'), d = dels.find(x => x.code === sel.value);
+  const prev = document.getElementById('acld-prev');
+  if (!prev) return;
+  if (d) {
+    const mats = d.materials || [];
+    const matCost = mats.reduce((s,m) => s + matChargedUnit(m) * (m.qtyPerUnit||0), 0);
+    prev.innerHTML = `<strong>${(d.name||d.code)}</strong> — ${mats.length} material${mats.length!==1?'s':''}, £${matCost.toFixed(2)} materials per ${d.unit||'unit'}`;
+    const q = document.getElementById('acld-qty'); if (q) q.focus();
+  } else prev.innerHTML = '';
+}
+function acldAddDeliverable(lineId) {
+  const l = lines.find(x => x.id === lineId);
+  if (!l) return;
+  const sel = document.getElementById('acld-select'), d = dels.find(x => x.code === (sel ? sel.value : ''));
+  if (!d) { toast('Select a deliverable first'); return; }
+  const mult = parseFloat(document.getElementById('acld-qty').value);
+  if (!mult || mult <= 0) { toast('Enter a quantity greater than 0'); return; }
+  const mats = d.materials || [];
+  if (!mats.length) { toast('That deliverable has no materials to add'); return; }
+  if (!l.miscComponents) l.miscComponents = [];
+  let added = 0;
+  mats.forEach(m => {
+    const qty = Math.round((m.qtyPerUnit||0) * mult * 1000) / 1000;
+    if (!qty) return;
+    const mplItem = m.stockCode ? mpl.find(x => x.code === m.stockCode) : null;
+    l.miscComponents.push({
+      desc: m.description || m.stockCode || 'Material',
+      qty: qty,
+      unit: m.unit || (mplItem ? mplItem.unit : '') || 'item',
+      cost: Math.round(matChargedUnit(m) * 10000) / 10000,
+      supplierCost: matSupplierUnit(m),
+      supplier: mplItem ? (mplItem.supplier || '') : '',
+      url: mplItem ? (mplItem.supplierUrl || '') : '',
+      notes: '',
+      fromMpl: !!m.stockCode,
+      mplCode: m.stockCode || ''
+    });
+    added++;
+  });
+  if (!added) { toast('Nothing to add'); return; }
+  l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
+  l.unitPrice = miscUnitPrice(l);
+  isDirty = true;
+  renderLines();
+  recalc();
+  if (sel) sel.value = '';
+  const q = document.getElementById('acld-qty'); if (q) q.value = '';
+  const srch = document.getElementById('acld-search'); if (srch) srch.value = '';
+  acldFilterDels();
+  const prev = document.getElementById('acld-prev'); if (prev) prev.innerHTML = '';
+  toast('Added ' + added + ' material' + (added !== 1 ? 's' : '') + ' from ' + d.code);
+}
 // — Option 1 (price list) handlers for the add-to-existing-line dialog —
 function aclmFilterMpl() {
   const sel = document.getElementById('aclm-select');
