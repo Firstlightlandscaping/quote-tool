@@ -539,7 +539,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
       </div>
       <div class="fg"><label>Internal notes (not shown to client)</label><input type="text" id="add-notes" placeholder="e.g. check stock availability..."></div>
       <div class="pills" id="pills"></div>
-      <details id="misc-details" ontoggle="if(this.open) mcmFilterMpl()">
+      <details id="misc-details" ontoggle="if(this.open){mcmFilterMpl();mcdFilterDels();}">
         <summary style="font-size:12px;color:var(--bl);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px;font-weight:500;user-select:none">
           <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
           Add a custom / miscellaneous item
@@ -572,9 +572,23 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
               <span style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">Components / Items (internal — not shown to client)</span>
               <span style="font-size:11px;color:var(--i3)">Add from the price list or enter manually — both add to the list below</span>
             </div>
-            <!-- OPTION 1: add a material from the master price list -->
+            <!-- OPTION 1: pull in all the materials of an existing deliverable at once -->
             <div style="background:#fff;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:10px">
-              <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 1 — From price list</div>
+              <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 1 — From a deliverable (adds its materials)</div>
+              <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
+                <div class="fg" style="flex:1;min-width:240px">
+                  <label style="font-size:11px">Select deliverable</label>
+                  <input type="text" id="mcd-search" placeholder="Filter by code or name..." autocomplete="off" oninput="mcdFilterDels()" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px 8px">
+                  <select id="mcd-select" onchange="mcdSelected()" style="width:100%"><option value="">— select a deliverable —</option></select>
+                </div>
+                <div class="fg" style="width:90px"><label style="font-size:11px">Qty</label><input type="number" id="mcd-qty" placeholder="e.g. 1" min="0" step="0.001"></div>
+                <div style="align-self:flex-end"><button class="btn btn-primary btn-sm" onclick="addDeliverableToMisc()">+ Add deliverable</button></div>
+              </div>
+              <div id="mcd-prev" style="font-size:12px;color:var(--i2);margin-top:6px"></div>
+            </div>
+            <!-- OPTION 2: add a single material from the master price list -->
+            <div style="background:#fff;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:10px">
+              <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 2 — From price list</div>
               <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
                 <div class="fg" style="flex:1;min-width:240px">
                   <label style="font-size:11px">Select material from price list</label>
@@ -588,7 +602,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
             </div>
             <!-- OPTION 2: add a manual / free-text component (not in the price list) -->
             <div style="background:#fff;border:1px dashed var(--bd);border-radius:7px;padding:10px;margin-bottom:10px">
-              <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 2 — Add manually (not in price list)</div>
+              <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:8px">Option 3 — Add manually (not in price list)</div>
               <div id="mc-comp-form">
                 <div style="display:grid;grid-template-columns:2fr 1fr 1fr;gap:8px;margin-bottom:8px">
                   <div class="fg" style="margin:0"><label style="font-size:11px">Description</label><input type="text" id="mcc-desc" placeholder="e.g. Silver Birch 12-14cm"></div>
@@ -2609,6 +2623,73 @@ function updateMccCost() {
 // Picks an MPL material into a misc item as a component (supplier price + 10% markup),
 // appends its description to the client-facing description, and feeds mat cost via
 // the existing component machinery (updateMiscTotal).
+// OPTION 1 (misc builder): pull ALL of a chosen deliverable's materials into the misc as
+// components at once, ×qty. Each becomes a price-list-style component (same shape as Option 2),
+// so it renders in the component list and aggregates in the Order List exactly like any other
+// misc material. Pricing uses the canonical matSupplierUnit/matChargedUnit helpers; supplier +
+// URL come from the MPL entry matching the material's stock code.
+function mcdFilterDels() {
+  const sel = document.getElementById('mcd-select');
+  if (!sel) return;
+  const q = (document.getElementById('mcd-search').value || '').toLowerCase().trim();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a deliverable —</option>' +
+    dels.filter(d => !q ||
+        d.code.toLowerCase().includes(q) ||
+        (d.name||'').toLowerCase().includes(q) ||
+        (d.category||'').toLowerCase().includes(q))
+      .sort((a,b) => (a.category||'').localeCompare(b.category||'') || (a.code||'').localeCompare(b.code||'', undefined, {numeric:true}))
+      .map(d => { const n=(d.materials||[]).length; return `<option value="${d.code}"${d.code===prev?' selected':''}>${d.code} — ${(d.name||'').replace(/</g,'&lt;')} (${n} mat${n!==1?'s':''})</option>`; }).join('');
+}
+function mcdSelected() {
+  const sel = document.getElementById('mcd-select'), d = dels.find(x => x.code === sel.value);
+  const prev = document.getElementById('mcd-prev');
+  if (!prev) return;
+  if (d) {
+    const mats = d.materials || [];
+    const matCost = mats.reduce((s,m) => s + matChargedUnit(m) * (m.qtyPerUnit||0), 0);
+    prev.innerHTML = `<strong>${(d.name||d.code)}</strong> — ${mats.length} material${mats.length!==1?'s':''}, £${matCost.toFixed(2)} materials per ${d.unit||'unit'}`;
+    const q = document.getElementById('mcd-qty'); if (q) q.focus();
+  } else prev.innerHTML = '';
+}
+function addDeliverableToMisc() {
+  const sel = document.getElementById('mcd-select'), d = dels.find(x => x.code === (sel ? sel.value : ''));
+  if (!d) { toast('Select a deliverable first'); return; }
+  const mult = parseFloat(document.getElementById('mcd-qty').value);
+  if (!mult || mult <= 0) { toast('Enter a quantity greater than 0'); return; }
+  const mats = d.materials || [];
+  if (!mats.length) { toast('That deliverable has no materials to add'); return; }
+  let added = 0;
+  mats.forEach(m => {
+    const qty = Math.round((m.qtyPerUnit||0) * mult * 1000) / 1000;
+    if (!qty) return;
+    const mplItem = m.stockCode ? mpl.find(x => x.code === m.stockCode) : null;
+    const desc = m.description || m.stockCode || 'Material';
+    const unit = m.unit || (mplItem ? mplItem.unit : '') || 'item';
+    miscComponents.push({
+      desc: desc,
+      qty: qty,
+      unit: unit,
+      cost: Math.round(matChargedUnit(m) * 10000) / 10000,   // charged (+10%) unit price
+      supplierCost: matSupplierUnit(m),                       // raw supplier unit price
+      supplier: mplItem ? (mplItem.supplier || '') : '',
+      url: mplItem ? (mplItem.supplierUrl || '') : '',
+      notes: '',
+      fromMpl: !!m.stockCode,   // has a stock code → price-list-sourced (supplier cost locked on edit)
+      mplCode: m.stockCode || ''
+    });
+    appendMiscXdesc(miscCutLine(qty, desc, unit));   // cutting-list line on the client description
+    added++;
+  });
+  if (sel) sel.value = '';
+  const q = document.getElementById('mcd-qty'); if (q) q.value = '';
+  const srch = document.getElementById('mcd-search'); if (srch) srch.value = '';
+  mcdFilterDels();
+  const prev = document.getElementById('mcd-prev'); if (prev) prev.innerHTML = '';
+  renderMiscComponents();
+  updateMiscTotal();
+  toast('Added ' + added + ' material' + (added !== 1 ? 's' : '') + ' from ' + d.code);
+}
 function mcmFilterMpl() {
   const sel = document.getElementById('mcm-select');
   if (!sel) return;
@@ -2651,8 +2732,8 @@ function addMplMaterialToMisc() {
     fromMpl: true,              // provenance: came from the price list (Option 1) — supplier cost is locked on edit
     mplCode: item.code
   });
-  // Append the material description as a new line to the client-facing description (never overwrite)
-  appendMiscXdesc(item.description || item.code);
+  // Append a cutting-list line ("qty × name (unit)") to the client-facing description (never overwrite)
+  appendMiscXdesc(miscCutLine(qty, item.description || item.code, item.unit || 'item'));
   // Reset the picker
   sel.value = '';
   document.getElementById('mcm-qty').value = '';
@@ -2673,6 +2754,8 @@ function appendMiscXdesc(text) {
   else if (cur.endsWith('\n')) ta.value = cur + text;
   else ta.value = cur + '\n' + text;
 }
+// Format a component as a cutting-list line for the client description: "2 × Fence post (each)".
+function miscCutLine(qty, name, unit) { return (qty||0) + ' × ' + (name||'') + (unit ? ' (' + unit + ')' : ''); }
 
 function saveMiscComponent() {
   const desc = document.getElementById('mcc-desc').value.trim();
@@ -2693,9 +2776,9 @@ function saveMiscComponent() {
     miscComponents[editingCompIdx] = comp;
   } else {
     miscComponents.push(comp);
-    // Mirror the price-list picker: add the typed description as a new line on the
+    // Mirror the price-list picker: add a cutting-list line ("qty × name (unit)") to the
     // client-facing description (never overwrites existing text).
-    appendMiscXdesc(desc);
+    appendMiscXdesc(miscCutLine(comp.qty, desc, comp.unit));
   }
   resetMiscCompForm();
   renderMiscComponents();
