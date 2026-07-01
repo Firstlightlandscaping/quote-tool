@@ -617,17 +617,17 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
                 <div style="margin-bottom:8px">
                   <div class="fg" style="margin:0"><label style="font-size:11px">Notes</label><input type="text" id="mcc-notes" placeholder="e.g. check availability, order 2 weeks ahead..."></div>
                 </div>
-                <div style="display:flex;gap:6px">
-                  <button class="btn btn-primary btn-sm" onclick="saveMiscComponent()">Add component</button>
+                <div style="display:flex;gap:6px;justify-content:flex-end">
                   <button class="btn btn-outline btn-sm" onclick="resetMiscCompForm()">Clear</button>
+                  <button class="btn btn-primary btn-sm" onclick="saveMiscComponent()">+ Add component</button>
                 </div>
               </div>
             </div>
             <div id="mc-components-list"></div>
           </div>
 
-          <div style="margin-top:12px;text-align:right">
-            <button class="btn btn-outline btn-sm" onclick="addMisc()">+ Add to Quote</button>
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);text-align:right">
+            <button class="btn btn-primary" onclick="addMisc()" style="padding:11px 26px;font-size:14px">+ Add to Quote</button>
           </div>
         </div>
       </details>
@@ -2723,7 +2723,7 @@ function resetMiscCompForm() {
   const ch=document.getElementById('mcc-charged'); if(ch) ch.value='0.00';
   editingCompIdx = -1;
   const btn = document.querySelector('#mc-comp-form .btn-primary');
-  if (btn) btn.textContent = 'Add component';
+  if (btn) btn.textContent = '+ Add component';
 }
 
 
