@@ -6,6 +6,12 @@
       "runtimeExecutable": "npx",
       "runtimeArgs": ["serve", ".", "-l", "5050"],
       "port": 5050
+    },
+    {
+      "name": "quote-tool-preview",
+      "runtimeExecutable": "npx",
+      "runtimeArgs": ["serve", ".", "-l", "5051"],
+      "port": 5051
     }
   ]
 }
