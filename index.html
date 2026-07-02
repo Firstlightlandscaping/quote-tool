@@ -790,6 +790,17 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
     </div>
   </div>
 
+  <!-- Note Templates Manager -->
+  <div class="card" id="note-templates-card">
+    <div class="ch">
+      <span class="ct">Note Templates</span>
+      <span style="font-size:12px;color:var(--i3)">Saved text notes for quick reuse</span>
+    </div>
+    <div class="cb" id="note-templates-list">
+      <div class="empty-lines" style="font-size:13px;color:var(--i3)">No saved notes yet. Add a text note in the Quote Builder and tick "Save as template".</div>
+    </div>
+  </div>
+
   <div class="card" id="add-mat-form" style="display:none">
     <div class="ch"><span class="ct">Add New Material to Master Price List</span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:12px">
@@ -956,6 +967,7 @@ let savedQuotes = [];
 let ndMats = [];
 let miscComponents = [];
 let groupTemplates = [];
+let noteTemplates = [];
 let staffList = ['Neal Baker', 'Liam'];
 let showArchivedDels = false;
 let showArchivedMPL = false;
@@ -1139,7 +1151,7 @@ function updateAuthStatus() {
 }
 
 // ── DATA BACKUP (read-only export of all tables) ──────────────────────────────
-const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates'];
+const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings'];
 
 // Fetch EVERY row of a table, paging in case it exceeds PostgREST's per-request cap (~1000).
 // Single-user app with no concurrent writes during a backup, so offset paging is reliable.
@@ -1198,8 +1210,8 @@ async function backupAllData() {
 
 // ── DATA RESTORE (import a backup file — write rows back per table) ────────────
 // Parents before children (matters only if FKs are ever added; harmless without).
-const RESTORE_ORDER = ['deliverables','mpl','staff','group_templates','quotes','materials','quote_lines'];
-const RESTORE_CONFLICT = { quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id' };
+const RESTORE_ORDER = ['company_settings','deliverables','mpl','staff','group_templates','quotes','materials','quote_lines'];
+const RESTORE_CONFLICT = { company_settings:'id', quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id' };
 let _restoreBackup = null;
 
 // Show which DB we'd write to, and flag if it's the baked-in LIVE url
@@ -1264,7 +1276,7 @@ async function restoreRun() {
   let msg = 'RESTORE into:\n' + target + '\n\nMode: ' + mode.toUpperCase() + '\n';
   if (SUPABASE_URL === _DEFAULT_URL) msg += '\n⚠⚠ THIS LOOKS LIKE YOUR LIVE DATABASE ⚠⚠\n';
   msg += (mode==='wipe')
-    ? '\nThis DELETES all rows in the 7 tables, then inserts the backup.'
+    ? '\nThis DELETES all rows in the ' + RESTORE_ORDER.length + ' tables, then inserts the backup.'
     : '\nThis UPSERTS the backup (adds new rows, overwrites rows with matching keys).';
   if (!confirm(msg + '\n\nContinue?')) return;
 
@@ -1278,6 +1290,9 @@ async function restoreRun() {
   try {
     let written = 0;
     for (const t of RESTORE_ORDER) {
+      // Skip tables the backup file doesn't contain (e.g. company_settings in pre-2026-07 backups) —
+      // otherwise a wipe restore would delete live rows and put nothing back.
+      if (!(t in b.tables)) continue;
       const rows = b.tables[t] || [], conflict = RESTORE_CONFLICT[t];
       if (status) status.textContent = `Restoring ${t}… (${rows.length} rows)`;
       if (mode === 'wipe') await sb('DELETE', t, null, '?'+conflict+'=not.is.null');
@@ -1317,6 +1332,8 @@ async function loadFromSupabase() {
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
   if (document.getElementById('ct-editor')) initContractTermsEditor();
+  noteTemplates = normalizeNoteTemplates(companySettings && companySettings.note_templates);
+  renderNoteTemplates();
   // Load group templates
   if (templateRows && templateRows.length > 0) {
     groupTemplates = templateRows.map(t => ({ id: t.id, name: t.name, description: t.description||'' }));
@@ -2967,6 +2984,15 @@ function addMisc() {
 function addTextNote() {
   const existing = document.getElementById('new-note-dialog');
   if (existing) existing.remove();
+  // Saved-note dropdown, shown only when templates exist (mirrors the group dialog)
+  const sorted = [...noteTemplates].sort((a,b) => noteTemplateName(a).localeCompare(noteTemplateName(b)));
+  const templateOpts = sorted.length > 0
+    ? `<label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Use saved note (optional)</label>
+       <select id="new-note-template" onchange="applyNoteTemplate()" style="width:100%;font-size:13px;padding:9px 10px;border:1px solid var(--bd);border-radius:6px;margin-bottom:14px;box-sizing:border-box">
+         <option value="">— new note —</option>
+         ${sorted.map(t => `<option value="${cwEsc(String(t.id))}">${cwEsc(noteTemplateName(t))}</option>`).join('')}
+       </select>`
+    : '';
   const panel = document.createElement('div');
   panel.id = 'new-note-dialog';
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -2974,10 +3000,15 @@ function addTextNote() {
     <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
       <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">📝 Add text note</div>
       <p style="font-size:11px;color:var(--i3);margin:0 0 14px">A text-only line on the quote — no price, not counted in totals.</p>
+      ${templateOpts}
       <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Heading <span style="color:var(--i3)">(optional — prints bold)</span></label>
       <input type="text" id="new-note-head" placeholder="Leave blank for plain text" style="width:100%;font-size:13px;font-weight:600;padding:9px 10px;border:1px solid var(--bd);border-radius:6px;margin-bottom:14px;box-sizing:border-box">
       <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Note text</label>
       <textarea id="new-note-body" rows="6" placeholder="Type the note text shown on the printed quote..." style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical;box-sizing:border-box"></textarea>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
+        <input type="checkbox" id="new-note-save-template" style="cursor:pointer">
+        <label for="new-note-save-template" style="cursor:pointer;font-weight:400;font-size:12px;color:var(--i2)">Save as template for future quotes</label>
+      </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
         <button class="btn btn-outline" onclick="document.getElementById('new-note-dialog').remove()">Cancel</button>
         <button class="btn btn-primary" onclick="saveNewNote()">Save</button>
@@ -2987,14 +3018,35 @@ function addTextNote() {
   const h = document.getElementById('new-note-head');
   if (h) h.focus();
 }
-function saveNewNote() {
+function applyNoteTemplate() {
+  const sel = document.getElementById('new-note-template');
+  if (!sel || !sel.value) return;
+  const t = noteTemplates.find(x => String(x.id) === sel.value);
+  if (!t) return;
+  // Fills an editable COPY — changes here never touch the saved template
+  document.getElementById('new-note-head').value = t.heading || '';
+  document.getElementById('new-note-body').value = t.body || '';
+}
+async function saveNewNote() {
   const head = (document.getElementById('new-note-head').value||'').trim();
   const body = (document.getElementById('new-note-body').value||'').trim();
+  const saveTpl = document.getElementById('new-note-save-template');
   if (!head && !body) { toast('Enter a heading or note text'); return; }
   pushLine({code:'',name:head,xdesc:body,notes:'',qty:0,unitPrice:0,matCost:0,labDays:0,labRate:0,labTotal:0,vat:0,optional:false,misc:false,note:true,unit:'',materials:[]});
   const dlg = document.getElementById('new-note-dialog');
   if (dlg) dlg.remove();
   toast('Text note added');
+  if (saveTpl && saveTpl.checked) {
+    const tpl = { id: Date.now(), heading: head, body };
+    noteTemplates.push(tpl);
+    try {
+      await persistNoteTemplates();
+      renderNoteTemplates();
+      toast('✓ Note "' + noteTemplateName(tpl) + '" saved as template');
+    } catch(e) {
+      toast('⚠ Template save failed: ' + e.message);
+    }
+  }
 }
 
 // ── LINE MANAGEMENT ────────────────────────────────────────────────────────────
@@ -5199,6 +5251,100 @@ async function deleteGroupTemplate(id) {
   }
   renderGroupTemplates();
   toast('Template deleted');
+}
+
+// ── NOTE TEMPLATES ─────────────────────────────────────────────────────────────
+// Saved text-note templates, stored as a jsonb array in company_settings.note_templates
+// (same storage pattern as contract_terms — no new table, RLS already covers it).
+// Template name is always derived (heading, else start of body) — never stored separately.
+function normalizeNoteTemplates(v) {
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter(t => t && typeof t === 'object' && (String(t.heading||'').trim() || String(t.body||'').trim()))
+    .map(t => ({ id: t.id != null ? t.id : Date.now(), heading: String(t.heading||''), body: String(t.body||'') }));
+}
+function noteTemplateName(t) {
+  const h = (t.heading||'').trim();
+  if (h) return h;
+  const b = (t.body||'').trim().replace(/\s+/g,' ');
+  return b.length > 48 ? b.slice(0,48) + '…' : b;
+}
+async function persistNoteTemplates() {
+  if (!USE_SUPABASE) return;
+  const payload = noteTemplates.map(t => ({ id: t.id, heading: t.heading, body: t.body }));
+  if (companySettings && companySettings.id != null) {
+    await sb('PATCH', 'company_settings', { note_templates: payload, updated_at: new Date().toISOString() }, '?id=eq.' + encodeURIComponent(companySettings.id));
+  } else {
+    const ins = await sb('POST', 'company_settings', [{ note_templates: payload }], '', true);
+    if (Array.isArray(ins) && ins[0]) companySettings = ins[0];
+  }
+  if (companySettings) companySettings.note_templates = payload;
+}
+function renderNoteTemplates() {
+  const el = document.getElementById('note-templates-list');
+  if (!el) return;
+  if (!noteTemplates.length) {
+    el.innerHTML = '<div class="empty-lines" style="font-size:13px;color:var(--i3)">No saved notes yet. Add a text note in the Quote Builder and tick "Save as template".</div>';
+    return;
+  }
+  el.innerHTML = noteTemplates.map(t => `
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)">
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">📝 ${cwEsc(noteTemplateName(t))}</div>
+        ${(t.heading||'').trim() && (t.body||'').trim() ? `<div style="font-size:11px;color:var(--i3);margin-top:2px;white-space:pre-line">${cwEsc(t.body)}</div>` : ''}
+      </div>
+      <button class="btn btn-outline btn-sm" onclick="editNoteTemplate(${JSON.stringify(t.id)})">Edit</button>
+      <button class="btn btn-red btn-sm" onclick="deleteNoteTemplate(${JSON.stringify(t.id)})">Delete</button>
+    </div>
+  `).join('');
+}
+function editNoteTemplate(id) {
+  const t = noteTemplates.find(x => x.id === id);
+  if (!t) return;
+  const existing = document.getElementById('nt-edit-dialog');
+  if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'nt-edit-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 16px;font-size:16px">Edit Note Template</h3>
+      <div class="fg" style="margin-bottom:12px">
+        <label>Heading (optional — prints bold)</label>
+        <input type="text" id="nt-edit-head" value="${cwEsc(t.heading)}" style="width:100%">
+      </div>
+      <div class="fg" style="margin-bottom:16px">
+        <label>Note text</label>
+        <textarea id="nt-edit-body" rows="6" style="width:100%;resize:vertical">${cwEsc(t.body)}</textarea>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('nt-edit-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveNoteTemplateEdit(${JSON.stringify(id)})">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  document.getElementById('nt-edit-head').focus();
+}
+async function saveNoteTemplateEdit(id) {
+  const heading = document.getElementById('nt-edit-head').value.trim();
+  const body = document.getElementById('nt-edit-body').value.trim();
+  if (!heading && !body) { toast('Enter a heading or note text'); return; }
+  const t = noteTemplates.find(x => x.id === id);
+  if (!t) return;
+  t.heading = heading; t.body = body;
+  try { await persistNoteTemplates(); }
+  catch(e) { toast('Save failed: ' + e.message); return; }
+  document.getElementById('nt-edit-dialog').remove();
+  renderNoteTemplates();
+  toast('✓ Note template updated');
+}
+async function deleteNoteTemplate(id) {
+  if (!confirm('Delete this saved note?')) return;
+  noteTemplates = noteTemplates.filter(t => t.id !== id);
+  try { await persistNoteTemplates(); }
+  catch(e) { toast('Delete failed: ' + e.message); }
+  renderNoteTemplates();
+  toast('Note template deleted');
 }
 
 function renderNDMats() {
