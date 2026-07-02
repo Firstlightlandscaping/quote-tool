@@ -400,7 +400,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
 <!-- ═══ TAB 1: QUOTE BUILDER ═══ -->
 <div id="tab-quote" class="tab-panel on">
   <div class="qdoc">
-    <div class="ch no-print"><span class="ct">Quote Preview — client view</span><span id="ref-badge" style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace"></span></div>
+    <div class="ch no-print"><span class="ct">Quote Preview — client view</span><span id="est-badge" style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#6B7280;border:2px solid #6B7280;border-radius:20px;padding:2px 10px;margin-right:8px">ESTIMATE — guide only</span><span id="ref-badge" style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace"></span></div>
 
     <div class="q-brand-header">
       <div class="q-brand-left">
@@ -498,6 +498,10 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
         </div>
         <div class="fg"><label>VAT Number</label><input type="text" id="in-vno" value="242 6140 37" oninput="syncH()"></div>
         <div class="fg"><label>Job Summary <button type="button" onclick="openTextareaXdescModal('in-sum','JOB SUMMARY','This text prints as the Summary on the quote.')" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3);margin-left:6px" title="Expand editor">⤢ Expand</button></label><textarea id="in-sum" rows="2" placeholder="e.g. Back garden quotation" oninput="syncH();document.getElementById('qh-summary').textContent=this.value"></textarea></div>
+        <div class="fg" style="display:flex;align-items:center;gap:8px;align-self:end;padding-bottom:6px">
+          <input type="checkbox" id="in-estimate" onchange="syncH()" style="cursor:pointer">
+          <label for="in-estimate" style="cursor:pointer;font-weight:400;margin:0" title="A design-stage pricing guide — saved with status Estimate, excluded from sales totals, never accepted">This is an estimate (guide only)</label>
+        </div>
       </div>
     </div>
   </div>
@@ -884,19 +888,15 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
   <div class="card">
     <div class="ch">
       <span class="ct">Saved Quotes</span>
-      <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-outline btn-sm" onclick="openSalesCheck()" title="Quick sales report — totals by period and status">📊 Sales report</button>
+        <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
+      </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--bd)">
       <input type="text" id="sq-search" placeholder="Search by client or ref..." oninput="renderSaved()" style="flex:2;min-width:200px">
       <select id="sq-sign-filter" onchange="renderSaved()" style="flex:1;min-width:130px">
         <option value="">All staff</option>
-      </select>
-      <select id="sq-status-filter" onchange="renderSaved()" style="flex:1;min-width:120px">
-        <option value="">All statuses</option>
-        <option value="Draft">Draft</option>
-        <option value="Sent">Sent</option>
-        <option value="Accepted">Accepted</option>
-        <option value="Declined">Declined</option>
       </select>
       <select id="sq-sort" onchange="renderSaved()" style="flex:1;min-width:150px">
         <option value="newest">Newest first</option>
@@ -905,6 +905,11 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
         <option value="value-high">Value (high→low)</option>
         <option value="value-low">Value (low→high)</option>
       </select>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:8px 16px;border-bottom:1px solid var(--bd)">
+      <span style="font-size:11px;color:var(--i3);text-transform:uppercase;letter-spacing:.04em;font-weight:600">Status:</span>
+      <div id="sq-status-chips" style="display:flex;gap:6px;flex-wrap:wrap;align-items:center"></div>
+      <span style="font-size:11px;color:var(--i4)">— click to combine; none = all</span>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;padding:8px 16px;border-bottom:1px solid var(--bd);background:#FAFAFA">
       <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i3)">
@@ -916,7 +921,6 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
         <input type="date" id="sq-date-to" onchange="renderSaved()" style="font-size:12px;padding:3px 6px;border:1px solid var(--bd);border-radius:4px">
       </div>
       <button class="btn btn-outline btn-sm" onclick="clearSQFilters()">Clear filters</button>
-      <div id="sq-summary" style="margin-left:auto;font-size:12px;color:var(--i3);display:flex;align-items:center"></div>
     </div>
     <div id="saved-list"><div class="empty-lines">No saved quotes yet. Build a quote and click Save.</div></div>
   </div>
@@ -1837,6 +1841,9 @@ function syncH() {
   document.getElementById('qh-greet').textContent = cust || 'Customer';
   document.getElementById('qh-signoff').textContent = sign || '';
   document.getElementById('ref-badge').textContent = ref || '';
+  const estChk = document.getElementById('in-estimate');
+  const estBadge = document.getElementById('est-badge');
+  if (estBadge) estBadge.style.display = (estChk && estChk.checked) ? 'inline-block' : 'none';
 }
 
 // ── PILLS ──────────────────────────────────────────────────────────────────────
@@ -4382,6 +4389,13 @@ async function duplicateQuote(ref) {
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq) return;
   if (!confirm('Duplicate ' + ref + ' (' + (sq.customer||'') + ') as a new quote?\n\nIt will open in the Quote Builder ready to edit. Save when ready to assign a new quote number.')) return;
+  // Revised-version flow: the copy replaces the original for sales data, the original
+  // is kept in full but marked Superseded so it drops out of the totals.
+  if ((sq.status||'Draft') !== 'Superseded' && (sq.status||'Draft') !== 'Estimate') {
+    if (confirm('Is this copy a REVISED VERSION replacing ' + ref + '?\n\nOK  = mark ' + ref + ' as Superseded (kept, but excluded from sales totals)\nCancel = plain copy, ' + ref + ' unchanged')) {
+      await updateQuoteStatus(ref, 'Superseded');
+    }
+  }
   // Load the quote data into lines — leave ref blank, assigned at save time
   lines = sq.lines.map(l => ({...l, id: ++uid}));
   document.getElementById('in-cust').value = sq.customer||'';
@@ -4393,6 +4407,7 @@ async function duplicateQuote(ref) {
   document.getElementById('in-date').value = sq.date||'';
   document.getElementById('in-sum').value = sq.sum||'';
   document.getElementById('in-ref').value = ''; // blank — assigned at save time
+  document.getElementById('in-estimate').checked = (sq.status === 'Estimate'); // a copied estimate stays an estimate
   isDirty = true;
   syncH(); renderLines();
   showTab('quote', document.querySelectorAll('.tab')[0]);
@@ -4411,7 +4426,12 @@ async function saveQuote() {
   }
   const ref = currentRef;
   const existing=savedQuotes.findIndex(q=>q.ref===ref);
-  const existingStatus = existing >= 0 ? (savedQuotes[existing].status || 'Draft') : 'Draft';
+  let existingStatus = existing >= 0 ? (savedQuotes[existing].status || 'Draft') : 'Draft';
+  // Estimate checkbox drives status: ticked → Estimate; unticked on an Estimate → back to Draft.
+  // Other statuses (Sent/Accepted/…) are never touched by a re-save.
+  const _estChk = document.getElementById('in-estimate');
+  if (_estChk && _estChk.checked) existingStatus = 'Estimate';
+  else if (existingStatus === 'Estimate') existingStatus = 'Draft';
   const q={ref,customer:g('in-cust'),date:g('in-date'),addr1:g('in-a1'),city:g('in-city'),post:g('in-post'),sign:g('in-sign'),vno:g('in-vno'),sum:g('in-sum'),summaryHtml:document.getElementById('qh-summary').innerHTML,lines:JSON.parse(JSON.stringify(lines)),saved:new Date().toISOString(),status:existingStatus,contractMeta:(existing>=0?savedQuotes[existing].contractMeta:undefined)};
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
@@ -4481,6 +4501,7 @@ function loadQuote(ref) {
   document.getElementById('in-vno').value=q.vno||'';
   document.getElementById('in-sum').value=q.sum||'';
   document.getElementById('in-date').value=q.date||'';
+  document.getElementById('in-estimate').checked = (q.status === 'Estimate');
   document.getElementById('qh-summary').innerHTML=q.summaryHtml||'';
   lines=q.lines.map(l=>({...l}));
   uid=lines.reduce((m,l)=>Math.max(m,l.id),uid);
@@ -4524,9 +4545,47 @@ function clearSQFilters() {
   ['sq-search','sq-date-from','sq-date-to'].forEach(id => {
     const el = document.getElementById(id); if(el) el.value = '';
   });
-  ['sq-status-filter','sq-sign-filter','sq-sort'].forEach(id => {
+  ['sq-sign-filter','sq-sort'].forEach(id => {
     const el = document.getElementById(id); if(el) el.selectedIndex = 0;
   });
+  document.querySelectorAll('#sq-status-chips .sq-chip').forEach(b => b.classList.remove('on'));
+  paintStatusChips();
+  renderSaved();
+}
+
+// ── QUOTE STATUSES ─────────────────────────────────────────────────────────────
+// Pipeline: Draft → Sent → Accepted/Declined. Non-pipeline: Estimate (design-stage
+// guide, never accepted) and Superseded (replaced by a revised copy) — both kept in
+// full but excluded from sales totals by filtering them out with the status chips.
+const QUOTE_STATUSES = ['Draft','Sent','Accepted','Declined','Estimate','Superseded'];
+const STATUS_COLORS = { Draft:'#F59E0B', Sent:'#3B82F6', Accepted:'#10B981', Declined:'#EF4444', Estimate:'#6B7280', Superseded:'#9CA3AF' };
+
+// Multi-select status filter: toggle chips, none active = show all statuses
+function activeStatusFilter() {
+  return Array.from(document.querySelectorAll('#sq-status-chips .sq-chip.on')).map(b => b.dataset.status);
+}
+function buildStatusChips() {
+  const el = document.getElementById('sq-status-chips');
+  if (!el || el.children.length) return;
+  el.innerHTML = QUOTE_STATUSES.map(s =>
+    `<button type="button" class="sq-chip" data-status="${s}" onclick="toggleStatusChip(this)"
+       style="padding:3px 10px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;background:white">${s}</button>`
+  ).join('');
+  paintStatusChips();
+}
+function paintStatusChips() {
+  document.querySelectorAll('#sq-status-chips .sq-chip').forEach(b => {
+    const c = STATUS_COLORS[b.dataset.status] || '#6B7280';
+    if (b.classList.contains('on')) {
+      b.style.background = c; b.style.color = 'white'; b.style.border = '2px solid ' + c;
+    } else {
+      b.style.background = 'white'; b.style.color = 'var(--i3)'; b.style.border = '2px solid var(--bd)';
+    }
+  });
+}
+function toggleStatusChip(btn) {
+  btn.classList.toggle('on');
+  paintStatusChips();
   renderSaved();
 }
 
@@ -4543,12 +4602,121 @@ async function updateQuoteStatus(ref, status) {
   toast('\u2713 ' + ref + ' marked as ' + status);
 }
 
+// Returns the effective amount for a line within a saved quote's lines array
+// Recalculates group headers from their members so stale unitPrice doesn't cause wrong totals
+function sqAmt(l, sqLines) {
+  if (l.groupId && !l.groupMember) {
+    const members = sqLines.filter(x => x.groupMember === l.groupId);
+    return members.reduce((s, x) => s + x.qty * (x.unitPrice || 0), 0);
+  }
+  return l.qty * (l.unitPrice || 0);
+}
+// Ex-VAT / inc-VAT value of a whole saved quote
+function sqTotals(sq) {
+  const sqLines = sq.lines || [];
+  const vis = sqLines.filter(l => !l.groupMember);
+  const ex = vis.reduce((s,l) => s + sqAmt(l, sqLines), 0);
+  const inc = vis.reduce((s,l) => s + sqAmt(l, sqLines)*(1+(l.vat||0)/100), 0);
+  return { ex, inc };
+}
+
+// ── SALES CHECK (on-demand report — the list itself shows no totals) ──────────
+function openSalesCheck() {
+  const existing = document.getElementById('sales-check-dialog');
+  if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'sales-check-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:560px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:16px">📊 Sales report</h3>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 14px">Totals for quotes dated in the period, by status. Estimates and superseded versions are excluded unless ticked.</p>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
+        <button class="btn btn-outline btn-sm" onclick="scPeriod('this-month')">This month</button>
+        <button class="btn btn-outline btn-sm" onclick="scPeriod('last-month')">Last month</button>
+        <button class="btn btn-outline btn-sm" onclick="scPeriod('this-year')">This year</button>
+        <button class="btn btn-outline btn-sm" onclick="scPeriod('all')">All time</button>
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:12px;font-size:12px;color:var(--i3)">
+        <span>From</span><input type="date" id="sc-from" onchange="scRecalc()" style="font-size:12px;padding:3px 6px;border:1px solid var(--bd);border-radius:4px">
+        <span>to</span><input type="date" id="sc-to" onchange="scRecalc()" style="font-size:12px;padding:3px 6px;border:1px solid var(--bd);border-radius:4px">
+        <select id="sc-sign" onchange="scRecalc()" style="font-size:12px;padding:3px 6px;border:1px solid var(--bd);border-radius:4px;margin-left:auto">
+          <option value="">All staff</option>
+          ${[...new Set([...staffList, ...savedQuotes.map(sq => sq.sign||'').filter(Boolean)])].filter(Boolean).sort().map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
+        </select>
+      </div>
+      <div id="sc-statuses" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:14px">
+        ${QUOTE_STATUSES.map(s => `
+          <label style="display:flex;align-items:center;gap:5px;font-size:12px;cursor:pointer;font-weight:600;color:${STATUS_COLORS[s]}">
+            <input type="checkbox" value="${s}" onchange="scRecalc()" ${['Sent','Accepted','Declined'].includes(s)?'checked':''} style="cursor:pointer">${s}
+          </label>`).join('')}
+      </div>
+      <div id="sc-results" style="border-top:1px solid var(--bd);padding-top:12px;font-size:13px"></div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('sales-check-dialog').remove()">Close</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  scPeriod('this-month');
+}
+function scPeriod(p) {
+  const now = new Date();
+  const f = d => d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  let from = '', to = '';
+  if (p === 'this-month')      { from = f(new Date(now.getFullYear(), now.getMonth(), 1));    to = f(now); }
+  else if (p === 'last-month') { from = f(new Date(now.getFullYear(), now.getMonth()-1, 1));  to = f(new Date(now.getFullYear(), now.getMonth(), 0)); }
+  else if (p === 'this-year')  { from = f(new Date(now.getFullYear(), 0, 1));                 to = f(now); }
+  document.getElementById('sc-from').value = from;
+  document.getElementById('sc-to').value = to;
+  scRecalc();
+}
+function scRecalc() {
+  const out = document.getElementById('sc-results');
+  if (!out) return;
+  const from = document.getElementById('sc-from').value;
+  const to = document.getElementById('sc-to').value;
+  const sign = document.getElementById('sc-sign').value;
+  const statuses = Array.from(document.querySelectorAll('#sc-statuses input:checked')).map(c => c.value);
+  const inPeriod = savedQuotes.filter(sq => {
+    if (!statuses.includes(sq.status || 'Draft')) return false;
+    if (sign && (sq.sign||'') !== sign) return false;
+    const qd = new Date(sq.saved || sq.date || 0);
+    if (from && qd < new Date(from)) return false;
+    if (to && qd > new Date(to + 'T23:59:59')) return false;
+    return true;
+  });
+  if (!statuses.length) { out.innerHTML = '<em style="color:var(--i3)">Tick at least one status.</em>'; return; }
+  if (!inPeriod.length) { out.innerHTML = '<em style="color:var(--i3)">No quotes match this period + status selection.</em>'; return; }
+  let totEx = 0, totInc = 0;
+  const byStatus = {};
+  inPeriod.forEach(sq => {
+    const t = sqTotals(sq);
+    totEx += t.ex; totInc += t.inc;
+    const st = sq.status || 'Draft';
+    if (!byStatus[st]) byStatus[st] = { n:0, ex:0 };
+    byStatus[st].n++; byStatus[st].ex += t.ex;
+  });
+  const money = v => '£' + v.toLocaleString('en-GB', { minimumFractionDigits:2, maximumFractionDigits:2 });
+  out.innerHTML = `
+    <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">
+      <div><div style="font-size:11px;color:var(--i3)">Quotes</div><div style="font-size:20px;font-weight:700">${inPeriod.length}</div></div>
+      <div><div style="font-size:11px;color:var(--i3)">Ex VAT</div><div style="font-size:20px;font-weight:700">${money(totEx)}</div></div>
+      <div><div style="font-size:11px;color:var(--i3)">Inc VAT</div><div style="font-size:20px;font-weight:700">${money(totInc)}</div></div>
+    </div>
+    ${QUOTE_STATUSES.filter(s => byStatus[s]).map(s =>
+      `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--bd)">
+         <span style="color:${STATUS_COLORS[s]};font-weight:600">${s}</span>
+         <span>${byStatus[s].n} · ${money(byStatus[s].ex)} ex VAT</span>
+       </div>`).join('')}`;
+}
+
 function renderSaved() {
+  buildStatusChips();
   const el = document.getElementById('saved-list');
   if (!savedQuotes.length) { el.innerHTML = '<div class="empty-lines">No saved quotes yet.</div>'; return; }
 
   const q = (document.getElementById('sq-search')||{value:''}).value.toLowerCase();
-  const statusFilter = (document.getElementById('sq-status-filter')||{value:''}).value;
+  const statusFilter = activeStatusFilter();
   const signFilter = (document.getElementById('sq-sign-filter')||{value:''}).value;
   const sortBy = (document.getElementById('sq-sort')||{value:'newest'}).value;
   const dateFrom = (document.getElementById('sq-date-from')||{value:''}).value;
@@ -4565,7 +4733,7 @@ function renderSaved() {
   }
 
   let filtered = savedQuotes.filter(sq => {
-    if (statusFilter && (sq.status||'Draft') !== statusFilter) return false;
+    if (statusFilter.length && !statusFilter.includes(sq.status||'Draft')) return false;
     if (signFilter && (sq.sign||'') !== signFilter) return false;
     if (dateFrom) {
       const sqDate = new Date(sq.saved||sq.date||0);
@@ -4592,35 +4760,7 @@ function renderSaved() {
     return 0;
   });
 
-// Returns the effective amount for a line within a saved quote's lines array
-// Recalculates group headers from their members so stale unitPrice doesn't cause wrong totals
-function sqAmt(l, sqLines) {
-  if (l.groupId && !l.groupMember) {
-    const members = sqLines.filter(x => x.groupMember === l.groupId);
-    return members.reduce((s, x) => s + x.qty * (x.unitPrice || 0), 0);
-  }
-  return l.qty * (l.unitPrice || 0);
-}
-
-  // Update summary bar
-  const summaryEl = document.getElementById('sq-summary');
-  if (summaryEl) {
-    const totalExVat = filtered.reduce((s, sq) => {
-      const sqLines = sq.lines || [];
-      return s + sqLines.filter(l=>!l.groupMember).reduce((ls,l)=>ls+sqAmt(l,sqLines),0);
-    }, 0);
-    const totalIncVat = filtered.reduce((s, sq) => {
-      const sqLines = sq.lines || [];
-      return s + sqLines.filter(l=>!l.groupMember).reduce((ls,l)=>ls+sqAmt(l,sqLines)*(1+(l.vat||0)/100),0);
-    }, 0);
-    summaryEl.innerHTML = filtered.length
-      ? `<strong>${filtered.length}</strong> quote${filtered.length!==1?'s':''} &nbsp;|&nbsp; Ex VAT: <strong>£${totalExVat.toFixed(2)}</strong> &nbsp;|&nbsp; Inc VAT: <strong>£${totalIncVat.toFixed(2)}</strong>`
-      : '';
-  }
-
   if (!filtered.length) { el.innerHTML = '<div class="empty-lines">No quotes match your search.</div>'; return; }
-
-  const statusColors = { Draft:'#F59E0B', Sent:'#3B82F6', Accepted:'#10B981', Declined:'#EF4444' };
 
   el.innerHTML = filtered.map(sq => {
     // Correctly sum: exclude group members, use sqAmt to recalculate stale group headers
@@ -4631,7 +4771,7 @@ function sqAmt(l, sqLines) {
     const total = sub + vat;
     const d = sq.saved ? new Date(sq.saved).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : sq.date||'';
     const status = sq.status || 'Draft';
-    const statusCol = statusColors[status] || '#6B7280';
+    const statusCol = STATUS_COLORS[status] || '#6B7280';
     return `<div class="sq-item" style="cursor:pointer" onclick="loadQuote('${sq.ref}')">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span class="sq-ref" style="font-family:'DM Mono',monospace;font-weight:600;min-width:80px">${sq.ref}</span>
@@ -4640,10 +4780,7 @@ function sqAmt(l, sqLines) {
         <span style="font-weight:600;min-width:80px;text-align:right">£${total.toFixed(2)}</span>
         <select onclick="event.stopPropagation()" onchange="updateQuoteStatus('${sq.ref}',this.value)"
           style="padding:3px 8px;border-radius:20px;border:2px solid ${statusCol};color:${statusCol};font-size:11px;font-weight:600;background:white;cursor:pointer;min-width:90px">
-          <option value="Draft" ${status==='Draft'?'selected':''}>Draft</option>
-          <option value="Sent" ${status==='Sent'?'selected':''}>Sent</option>
-          <option value="Accepted" ${status==='Accepted'?'selected':''}>Accepted</option>
-          <option value="Declined" ${status==='Declined'?'selected':''}>Declined</option>
+          ${QUOTE_STATUSES.map(s => `<option value="${s}" ${status===s?'selected':''}>${s}</option>`).join('')}
         </select>
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract'}</button>` : ''}
         <button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();duplicateQuote('${sq.ref}')" style="margin-left:4px" title="Duplicate this quote with a new reference number">⧉ Duplicate</button>
@@ -4656,6 +4793,7 @@ async function newQuote() {
   if(lines.length&&!confirm('Start a new quote? Unsaved changes will be lost.'))return;
   lines=[]; isDirty=false;
   ['in-cust','in-ref','in-a1','in-city','in-post','in-sum','in-sign'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
+  document.getElementById('in-estimate').checked = false;
   document.getElementById('in-vno').value='242 6140 37';
   document.getElementById('in-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('save-status').textContent='';
