@@ -474,9 +474,13 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
 
     <div class="tot-wrap"><div class="tot-inner">
       <div class="tot-row"><span class="tot-lbl">Subtotal</span><span class="tot-val" id="tot-sub">£0.00</span></div>
+      <div class="tot-row" id="tot-discount-row" style="display:none"><span class="tot-lbl"><span id="tot-discount-lbl">Discount</span><span id="tot-discount-inc" style="font-size:10px;color:var(--i3);font-weight:400;margin-left:6px"></span><span class="no-print"><button type="button" onclick="openDiscountDialog()" title="Edit discount" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 5px;color:var(--i3);margin-left:6px">✏️</button><button type="button" onclick="removeDiscount()" title="Remove discount" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 5px;color:#DC2626;margin-left:4px">×</button></span></span><span class="tot-val" id="tot-discount">−£0.00</span></div>
       <div class="tot-row"><span class="tot-lbl">Total VAT 20%</span><span class="tot-val" id="tot-vat">£0.00</span></div>
       <div class="tot-row tot-grand"><span class="tot-lbl">Total GBP</span><span class="tot-val" id="tot-grand">£0.00</span></div>
     </div></div>
+    <div class="no-print" id="add-discount-wrap" style="display:flex;justify-content:flex-end;margin-top:6px">
+      <button class="btn btn-outline btn-sm" onclick="openDiscountDialog()" title="Apply an agreed discount — comes off the total with its VAT">− Add discount</button>
+    </div>
 
     <div class="disclaim">Disclaimer: This quotation states all aspects to be included in the work, if any aspect is not expressly written in the above quotation, then this will not be included in the works. If you feel any aspect is missing from this quotation please inform us.</div>
   </div>
@@ -1438,7 +1442,8 @@ async function loadFromSupabase() {
         groupId: l.group_id||null,
         groupMember: l.group_member||null,
         groupExpanded: true,
-        note: l.is_note||false
+        note: l.is_note||false,
+        discount: l.is_discount||false
       });
     });
     savedQuotes = quoteRows.map(q => ({
@@ -3043,6 +3048,95 @@ async function saveNewNote() {
   }
 }
 
+// ── DISCOUNT ───────────────────────────────────────────────────────────────────
+// A discount is a LINE (discount:true, qty 1, negative unitPrice, own VAT) so every
+// totals path — recalc, saved-quote totals, Sales report, contract — nets it in with
+// no special handling. It never renders in the line-items table; recalc() paints it
+// into the totals box (Subtotal stays pre-discount, then Discount, VAT, Total).
+// One discount per quote; persisted via the is_discount column (supabase/discount-line.sql).
+function openDiscountDialog() {
+  const existing = document.getElementById('discount-dialog');
+  if (existing) existing.remove();
+  const d = lines.find(l => l.discount);
+  const panel = document.createElement('div');
+  panel.id = 'discount-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:440px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:16px">${d ? 'Edit' : 'Add'} discount</h3>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 14px">Shown in the totals box on the quote. The discount's VAT comes off too — £100 at 20% takes £120 off the total.</p>
+      <div class="fg" style="margin-bottom:10px">
+        <label>Label (shown on quote)</label>
+        <input type="text" id="dd-label" value="${cwEsc(d ? d.name : 'Discount')}" placeholder="e.g. Discount" style="width:100%">
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:12px;margin-bottom:6px">
+        <div class="fg"><label>Amount (£)</label><input type="number" id="dd-amount" min="0" step="0.01" value="${d ? Math.abs(d.unitPrice).toFixed(2) : ''}" placeholder="e.g. 100.00" oninput="updateDiscountHint()" style="width:100%"></div>
+        <div class="fg"><label>Entered as</label><select id="dd-basis" onchange="updateDiscountHint()" style="width:100%">
+          <option value="ex" selected>ex VAT</option>
+          <option value="inc">inc VAT</option>
+        </select></div>
+        <div class="fg"><label>VAT</label><select id="dd-vat" onchange="updateDiscountHint()" style="width:100%">
+          <option value="20" ${!d || d.vat===20 ? 'selected':''}>20%</option>
+          <option value="0" ${d && d.vat===0 ? 'selected':''}>0%</option>
+        </select></div>
+      </div>
+      <div id="dd-hint" style="font-size:11px;color:var(--i3);min-height:15px;margin-bottom:14px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('discount-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveDiscount()">${d ? 'Save' : 'Add discount'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  updateDiscountHint();
+  document.getElementById('dd-amount').focus();
+}
+// Live breakdown under the amount field: whichever way the figure was entered,
+// spell out ex VAT + VAT = total off, so there's no ambiguity before saving.
+function updateDiscountHint() {
+  const hint = document.getElementById('dd-hint');
+  if (!hint) return;
+  const amount = parseFloat(document.getElementById('dd-amount').value);
+  const vat = parseInt(document.getElementById('dd-vat').value) || 0;
+  const basis = document.getElementById('dd-basis').value;
+  if (!(amount > 0)) { hint.textContent = ''; return; }
+  const ex = basis === 'inc' ? amount / (1 + vat/100) : amount;
+  const inc = ex * (1 + vat/100);
+  hint.textContent = vat
+    ? '= £' + ex.toFixed(2) + ' ex VAT + £' + (inc-ex).toFixed(2) + ' VAT — takes £' + inc.toFixed(2) + ' off the total'
+    : '= £' + ex.toFixed(2) + ' (no VAT) off the total';
+}
+function saveDiscount() {
+  const label = (document.getElementById('dd-label').value || '').trim() || 'Discount';
+  const amount = parseFloat(document.getElementById('dd-amount').value);
+  const vat = parseInt(document.getElementById('dd-vat').value) || 0;
+  const basis = document.getElementById('dd-basis').value;
+  if (!(amount > 0)) { toast('Enter a discount amount'); return; }
+  // Stored unitPrice is ALWAYS ex VAT (per-line VAT applies on top); an inc-VAT entry
+  // is converted here. Not rounded, so an entered inc figure comes off the total exactly.
+  const ex = basis === 'inc' ? amount / (1 + vat/100) : amount;
+  let d = lines.find(l => l.discount);
+  if (d) {
+    d.name = label; d.unitPrice = -ex; d.vat = vat;
+  } else {
+    lines.push({ id: ++uid, code:'', name:label, xdesc:'', notes:'', qty:1, unitPrice:-ex,
+      matCost:0, labDays:0, labRate:0, labTotal:0, vat, optional:false, misc:false, note:false,
+      discount:true, unit:'', materials:[] });
+  }
+  isDirty = true;
+  document.getElementById('discount-dialog').remove();
+  recalc();
+  toast((d ? 'Discount updated: ' : 'Discount added: ') + '−£' + (ex * (1 + vat/100)).toFixed(2) + ' inc VAT off the total');
+}
+function removeDiscount() {
+  const d = lines.find(l => l.discount);
+  if (!d) return;
+  if (!confirm('Remove the discount (' + (d.name||'Discount') + ' −£' + Math.abs(d.unitPrice).toFixed(2) + ' ex VAT)?')) return;
+  lines = lines.filter(l => !l.discount);
+  isDirty = true;
+  recalc();
+  toast('Discount removed');
+}
+
 // ── LINE MANAGEMENT ────────────────────────────────────────────────────────────
 function pushLine(l) { const nl={...l,id:++uid}; lines.push(nl); isDirty=true; renderLines(); return nl.id; }
 function rmLine(id) { lines=lines.filter(l=>l.id!==id); isDirty=true; renderLines(); }
@@ -3383,6 +3477,9 @@ function renderLines() {
     // Skip constituent items — they render inside their group
     if (l.groupMember) return;
 
+    // Discount lines never render in the table — they're painted into the totals box by recalc()
+    if (l.discount) return;
+
     // Text-only note line — optional bold heading + body, no price columns, excluded from totals.
     // No selection checkbox (notes can't be grouped); price cells render empty.
     if (l.note) {
@@ -3666,11 +3763,30 @@ function recalc() {
   // Text notes carry no price and are excluded from all totals.
   const visibleLines = lines.filter(l => !l.groupMember && !l.note);
   const allLines = lines; // include members for overview totals
-  const sub = visibleLines.reduce((s,l) => s + effectiveAmt(l), 0);
+  // Displayed Subtotal is PRE-discount; the discount line (negative amount) is shown on its
+  // own totals row. VAT sums per-line over everything incl. the discount, so the discount's
+  // VAT comes off too (£100 discount at 20% takes £120 off the grand total).
+  const sub = visibleLines.filter(l => !l.discount).reduce((s,l) => s + effectiveAmt(l), 0);
+  const discount = visibleLines.filter(l => l.discount).reduce((s,l) => s + effectiveAmt(l), 0);
   const vat = visibleLines.reduce((s,l) => s + effectiveAmt(l)*(l.vat/100), 0);
   document.getElementById('tot-sub').textContent = '£' + sub.toFixed(2);
   document.getElementById('tot-vat').textContent = '£' + vat.toFixed(2);
-  document.getElementById('tot-grand').textContent = '£' + (sub+vat).toFixed(2);
+  document.getElementById('tot-grand').textContent = '£' + (sub+discount+vat).toFixed(2);
+  const dLine = lines.find(l => l.discount);
+  const dRow = document.getElementById('tot-discount-row');
+  const dAdd = document.getElementById('add-discount-wrap');
+  if (dRow) {
+    dRow.style.display = dLine ? '' : 'none';
+    if (dLine) {
+      document.getElementById('tot-discount-lbl').textContent = dLine.name || 'Discount';
+      document.getElementById('tot-discount').textContent = '−£' + Math.abs(discount).toFixed(2);
+      // The value column is ex VAT (everything above the VAT line is) — spell out the
+      // real-money saving so the client isn't left doing the ×1.2 themselves.
+      const dInc = Math.abs(discount) * (1 + (dLine.vat||0)/100);
+      document.getElementById('tot-discount-inc').textContent = dLine.vat ? '(£' + dInc.toFixed(2) + ' inc VAT)' : '';
+    }
+  }
+  if (dAdd) dAdd.style.display = dLine ? 'none' : 'flex';
 
   // Overview panel (Change 4)
   // matCost on all lines already includes the 10% markup (recalcDelCost applies x1.1)
@@ -3679,6 +3795,7 @@ function recalc() {
   allLines.forEach(l => {
     if (l.groupId && !l.groupMember) return; // skip group headers - members counted individually
     if (l.note) return; // text notes carry no materials/labour
+    if (l.discount) return; // a discount is not a cost — keep it out of the materials/labour view
     if (!l.qty) return; // zero-qty lines contribute £0 to the Subtotal — exclude from overview so stale labour/mat isn't counted
     const matCostTotal = lineMat(l);
     totalMat += matCostTotal;
@@ -3719,7 +3836,7 @@ function renderOrderList() {
   if (!lines.length) { el.innerHTML='<div class="card"><div class="cb empty-lines">No items in current quote.</div></div>'; return; }
   let html = '';
   const miscLines = lines.filter(l => l.misc && !l.note);
-  const nonMisc = lines.filter(l => !l.misc && !l.note);
+  const nonMisc = lines.filter(l => !l.misc && !l.note && !l.discount);
   const seen = new Set();
   nonMisc.forEach(l => {
     if (l.groupMember) return;
@@ -4464,7 +4581,8 @@ async function saveQuote() {
             group_id: l.groupId||null,
             group_member: l.groupMember||null,
             is_group_header: !!(l.groupId && !l.groupMember),
-            is_note: !!l.note
+            is_note: !!l.note,
+            is_discount: !!l.discount
           };
         }), '');
       }
@@ -5770,10 +5888,10 @@ function downloadTeamGanttCSV() {
   mpl.forEach(m => { if(m.code && m.supplier) mplMap[m.code] = m.supplier.trim(); });
   const cell = v => '"'+String(v||'').replace(/"/g,'""')+'"';
   const rows = [['Group Name','Task Name','Start Date']];
-  const nonMiscVisible = lines.filter(l=>!l.misc&&!l.groupMember);
+  const nonMiscVisible = lines.filter(l=>!l.misc&&!l.discount&&!l.groupMember);
   if (nonMiscVisible.length || lines.filter(l=>!l.misc&&l.groupId&&!l.groupMember).length) {
     const seen = new Set();
-    lines.filter(l=>!l.misc&&!l.note).forEach(l => {
+    lines.filter(l=>!l.misc&&!l.note&&!l.discount).forEach(l => {
       if (l.groupMember) return;
       if (l.groupId && !l.groupMember) {
         if (seen.has(l.groupId)) return; seen.add(l.groupId);
@@ -6378,7 +6496,7 @@ function moveLinesToGroup(lineIds, groupId) {
 function showAddToGroupDialog(groupId) {
   const header = lines.find(l => l.groupId === groupId && !l.groupMember);
   if (!header) return;
-  const candidates = lines.filter(l => !l.groupMember && !l.groupId && !l.note);
+  const candidates = lines.filter(l => !l.groupMember && !l.groupId && !l.note && !l.discount);
   if (!candidates.length) {
     toast('No ungrouped lines to add. Add a line to the quote first, or use the "Add to group" option when adding a deliverable.');
     return;
