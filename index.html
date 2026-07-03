@@ -3869,7 +3869,7 @@ function buildSupplierRollup() {
     it.sources.push({ name: o.sourceName || '', qty: Math.round(o.qty * 1000) / 1000, misc: !!o.fromMisc });
   }
   // Deliverable materials — scaled by line qty. Skip group headers (their materials live on members).
-  lines.filter(l => !l.misc && !l.note && !(l.groupId && !l.groupMember)).forEach(l => {
+  lines.filter(l => !l.misc && !l.note && !l.discount && !(l.groupId && !l.groupMember)).forEach(l => {
     (l.materials || []).forEach(m => {
       const qty = Math.round((m.qtyPerUnit * l.qty) * 1000) / 1000;
       const unitPrice = m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit);
