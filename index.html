@@ -1435,7 +1435,7 @@ async function loadFromSupabase() {
         qty: parseFloat(l.qty)||0, unitPrice: parseFloat(l.unit_price)||0,
         matCost: parseFloat(l.mat_cost)||0, labDays: parseFloat(l.lab_days)||0,
         labRate: parseFloat(l.lab_rate)||0, labTotal: parseFloat(l.lab_total)||0,
-        vat: parseInt(l.vat)||20, optional: l.optional||false,
+        vat: vatNum(l.vat), optional: l.optional||false,
         misc: l.misc||false, unit: l.unit||'',
         materials: (!l.misc) ? (snapshotMats || undefined) : undefined,
         miscComponents: l.misc ? (snapshotMats || []) : undefined,
@@ -1968,7 +1968,7 @@ function addFromSearch() {
   const unitPrice = matCost + (qty>0 ? labTotal/qty : labTotal);
   const xdesc = document.getElementById('add-xdesc').value.trim() || selDel.xeroDescription || selDel.name;
   const notes = document.getElementById('add-notes').value.trim();
-  const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:parseInt(document.getElementById('add-vat').value)||20,optional:document.getElementById('add-opt').value==='yes',misc:false,materials:selDel.materials||[]});
+  const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('add-vat').value),optional:document.getElementById('add-opt').value==='yes',misc:false,materials:selDel.materials||[]});
   const targetGroup=(document.getElementById('add-group')||{value:''}).value;
   if (targetGroup) moveLinesToGroup([newId], targetGroup);
   const nm=selDel.name; selDel=null;
@@ -2280,6 +2280,8 @@ function patchMiscLineDom(l) {
     if (memberUnit) memberUnit.textContent = '£' + (l.unitPrice||0).toFixed(2);
     const memberAmt = document.getElementById('member-amt-' + id);
     if (memberAmt) memberAmt.textContent = '£' + ((l.qty||0) * (l.unitPrice||0)).toFixed(2);
+    const memberVat = document.getElementById('member-vat-' + id);
+    if (memberVat) memberVat.textContent = (l.vat||0) + '%';
     const members = lines.filter(x => x.groupMember === gid);
     const gTot = members.reduce((s, x) => s + amt(x), 0);
     const gLab = members.reduce((s, x) => s + (x.labTotal || 0), 0);
@@ -2966,7 +2968,7 @@ function addMisc() {
   const labTotal = days*rate;
   // Unit price is Total ÷ qty (Total = components + labour, fixed); see miscUnitPrice.
   const unitPrice = qty>0 ? (matCost + labTotal)/qty : 0;
-  pushLine({code:'MISC',name:desc,xdesc,notes:'',qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:parseInt(document.getElementById('mc-vat').value)||20,optional:document.getElementById('mc-opt').value==='yes',misc:true,unit:document.getElementById('mc-unit').value.trim()||'item',materials:[],miscComponents:[...miscComponents]});
+  pushLine({code:'MISC',name:desc,xdesc,notes:'',qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('mc-vat').value),optional:document.getElementById('mc-opt').value==='yes',misc:true,unit:document.getElementById('mc-unit').value.trim()||'item',materials:[],miscComponents:[...miscComponents]});
   ['mc-desc','mc-xdesc','mc-unit','mc-days','mc-rate'].forEach(id => document.getElementById(id).value='');
   document.getElementById('mc-qty').value='1'; document.getElementById('mc-mat').value='0';
   miscComponents = [];
@@ -3138,6 +3140,9 @@ function removeDiscount() {
 }
 
 // ── LINE MANAGEMENT ────────────────────────────────────────────────────────────
+// VAT rates are 0 or 20 — 0 is VALID and must not fall back (0 is falsy, so `||20`
+// silently corrupted 0% lines to 20% on add/save/load/group). Default only when unset.
+function vatNum(v) { const n = parseInt(v, 10); return isNaN(n) ? 20 : n; }
 function pushLine(l) { const nl={...l,id:++uid}; lines.push(nl); isDirty=true; renderLines(); return nl.id; }
 function rmLine(id) { lines=lines.filter(l=>l.id!==id); isDirty=true; renderLines(); }
 function reorderDomRows() {
@@ -3328,7 +3333,7 @@ function initDragDrop() {
 
 function upQty(id,v) { const l=lines.find(x=>x.id===id); if(!l)return; l.qty=parseFloat(v)||0; if(l.misc){l.unitPrice=miscUnitPrice(l); patchMiscLineDom(l);} else { if(l.qty>0){l.unitPrice=l.matCost+(l.labTotal/l.qty);} const qp=document.getElementById('qty-print-'+id); if(qp)qp.textContent=(l.qty||0); const up=document.getElementById('unitprice-print-'+id); if(up)up.textContent=(l.unitPrice||0).toFixed(2); } if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true; recalc(); }
 function upPrice(id,v) { const l=lines.find(x=>x.id===id); if(l){l.unitPrice=parseFloat(v)||0; if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true;recalc();} }
-function upVat(id,v) { const l=lines.find(x=>x.id===id); if(l){l.vat=parseInt(v)||0;isDirty=true;recalc();} }
+function upVat(id,v) { const l=lines.find(x=>x.id===id); if(l){l.vat=parseInt(v)||0; const vp=document.getElementById('vat-print-'+id); if(vp)vp.textContent=l.vat+'%'; isDirty=true;recalc();} }
 function upXdesc(id,v) {
   const l=lines.find(x=>x.id===id);
   if(!l) return;
@@ -3580,7 +3585,7 @@ function renderLines() {
             </td>
             <td class="r" id="member-qty-${gl.id}" style="color:var(--i2)">${gl.qty}</td>
             <td class="r" id="member-unit-${gl.id}" style="color:var(--i2)">£${gl.unitPrice.toFixed(2)}</td>
-            <td class="r" style="color:var(--i3);font-size:11px">${gl.vat}%</td>
+            <td class="r" id="member-vat-${gl.id}" style="color:var(--i3);font-size:11px">${gl.vat}%</td>
             <td class="r" id="member-amt-${gl.id}" style="color:var(--i2);font-family:'DM Mono',monospace">£${ga.toFixed(2)}</td>
           </tr>`;
           // Misc group members get the FULL misc edit panel; deliverables get the inline labour editor.
@@ -3689,7 +3694,7 @@ function renderLines() {
           <option value="20"${l.vat===20?' selected':''}>20%</option>
           <option value="0"${l.vat===0?' selected':''}>0%</option>
         </select>
-        <span class="print-only" style="display:none;text-align:right">${l.vat}%</span>
+        <span class="print-only" id="vat-print-${l.id}" style="display:none;text-align:right">${l.vat}%</span>
       </td>
       <td class="r" id="amt-cell-${l.id}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${a.toFixed(2)}</td>
     </tr>`;
@@ -4576,7 +4581,7 @@ async function saveQuote() {
             xdesc:l.xdesc||'', notes:l.notes||'', qty:l.qty||0,
             unit_price:l.unitPrice||0, mat_cost:l.matCost||0,
             lab_days:l.labDays||0, lab_rate:l.labRate||0, lab_total:l.labTotal||0,
-            vat:l.vat||20, optional:l.optional||false, misc:l.misc||false, unit:l.unit||'',
+            vat:vatNum(l.vat), optional:l.optional||false, misc:l.misc||false, unit:l.unit||'',
             materials_snapshot: materialsSnapshot,
             group_id: l.groupId||null,
             group_member: l.groupMember||null,
@@ -6378,7 +6383,7 @@ async function confirmGroup(selectedIds) {
     labDays: 0,
     labRate: 0,
     labTotal: selected.reduce((s,l) => s + (l.labTotal||0), 0),
-    vat: selected[0].vat || 20,
+    vat: vatNum(selected[0].vat),
     optional: false,
     misc: false,
     unit: '',
