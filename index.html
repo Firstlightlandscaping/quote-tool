@@ -375,6 +375,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
   <button class="tab" onclick="showTab('orderlist',this)">📦 Order List</button>
   <button class="tab" onclick="showTab('prices',this)">🏷 Price Manager</button>
   <button class="tab" onclick="showTab('saved',this)">🗂 Saved Quotes</button>
+  <button class="tab" onclick="showTab('schedule',this)">🗓 Schedule</button>
 </div>
 
 
@@ -943,6 +944,11 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
   </div>
 </div>
 
+<!-- SCHEDULE SETUP — build the TeamGantt plan for the loaded quote (no chart here; the agent pushes it) -->
+<div id="tab-schedule" class="tab-panel no-print">
+  <div id="schedule-content"></div>
+</div>
+
 </div><!-- /shell -->
 <!-- CONTRACT OF WORKS — built on demand from an Accepted quote; covers the app while previewing -->
 <div id="contract-view"></div>
@@ -1465,6 +1471,7 @@ async function loadFromSupabase() {
       sum: q.sum, summaryHtml: q.summary_html, saved: q.saved,
       status: q.status || 'Draft',
       contractMeta: q.contract_meta || null,
+      schedulePlan: q.schedule_plan || null,
       lines: lineMap[q.ref] || []
     }));
   }
@@ -1843,6 +1850,7 @@ function showTab(id, btn) {
   document.getElementById('tab-' + id).classList.add('on');
   btn.classList.add('on');
   if (id === 'orderlist') renderOrderList();
+  if (id === 'schedule') renderSchedule();
 }
 
 // ── HEADER SYNC ───────────────────────────────────────────────────────────────
@@ -3871,20 +3879,20 @@ function buildSupplierRollup() {
     it.totalCost += (o.unitPrice || 0) * o.qty;
     if (o.unit) it._units.add(o.unit.trim());
     if (o.url && !it.url) it.url = o.url;
-    it.sources.push({ name: o.sourceName || '', qty: Math.round(o.qty * 1000) / 1000, misc: !!o.fromMisc });
+    it.sources.push({ name: o.sourceName || '', qty: Math.round(o.qty * 1000) / 1000, misc: !!o.fromMisc, lineId: o.sourceLineId });
   }
   // Deliverable materials — scaled by line qty. Skip group headers (their materials live on members).
   lines.filter(l => !l.misc && !l.note && !l.discount && !(l.groupId && !l.groupMember)).forEach(l => {
     (l.materials || []).forEach(m => {
       const qty = Math.round((m.qtyPerUnit * l.qty) * 1000) / 1000;
       const unitPrice = m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit);
-      addItem(mplSupplier[m.stockCode], { stockCode: m.stockCode, description: m.description, unit: m.unit, qty, unitPrice, url: mplUrl[m.stockCode], sourceName: (l.code ? l.code + ' ' : '') + l.name });
+      addItem(mplSupplier[m.stockCode], { stockCode: m.stockCode, description: m.description, unit: m.unit, qty, unitPrice, url: mplUrl[m.stockCode], sourceName: (l.code ? l.code + ' ' : '') + l.name, sourceLineId: l.id });
     });
   });
   // Misc-item components — fixed qty, NOT scaled by line qty.
   lines.filter(l => l.misc && !l.note).forEach(l => {
     (l.miscComponents || []).forEach(c => {
-      addItem((c.supplier || '').trim(), { stockCode: c.mplCode || '', description: c.desc, unit: c.unit, qty: c.qty || 0, unitPrice: c.cost || 0, url: c.url, sourceName: '📦 ' + l.name, fromMisc: true });
+      addItem((c.supplier || '').trim(), { stockCode: c.mplCode || '', description: c.desc, unit: c.unit, qty: c.qty || 0, unitPrice: c.cost || 0, url: c.url, sourceName: '📦 ' + l.name, fromMisc: true, sourceLineId: l.id });
     });
   });
   return Object.keys(suppliers).sort((a, b) => {
@@ -3927,6 +3935,307 @@ function olSupplierRollupHtml() {
   h += `</div>`;
   return h;
 }
+
+// ── SCHEDULE SETUP (gantt) ─────────────────────────────────────────────────────
+// A paper-list plan editor for the loaded quote: ordered Project Breakdown tasks
+// (dates auto-cascade from the start date, skipping weekends) + Deliveries derived
+// from the supplier rollup (split-by-deliverable supported). Saved as ONE jsonb
+// blob (quotes.schedule_plan — supabase/schedule-plan.sql). NO chart here: the
+// push agent reads this plan and creates the TeamGantt project from the template.
+let schedulePlan = null;
+let spDirty = false;
+
+function spISO(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
+function spNice(iso) { if (!iso) return ''; const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' }); }
+function spIsWorkday(d) { return d.getDay() !== 0 && d.getDay() !== 6; }
+function spNextWorkday(d) { const x = new Date(d); while (!spIsWorkday(x)) x.setDate(x.getDate()+1); return x; }
+// Sequential cascade: each task starts the first working day after the previous ends.
+function spCascade(startISO, tasks) {
+  if (!startISO) return tasks.map(() => null);
+  let cur = spNextWorkday(new Date(startISO + 'T00:00:00'));
+  return tasks.map(t => {
+    const days = Math.max(1, Math.round(t.days || 1));
+    const start = new Date(cur);
+    let end = new Date(start), used = 1;
+    while (used < days) { end.setDate(end.getDate()+1); if (spIsWorkday(end)) used++; }
+    cur = spNextWorkday(new Date(end.getTime() + 86400000));
+    return { start: spISO(start), end: spISO(end) };
+  });
+}
+function spQuoteManDays() {
+  return lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labDays||0), 0);
+}
+function spDefaultDeliveries() {
+  return buildSupplierRollup().filter(s => !s.unassigned).map((s, i) => ({
+    id: Date.now() + i,
+    supplier: s.name,
+    label: s.name,
+    date: '',
+    lineIds: [...new Set(s.items.flatMap(it => it.sources.map(src => src.lineId)).filter(id => id != null))]
+  }));
+}
+function spEnsurePlan() {
+  if (schedulePlan) return schedulePlan;
+  schedulePlan = {
+    version: 1,
+    startDate: spISO(new Date()),
+    deadline: '',
+    crewSize: 2,
+    tasks: [],
+    deliveries: spDefaultDeliveries()
+  };
+  return schedulePlan;
+}
+// Items for one delivery row: the supplier's rollup filtered to the row's deliverables.
+function spRowItems(row) {
+  const sup = buildSupplierRollup().find(s => s.name === row.supplier);
+  if (!sup) return [];
+  const set = new Set(row.lineIds || []);
+  return sup.items.map(it => {
+    const qty = it.sources.filter(src => set.has(src.lineId)).reduce((s, src) => s + src.qty, 0);
+    return { desc: it.description, unit: it.unit, qty: Math.round(qty*1000)/1000, cost: qty * (it.unitPrice||0), url: it.url };
+  }).filter(it => it.qty > 0);
+}
+function spLineLabel(id) {
+  const l = lines.find(x => x.id === id);
+  if (!l) return '(removed line)';
+  return (l.misc ? '📦 ' : (l.code ? l.code + ' ' : '')) + (l.name || '');
+}
+function spDaysFmt(n) { return parseFloat((n||0).toFixed(2)); }
+// Seed one quote line as a task: name from the line, days from its labour ÷ crew.
+// A seed is TEXT, not a link — grey-out (seededLineIds) is a memory aid only.
+function spSeedTask(lineId) {
+  const l = lines.find(x => x.id === lineId);
+  if (!l) return;
+  const p = spEnsurePlan();
+  const crew = Math.max(1, p.crewSize || 1);
+  p.tasks.push({ id: Date.now(), name: l.name || '', days: Math.max(1, Math.ceil((l.labDays||0) / crew)) });
+  (p.seededLineIds = p.seededLineIds || []).push(lineId);
+  spMark(); renderSchedule();
+}
+// Merge several ticked quote lines into ONE task (combined labour ÷ crew).
+function spSeedSelected() {
+  const ids = Array.from(document.querySelectorAll('.sp-seed-cb:checked')).map(c => parseFloat(c.value));
+  if (!ids.length) { toast('Tick some quote lines first'); return; }
+  const picked = ids.map(id => lines.find(x => x.id === id)).filter(Boolean);
+  if (!picked.length) return;
+  const p = spEnsurePlan();
+  const crew = Math.max(1, p.crewSize || 1);
+  const lab = picked.reduce((s,l) => s + (l.labDays||0), 0);
+  p.tasks.push({ id: Date.now(), name: picked[0].name || '', days: Math.max(1, Math.ceil(lab / crew)) });
+  p.seededLineIds = (p.seededLineIds || []).concat(ids);
+  spMark(); renderSchedule();
+}
+function spMark() { spDirty = true; const el = document.getElementById('sp-status'); if (el) { el.textContent = '● unsaved changes'; el.style.color = '#B45309'; } }
+
+function renderSchedule() {
+  const el = document.getElementById('schedule-content');
+  if (!el) return;
+  if (!lines.length) {
+    el.innerHTML = '<div class="card"><div class="cb empty-lines">No quote loaded — open one from Saved Quotes (or build and save a new one), then come back here to set up its schedule.</div></div>';
+    return;
+  }
+  const p = spEnsurePlan();
+  const ref = (document.getElementById('in-ref')||{value:''}).value.trim();
+  const cust = (document.getElementById('in-cust')||{value:''}).value.trim();
+  const dates = spCascade(p.startDate, p.tasks);
+  const schedDays = p.tasks.reduce((s,t) => s + Math.max(1, Math.round(t.days||1)), 0);
+  const manDays = spQuoteManDays();
+  const crew = Math.max(1, p.crewSize || 1);
+  const lastEnd = dates.length && dates[dates.length-1] ? dates[dates.length-1].end : null;
+  const overDeadline = p.deadline && lastEnd && lastEnd > p.deadline;
+  const unassigned = buildSupplierRollup().find(s => s.unassigned);
+
+  // "On the quote" reference column — every priced line, groups as headings with their
+  // summed labour (Neal often lumps a group's labour onto one member, so the heading
+  // total is the trustworthy figure). + seeds one task; tick several + ⊕ merges them.
+  const seeded = new Set(p.seededLineIds || []);
+  const seedRow = (l, indent) => `
+    <div style="display:flex;align-items:center;gap:6px;padding:2px 0;${indent?'padding-left:14px;':''}${seeded.has(l.id)?'opacity:.45;':''}">
+      <input type="checkbox" class="sp-seed-cb" value="${l.id}" title="Tick to combine into one task" style="cursor:pointer">
+      <span style="flex:1;font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(l.name||'')}">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
+      <span style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace;white-space:nowrap">${spDaysFmt(l.labDays)}d</span>
+      <button onclick="spSeedTask(${l.id})" title="Add as a task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 7px;color:var(--i2)">+</button>
+    </div>`;
+  let quoteListHtml = '';
+  lines.forEach(l => {
+    if (l.note || l.discount) return;
+    if (l.groupId && !l.groupMember) {
+      const gLab = lines.filter(x => x.groupMember === l.groupId).reduce((s,m) => s + (m.labDays||0), 0);
+      quoteListHtml += `<div style="font-weight:600;font-size:12px;margin-top:7px;color:var(--i2)">▸ ${cwEsc(l.name||'')} <span style="color:var(--i3);font-weight:400">· group · ${spDaysFmt(gLab)}d</span></div>`;
+      return;
+    }
+    quoteListHtml += seedRow(l, !!l.groupMember);
+  });
+
+  // Project Breakdown rows
+  const taskRows = p.tasks.map((t, i) => {
+    const d = dates[i];
+    const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
+    return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--bd)">
+      <span style="width:18px;text-align:right;font-size:11px;color:var(--i4)">${i+1}.</span>
+      <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:120px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:13px">
+      <input type="number" value="${Math.max(1, Math.round(t.days||1))}" min="1" step="1" onchange="spTaskDays(${i},this.value)" title="Working days" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:12px;text-align:center">
+      <span style="width:150px;font-size:11px;color:var(--i3);font-family:'DM Mono',monospace">${when}</span>
+      <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3)">▲</button>
+      <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3)">▼</button>
+      <button onclick="spDelTask(${i})" title="Remove" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:#DC2626">×</button>
+    </div>`;
+  }).join('');
+
+  // Delivery rows
+  const delivRows = (p.deliveries||[]).map((row, i) => {
+    const items = spRowItems(row);
+    const tot = items.reduce((s,it) => s + it.cost, 0);
+    const sameSupplier = (p.deliveries||[]).filter(d => d.supplier === row.supplier).length > 1;
+    const itemsHtml = items.length
+      ? items.map(it => `<div style="font-size:11px;color:var(--i2);padding:1px 0">${it.qty} × ${cwEsc(it.desc)}${it.unit ? ' (' + cwEsc(it.unit) + ')' : ''}</div>`).join('')
+      : '<div style="font-size:11px;color:#B45309">No materials — the deliverables feeding this row may have changed; rebuild below or delete this row.</div>';
+    return `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1;min-width:140px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600">
+        <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" style="padding:4px 6px;border:1px solid var(--bd);border-radius:4px;font-size:12px">
+        <span style="font-size:11px;color:var(--i3)">${items.length} item${items.length!==1?'s':''} · £${tot.toFixed(2)}</span>
+        <button onclick="spToggleRowItems(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Show the checklist this delivery will carry">▾ items</button>
+        ${(row.lineIds||[]).length > 1 ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Split into a second delivery by deliverable">⑃ split</button>` : ''}
+        <button onclick="spDelDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:#DC2626" title="Remove this delivery row">×</button>
+      </div>
+      ${sameSupplier ? `<div style="font-size:10px;color:var(--i4);margin-top:2px">from: ${(row.lineIds||[]).map(id => cwEsc(spLineLabel(id))).join(' · ')}</div>` : ''}
+      <div id="sp-row-items-${i}" style="display:none;margin:5px 0 0 6px;padding-left:8px;border-left:2px solid var(--bd)">${itemsHtml}</div>
+    </div>`;
+  }).join('');
+
+  el.innerHTML = `
+  <div class="card">
+    <div class="ch">
+      <span class="ct">🗓 Schedule setup — ${ref ? cwEsc(ref) : 'unsaved quote'}${cust ? ' · ' + cwEsc(cust) : ''}</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="sp-status" style="font-size:11px;color:var(--i3)">${spDirty ? '● unsaved changes' : ''}</span>
+        <button class="btn btn-primary btn-sm" onclick="saveSchedulePlan()">💾 Save schedule</button>
+      </div>
+    </div>
+    <div class="cb">
+      <p style="font-size:11px;color:var(--i3);margin:0 0 12px">This plan saves with the quote. The agent then pushes it to TeamGantt as <strong>"${cwEsc(ref||'QT-????')}${cust ? ' ' + cwEsc(cust) : ''}"</strong> built from your template — Project Breakdown tasks and dated Deliveries with material checklists. No chart here, deliberately.</p>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
+        <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetField('startDate',this.value)"></div>
+        <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)"></div>
+        <div class="fg" style="margin:0"><label>Crew size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
+        <div style="font-size:12px;color:var(--i3);padding-bottom:8px">
+          Scheduled: <strong>${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends ' + spNice(lastEnd) + ')' : ''}
+          &nbsp;·&nbsp; Quote labour: <strong>${manDays}</strong> man-day${manDays!==1?'s':''} ≈ <strong>${(manDays/crew).toFixed(1)}</strong> days with a crew of ${crew}
+          ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
+        </div>
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:0 1 260px;min-width:230px">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">On the quote <span style="font-weight:400;text-transform:none">— + adds a task · tick several for one combined task</span></div>
+          <div style="max-height:430px;overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
+          ${quoteListHtml ? `<button class="btn btn-outline btn-sm" onclick="spSeedSelected()" style="margin-top:8px" title="Combine the ticked lines into ONE task (their labour summed ÷ crew)">⊕ Add selected as one task</button>` : ''}
+        </div>
+        <div style="flex:1;min-width:340px">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">Project Breakdown <span style="font-weight:400;text-transform:none">— dates cascade automatically, weekends skipped</span></div>
+          ${taskRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet — type below, Enter adds each one.</div>'}
+          <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Pour foundations) and press Enter…" onkeydown="spAddTaskKey(event)" style="width:100%;margin-top:8px;padding:7px 9px;border:1px dashed var(--bd);border-radius:5px;font-size:13px;box-sizing:border-box">
+        </div>
+        <div style="flex:1;min-width:340px">
+          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">Deliveries <span style="font-weight:400;text-transform:none">— one TeamGantt task each, materials become its checklist</span></div>
+          ${unassigned ? `<div style="font-size:11px;background:#FFFBEB;border:1px solid #FDE68A;color:#B45309;border-radius:5px;padding:5px 8px;margin-bottom:6px">⚠ ${unassigned.itemCount} material${unassigned.itemCount!==1?'s':''} have no supplier — fix in the Price Manager (or the misc component). If pushed as-is they become one "⚠ Unassigned" task so nothing is lost.</div>` : ''}
+          ${delivRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No deliveries — click rebuild below once the quote has materials.</div>'}
+          <button class="btn btn-outline btn-sm" onclick="spRegenDeliveries()" style="margin-top:8px" title="Rebuild one row per supplier from the current Order List (replaces the rows above)">↻ Rebuild from Order List</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function spSetField(k, v) { spEnsurePlan()[k] = v; spMark(); renderSchedule(); }
+function spAddTaskKey(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const inp = document.getElementById('sp-new-task');
+  const name = (inp.value||'').trim();
+  if (!name) return;
+  spEnsurePlan().tasks.push({ id: Date.now(), name, days: 1 });
+  spMark(); renderSchedule();
+  const again = document.getElementById('sp-new-task');
+  if (again) again.focus();
+}
+function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); } }
+function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(1, Math.round(parseFloat(v)||1)); spMark(); renderSchedule(); } }
+function spMoveTask(i, dir) {
+  const ts = spEnsurePlan().tasks, j = i + dir;
+  if (j < 0 || j >= ts.length) return;
+  [ts[i], ts[j]] = [ts[j], ts[i]];
+  spMark(); renderSchedule();
+}
+function spDelTask(i) { spEnsurePlan().tasks.splice(i, 1); spMark(); renderSchedule(); }
+function spDelivLabel(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.label = v.trim() || d.supplier; spMark(); } }
+function spDelivDate(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.date = v; spMark(); } }
+function spDelDeliv(i) {
+  const d = spEnsurePlan().deliveries[i];
+  if (!d) return;
+  if (!confirm('Remove the delivery "' + (d.label||d.supplier) + '"? Its materials will simply not be scheduled (rebuild adds them back).')) return;
+  spEnsurePlan().deliveries.splice(i, 1);
+  spMark(); renderSchedule();
+}
+function spToggleRowItems(i) { const el = document.getElementById('sp-row-items-' + i); if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
+function spRegenDeliveries() {
+  if ((spEnsurePlan().deliveries||[]).length && !confirm('Rebuild the delivery rows from the current Order List?\n\nThis replaces the rows (and their dates/splits) with one fresh row per supplier.')) return;
+  spEnsurePlan().deliveries = spDefaultDeliveries();
+  spMark(); renderSchedule();
+}
+// Split a supplier's delivery by deliverable: tick which lines move to a new dated row.
+function spSplitDeliv(i) {
+  const row = spEnsurePlan().deliveries[i];
+  if (!row || (row.lineIds||[]).length < 2) { toast('Nothing to split — this delivery only has one deliverable feeding it'); return; }
+  const existing = document.getElementById('sp-split-dialog');
+  if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'sp-split-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:480px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:16px">⑃ Split "${cwEsc(row.label||row.supplier)}"</h3>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 12px">Tick the deliverables that should arrive in a SEPARATE delivery. Shared materials (e.g. grit sand used by both) split by each deliverable's own quantities automatically.</p>
+      ${(row.lineIds||[]).map(id => `<label style="display:flex;align-items:center;gap:8px;font-size:13px;padding:4px 0;cursor:pointer"><input type="checkbox" class="sp-split-cb" value="${id}" style="cursor:pointer">${cwEsc(spLineLabel(id))}</label>`).join('')}
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('sp-split-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="spConfirmSplit(${i})">Split</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+}
+function spConfirmSplit(i) {
+  const row = spEnsurePlan().deliveries[i];
+  const picked = Array.from(document.querySelectorAll('#sp-split-dialog .sp-split-cb:checked')).map(c => parseFloat(c.value));
+  if (!picked.length || picked.length === (row.lineIds||[]).length) { toast('Tick some (but not all) deliverables to split off'); return; }
+  row.lineIds = row.lineIds.filter(id => !picked.includes(id));
+  const n = spEnsurePlan().deliveries.filter(d => d.supplier === row.supplier).length + 1;
+  spEnsurePlan().deliveries.splice(i + 1, 0, { id: Date.now(), supplier: row.supplier, label: row.supplier + ' — ' + n, date: '', lineIds: picked });
+  if (spEnsurePlan().deliveries.filter(d => d.supplier === row.supplier).length === 2 && row.label === row.supplier) row.label = row.supplier + ' — 1';
+  document.getElementById('sp-split-dialog').remove();
+  spMark(); renderSchedule();
+}
+async function saveSchedulePlan() {
+  const ref = (document.getElementById('in-ref')||{value:''}).value.trim();
+  if (!ref) { toast('Save the quote first (it needs a QT number), then save the schedule'); return; }
+  if (!schedulePlan) { toast('Nothing to save yet'); return; }
+  schedulePlan.updatedAt = new Date().toISOString();
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (sq) sq.schedulePlan = JSON.parse(JSON.stringify(schedulePlan));
+  if (USE_SUPABASE) {
+    try {
+      await sb('PATCH', 'quotes', { schedule_plan: schedulePlan }, '?ref=eq.' + encodeURIComponent(ref));
+    } catch(e) { toast('Schedule save failed: ' + e.message); return; }
+  } else {
+    localStorage.setItem('fl_quotes', JSON.stringify(savedQuotes));
+  }
+  spDirty = false;
+  const el = document.getElementById('sp-status');
+  if (el) { el.textContent = '✓ saved ' + new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); el.style.color = '#16A34A'; }
+  toast('✓ Schedule saved for ' + ref);
+}
+
 function renderOrderList() {
   const el = document.getElementById('order-list-content');
   if (!lines.length) { el.innerHTML='<div class="card"><div class="cb empty-lines">No items in current quote.</div></div>'; return; }
@@ -4621,6 +4930,9 @@ async function duplicateQuote(ref) {
   document.getElementById('in-sum').value = sq.sum||'';
   document.getElementById('in-ref').value = ''; // blank — assigned at save time
   document.getElementById('in-estimate').checked = (sq.status === 'Estimate'); // a copied estimate stays an estimate
+  // Carry the schedule plan onto the copy (editable there; saves under the new ref)
+  schedulePlan = sq.schedulePlan ? JSON.parse(JSON.stringify(sq.schedulePlan)) : null;
+  spDirty = false;
   isDirty = true;
   syncH(); renderLines();
   showTab('quote', document.querySelectorAll('.tab')[0]);
@@ -4734,6 +5046,8 @@ function loadQuote(ref) {
       if (members.length) l.unitPrice = members.reduce((s, x) => s + x.qty * (x.unitPrice || 0), 0);
     }
   });
+  schedulePlan = q.schedulePlan ? JSON.parse(JSON.stringify(q.schedulePlan)) : null;
+  spDirty = false;
   isDirty=false; syncH(); renderLines();
   // Explicitly update ungroup button after loading
   const _ugb = document.getElementById('ungroup-btn');
@@ -5008,6 +5322,7 @@ async function newQuote() {
   lines=[]; isDirty=false;
   ['in-cust','in-ref','in-a1','in-city','in-post','in-sum','in-sign'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
   document.getElementById('in-estimate').checked = false;
+  schedulePlan = null; spDirty = false;
   document.getElementById('in-vno').value='242 6140 37';
   document.getElementById('in-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('save-status').textContent='';
