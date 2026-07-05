@@ -3902,6 +3902,7 @@ function buildSupplierRollup() {
   }).map(name => {
     const items = Object.keys(suppliers[name].items).map(k => {
       const it = suppliers[name].items[k];
+      it.key = k; // stable item identity (code|unit) — the schedule's supplier overrides key off this
       it.totalQty = Math.round(it.totalQty * 1000) / 1000;
       it.unitPrice = it.totalQty ? it.totalCost / it.totalQty : 0;
       it.mixedUnits = it._units.size > 1;
@@ -3965,14 +3966,47 @@ function spCascade(startISO, tasks) {
 function spQuoteManDays() {
   return lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labDays||0), 0);
 }
+// The schedule's view of the rollup: the raw supplier rollup with the plan's
+// supplier OVERRIDES applied (plan.supplierOverrides = { itemKey: supplier }).
+// Overrides are plan-scope ONLY — the Price Manager, quote and Order List never
+// see them; they exist so unassigned materials can be bucketed for the push.
+function spRollup() {
+  const rollup = buildSupplierRollup();
+  const ov = (schedulePlan && schedulePlan.supplierOverrides) || {};
+  if (!Object.keys(ov).length) return rollup;
+  const un = rollup.find(s => s.unassigned);
+  if (!un) return rollup;
+  const moved = [];
+  un.items = un.items.filter(it => { const t = (ov[it.key]||'').trim(); if (t) { moved.push({ it, t }); return false; } return true; });
+  moved.forEach(({ it, t }) => {
+    let sup = rollup.find(s => s.name === t);
+    if (!sup) { sup = { name: t, items: [], total: 0, itemCount: 0, unassigned: false }; rollup.splice(rollup.length - 1, 0, sup); }
+    const dup = sup.items.find(x => x.key === it.key);
+    if (dup) {
+      dup.totalQty = Math.round((dup.totalQty + it.totalQty) * 1000) / 1000;
+      dup.totalCost += it.totalCost;
+      dup.sources = dup.sources.concat(it.sources);
+      dup.unitPrice = dup.totalQty ? dup.totalCost / dup.totalQty : 0;
+    } else sup.items.push(it);
+  });
+  rollup.forEach(s => { s.total = s.items.reduce((a,i) => a + i.totalCost, 0); s.itemCount = s.items.length; });
+  return rollup.filter(s => !(s.unassigned && !s.items.length));
+}
+function spRowLineIds(sup) {
+  return [...new Set(sup.items.flatMap(it => it.sources.map(src => src.lineId)).filter(id => id != null))];
+}
 function spDefaultDeliveries() {
-  return buildSupplierRollup().filter(s => !s.unassigned).map((s, i) => ({
+  const roll = spRollup();
+  const rows = roll.filter(s => !s.unassigned).map((s, i) => ({
     id: Date.now() + i,
     supplier: s.name,
     label: s.name,
     date: '',
-    lineIds: [...new Set(s.items.flatMap(it => it.sources.map(src => src.lineId)).filter(id => id != null))]
+    lineIds: spRowLineIds(s)
   }));
+  const un = roll.find(s => s.unassigned);
+  if (un) rows.push({ id: Date.now() + rows.length, supplier: SUP_UNASSIGNED, label: '⚠ Unassigned — needs a supplier', date: '', lineIds: spRowLineIds(un) });
+  return rows;
 }
 function spEnsurePlan() {
   if (schedulePlan) return schedulePlan;
@@ -3986,15 +4020,47 @@ function spEnsurePlan() {
   };
   return schedulePlan;
 }
-// Items for one delivery row: the supplier's rollup filtered to the row's deliverables.
+// Items for one delivery row: the supplier's (override-aware) rollup filtered to the row's deliverables.
 function spRowItems(row) {
-  const sup = buildSupplierRollup().find(s => s.name === row.supplier);
+  const sup = spRollup().find(s => s.name === row.supplier);
   if (!sup) return [];
   const set = new Set(row.lineIds || []);
   return sup.items.map(it => {
     const qty = it.sources.filter(src => set.has(src.lineId)).reduce((s, src) => s + src.qty, 0);
-    return { desc: it.description, unit: it.unit, qty: Math.round(qty*1000)/1000, cost: qty * (it.unitPrice||0), url: it.url };
+    return { key: it.key, stockCode: it.stockCode, desc: it.description, unit: it.unit, qty: Math.round(qty*1000)/1000, cost: qty * (it.unitPrice||0), url: it.url };
   }).filter(it => it.qty > 0);
+}
+function spKnownSuppliers() {
+  const fromMpl = mpl.map(m => (m.supplier||'').trim()).filter(Boolean);
+  const fromRows = ((schedulePlan && schedulePlan.deliveries) || []).map(d => d.supplier).filter(s => s && s !== SUP_UNASSIGNED);
+  return [...new Set([...fromMpl, ...fromRows])].sort((a,b) => a.localeCompare(b));
+}
+// Assign a supplier to an unassigned material — PLAN-ONLY override (Price Manager,
+// quote and Order List untouched). Ensures the target supplier has a delivery row
+// and unions the item's source lines into it so the item lands there immediately.
+function spAssignSupplierSel(sel) {
+  const key = sel.dataset.key;
+  let sup = sel.value;
+  if (!sup) return;
+  if (sup === '__new__') {
+    sup = (prompt('New supplier name:')||'').trim();
+    if (!sup || sup === SUP_UNASSIGNED) { sel.value = ''; return; }
+  }
+  const raw = buildSupplierRollup().find(s => s.unassigned);
+  const it = raw && raw.items.find(x => x.key === key);
+  if (!it) { toast('Could not find that material — try Rebuild from Order List'); return; }
+  const p = spEnsurePlan();
+  (p.supplierOverrides = p.supplierOverrides || {})[key] = sup;
+  const srcIds = [...new Set(it.sources.map(s => s.lineId).filter(id => id != null))];
+  let row = (p.deliveries||[]).find(d => d.supplier === sup);
+  if (!row) {
+    row = { id: Date.now(), supplier: sup, label: sup, date: '', lineIds: [] };
+    const ui = p.deliveries.findIndex(d => d.supplier === SUP_UNASSIGNED);
+    if (ui >= 0) p.deliveries.splice(ui, 0, row); else p.deliveries.push(row);
+  }
+  row.lineIds = [...new Set([...(row.lineIds||[]), ...srcIds])];
+  spMark(); renderSchedule();
+  toast('✓ ' + (it.description||'material') + ' → ' + sup + ' (this schedule only)');
 }
 function spLineLabel(id) {
   const l = lines.find(x => x.id === id);
@@ -4044,7 +4110,13 @@ function renderSchedule() {
   const crew = Math.max(1, p.crewSize || 1);
   const lastEnd = dates.length && dates[dates.length-1] ? dates[dates.length-1].end : null;
   const overDeadline = p.deadline && lastEnd && lastEnd > p.deadline;
-  const unassigned = buildSupplierRollup().find(s => s.unassigned);
+  // Unassigned materials ride as a REAL delivery row (amber) — dated, expandable and
+  // pushed like any other so nothing is missed. Older plans predate it: append one.
+  const unBucket = spRollup().find(s => s.unassigned);
+  if (unBucket && !(p.deliveries||[]).some(d => d.supplier === SUP_UNASSIGNED)) {
+    p.deliveries.push({ id: Date.now(), supplier: SUP_UNASSIGNED, label: '⚠ Unassigned — needs a supplier', date: '', lineIds: spRowLineIds(unBucket) });
+    spMark();
+  }
 
   // "On the quote" reference column — every priced line, groups as headings with their
   // summed labour (Neal often lumps a group's labour onto one member, so the heading
@@ -4083,25 +4155,39 @@ function renderSchedule() {
     </div>`;
   }).join('');
 
-  // Delivery rows
+  // Delivery rows — the Unassigned row renders amber, items open, with per-item assign controls
+  const knownSup = spKnownSuppliers();
   const delivRows = (p.deliveries||[]).map((row, i) => {
+    const isUn = row.supplier === SUP_UNASSIGNED;
     const items = spRowItems(row);
+    if (isUn && !items.length) return ''; // everything assigned — the row disappears
     const tot = items.reduce((s,it) => s + it.cost, 0);
     const sameSupplier = (p.deliveries||[]).filter(d => d.supplier === row.supplier).length > 1;
+    const itemLine = it => {
+      const assign = isUn
+        ? `<select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:10px;padding:1px 3px;border:1px solid #FDE68A;border-radius:3px;color:#B45309;background:white;max-width:150px">
+             <option value="">assign supplier…</option>
+             ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
+             <option value="__new__">+ new supplier…</option>
+           </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i4);cursor:help">ℹ PM</span>` : ''}`
+        : '';
+      return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--i2);padding:1px 0;flex-wrap:wrap"><span style="flex:1;min-width:140px">${it.qty} × ${cwEsc(it.desc)}${it.unit ? ' (' + cwEsc(it.unit) + ')' : ''}</span>${assign}</div>`;
+    };
     const itemsHtml = items.length
-      ? items.map(it => `<div style="font-size:11px;color:var(--i2);padding:1px 0">${it.qty} × ${cwEsc(it.desc)}${it.unit ? ' (' + cwEsc(it.unit) + ')' : ''}</div>`).join('')
+      ? items.map(itemLine).join('')
       : '<div style="font-size:11px;color:#B45309">No materials — the deliverables feeding this row may have changed; rebuild below or delete this row.</div>';
-    return `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
+    return `<div style="padding:7px 0;border-bottom:1px solid var(--bd);${isUn ? 'background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:7px 8px;margin-top:6px;' : ''}">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1;min-width:140px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600">
+        <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1;min-width:140px;padding:5px 8px;border:1px solid ${isUn ? '#FDE68A' : 'var(--bd)'};border-radius:4px;font-size:13px;font-weight:600;${isUn ? 'color:#B45309;background:white;' : ''}">
         <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" style="padding:4px 6px;border:1px solid var(--bd);border-radius:4px;font-size:12px">
         <span style="font-size:11px;color:var(--i3)">${items.length} item${items.length!==1?'s':''} · £${tot.toFixed(2)}</span>
-        <button onclick="spToggleRowItems(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Show the checklist this delivery will carry">▾ items</button>
-        ${(row.lineIds||[]).length > 1 ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Split into a second delivery by deliverable">⑃ split</button>` : ''}
+        ${isUn ? '' : `<button onclick="spToggleRowItems(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Show the checklist this delivery will carry">▾ items</button>`}
+        ${!isUn && (row.lineIds||[]).length > 1 ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Split into a second delivery by deliverable">⑃ split</button>` : ''}
         <button onclick="spDelDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:#DC2626" title="Remove this delivery row">×</button>
       </div>
       ${sameSupplier ? `<div style="font-size:10px;color:var(--i4);margin-top:2px">from: ${(row.lineIds||[]).map(id => cwEsc(spLineLabel(id))).join(' · ')}</div>` : ''}
-      <div id="sp-row-items-${i}" style="display:none;margin:5px 0 0 6px;padding-left:8px;border-left:2px solid var(--bd)">${itemsHtml}</div>
+      ${isUn ? `<div style="font-size:10px;color:#B45309;margin-top:3px">Assigning here affects THIS schedule only. If pushed as-is, this becomes a dated "⚠ Unassigned" task so nothing is missed.</div>` : ''}
+      <div id="sp-row-items-${i}" style="display:${isUn ? 'block' : 'none'};margin:5px 0 0 6px;padding-left:8px;border-left:2px solid ${isUn ? '#FDE68A' : 'var(--bd)'}">${itemsHtml}</div>
     </div>`;
   }).join('');
 
@@ -4139,7 +4225,6 @@ function renderSchedule() {
         </div>
         <div style="flex:1;min-width:340px">
           <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">Deliveries <span style="font-weight:400;text-transform:none">— one TeamGantt task each, materials become its checklist</span></div>
-          ${unassigned ? `<div style="font-size:11px;background:#FFFBEB;border:1px solid #FDE68A;color:#B45309;border-radius:5px;padding:5px 8px;margin-bottom:6px">⚠ ${unassigned.itemCount} material${unassigned.itemCount!==1?'s':''} have no supplier — fix in the Price Manager (or the misc component). If pushed as-is they become one "⚠ Unassigned" task so nothing is lost.</div>` : ''}
           ${delivRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No deliveries — click rebuild below once the quote has materials.</div>'}
           <button class="btn btn-outline btn-sm" onclick="spRegenDeliveries()" style="margin-top:8px" title="Rebuild one row per supplier from the current Order List (replaces the rows above)">↻ Rebuild from Order List</button>
         </div>
