@@ -4247,10 +4247,18 @@ function renderSchedule() {
           </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}
         </div>`).join('');
     } else {
-      const groups = spRowGroups(row, itemMeta);
-      itemsHtml = groups.map(gp => `
-        <div style="font-size:12px;font-weight:600;color:var(--i2);margin-top:4px">${cwEsc(gp.label)}</div>
-        ${gp.atoms.map(a => { const m = a.meta; return `<div style="font-size:12px;color:var(--i1);padding:1px 0 1px 10px"><strong>${Math.round(a.qty*1000)/1000}</strong> × ${cwEsc(m.description || '')}${m.unit ? ' <span style="color:var(--i3)">(' + cwEsc(m.unit) + ')</span>' : ''}</div>`; }).join('')}`).join('');
+      // Order-first view: combined total per material (what you'd phone through — and
+      // exactly what the TeamGantt checklist will say), provenance inline in grey.
+      const srcByKey = {};
+      (row.alloc||[]).forEach(a => { if (a.qty > 0) (srcByKey[a.key] = srcByKey[a.key] || []).push(a); });
+      const lineName = id => { const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
+      itemsHtml = items.map(it => {
+        const srcs = srcByKey[it.key] || [];
+        const prov = srcs.length > 1
+          ? srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + Math.round(a.qty*1000)/1000 + ')').join(' + ')
+          : (srcs.length === 1 ? cwEsc(lineName(srcs[0].lineId)) : '');
+        return `<div style="font-size:12px;color:var(--i1);padding:1px 0"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${prov ? ' <span style="color:var(--i3);font-size:11px">— ' + prov + '</span>' : ''}</div>`;
+      }).join('');
     }
     if (!items.length) itemsHtml = '<div style="font-size:12px;color:#B45309">No materials in this delivery — split things into it, or delete the row.</div>';
     return `<div style="background:${isUn ? '#FFFBEB' : 'white'};border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:6px;padding:7px 9px;margin-bottom:6px">
