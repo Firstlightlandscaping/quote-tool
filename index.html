@@ -4122,19 +4122,20 @@ function renderSchedule() {
   // summed labour (Neal often lumps a group's labour onto one member, so the heading
   // total is the trustworthy figure). + seeds one task; tick several + ⊕ merges them.
   const seeded = new Set(p.seededLineIds || []);
+  const labPill = d => `<span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px;font-weight:700;color:var(--i1);font-family:'DM Mono',monospace;white-space:nowrap;background:var(--bg2)">${spDaysFmt(d)}d</span>`;
   const seedRow = (l, indent) => `
-    <div style="display:flex;align-items:center;gap:6px;padding:2px 0;${indent?'padding-left:14px;':''}${seeded.has(l.id)?'opacity:.45;':''}">
+    <div style="display:flex;align-items:center;gap:6px;padding:3px 0;${indent?'padding-left:14px;':''}${seeded.has(l.id)?'opacity:.45;':''}">
       <input type="checkbox" class="sp-seed-cb" value="${l.id}" title="Tick to combine into one task" style="cursor:pointer">
-      <span style="flex:1;font-size:12px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(l.name||'')}">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
-      <span style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace;white-space:nowrap">${spDaysFmt(l.labDays)}d</span>
-      <button onclick="spSeedTask(${l.id})" title="Add as a task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 7px;color:var(--i2)">+</button>
+      <span style="flex:1;font-size:13px;color:var(--i1);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(l.name||'')}">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
+      ${labPill(l.labDays)}
+      <button onclick="spSeedTask(${l.id})" title="Add as a task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:13px;padding:1px 8px;color:var(--i1);font-weight:600">+</button>
     </div>`;
   let quoteListHtml = '';
   lines.forEach(l => {
     if (l.note || l.discount) return;
     if (l.groupId && !l.groupMember) {
       const gLab = lines.filter(x => x.groupMember === l.groupId).reduce((s,m) => s + (m.labDays||0), 0);
-      quoteListHtml += `<div style="font-weight:600;font-size:12px;margin-top:7px;color:var(--i2)">▸ ${cwEsc(l.name||'')} <span style="color:var(--i3);font-weight:400">· group · ${spDaysFmt(gLab)}d</span></div>`;
+      quoteListHtml += `<div style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px;margin-top:8px;color:var(--i1)">▸ ${cwEsc(l.name||'')} <span style="color:var(--i3);font-weight:400;font-size:11px">group</span> ${labPill(gLab)}</div>`;
       return;
     }
     quoteListHtml += seedRow(l, !!l.groupMember);
@@ -4145,13 +4146,13 @@ function renderSchedule() {
     const d = dates[i];
     const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
     return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--bd)">
-      <span style="width:18px;text-align:right;font-size:11px;color:var(--i4)">${i+1}.</span>
-      <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:120px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:13px">
-      <input type="number" value="${Math.max(1, Math.round(t.days||1))}" min="1" step="1" onchange="spTaskDays(${i},this.value)" title="Working days" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:12px;text-align:center">
-      <span style="width:150px;font-size:11px;color:var(--i3);font-family:'DM Mono',monospace">${when}</span>
-      <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3)">▲</button>
-      <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3)">▼</button>
-      <button onclick="spDelTask(${i})" title="Remove" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:#DC2626">×</button>
+      <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
+      <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:120px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
+      <input type="number" value="${Math.max(1, Math.round(t.days||1))}" min="1" step="1" onchange="spTaskDays(${i},this.value)" title="Working days" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
+      <span style="width:150px;font-size:12px;color:var(--i2);font-family:'DM Mono',monospace">${when}</span>
+      <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▲</button>
+      <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▼</button>
+      <button onclick="spDelTask(${i})" title="Remove" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 6px;color:#DC2626">×</button>
     </div>`;
   }).join('');
 
@@ -4165,29 +4166,29 @@ function renderSchedule() {
     const sameSupplier = (p.deliveries||[]).filter(d => d.supplier === row.supplier).length > 1;
     const itemLine = it => {
       const assign = isUn
-        ? `<select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:10px;padding:1px 3px;border:1px solid #FDE68A;border-radius:3px;color:#B45309;background:white;max-width:150px">
+        ? `<select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:11px;padding:2px 4px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:160px;font-weight:600">
              <option value="">assign supplier…</option>
              ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
              <option value="__new__">+ new supplier…</option>
-           </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i4);cursor:help">ℹ PM</span>` : ''}`
+           </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}`
         : '';
-      return `<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--i2);padding:1px 0;flex-wrap:wrap"><span style="flex:1;min-width:140px">${it.qty} × ${cwEsc(it.desc)}${it.unit ? ' (' + cwEsc(it.unit) + ')' : ''}</span>${assign}</div>`;
+      return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i1);padding:2px 0;flex-wrap:wrap"><span style="flex:1;min-width:140px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}</span>${assign}</div>`;
     };
     const itemsHtml = items.length
       ? items.map(itemLine).join('')
-      : '<div style="font-size:11px;color:#B45309">No materials — the deliverables feeding this row may have changed; rebuild below or delete this row.</div>';
-    return `<div style="padding:7px 0;border-bottom:1px solid var(--bd);${isUn ? 'background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:7px 8px;margin-top:6px;' : ''}">
+      : '<div style="font-size:12px;color:#B45309">No materials — the deliverables feeding this row may have changed; rebuild below or delete this row.</div>';
+    return `<div style="background:${isUn ? '#FFFBEB' : 'white'};border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:6px;padding:7px 9px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-        <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1;min-width:140px;padding:5px 8px;border:1px solid ${isUn ? '#FDE68A' : 'var(--bd)'};border-radius:4px;font-size:13px;font-weight:600;${isUn ? 'color:#B45309;background:white;' : ''}">
-        <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" style="padding:4px 6px;border:1px solid var(--bd);border-radius:4px;font-size:12px">
-        <span style="font-size:11px;color:var(--i3)">${items.length} item${items.length!==1?'s':''} · £${tot.toFixed(2)}</span>
-        ${isUn ? '' : `<button onclick="spToggleRowItems(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Show the checklist this delivery will carry">▾ items</button>`}
-        ${!isUn && (row.lineIds||[]).length > 1 ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3)" title="Split into a second delivery by deliverable">⑃ split</button>` : ''}
-        <button onclick="spDelDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:#DC2626" title="Remove this delivery row">×</button>
+        <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1 1 120px;min-width:110px;padding:4px 7px;border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:4px;font-size:14px;font-weight:600;${isUn ? 'color:#92400E;background:white;' : 'color:var(--i1);'}">
+        <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
+        <span style="font-size:12px;color:var(--i2);white-space:nowrap">${items.length} · <strong>£${Math.round(tot).toLocaleString('en-GB')}</strong></span>
+        ${isUn ? '' : `<button onclick="spToggleRowItems(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:12px;padding:2px 6px;color:var(--i2)" title="Show the checklist this delivery will carry">▾</button>`}
+        ${!isUn && (row.lineIds||[]).length > 1 ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:12px;padding:2px 6px;color:var(--i2)" title="Split into a second delivery by deliverable">⑃</button>` : ''}
+        <button onclick="spDelDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:12px;padding:2px 6px;color:#DC2626" title="Remove this delivery row">×</button>
       </div>
-      ${sameSupplier ? `<div style="font-size:10px;color:var(--i4);margin-top:2px">from: ${(row.lineIds||[]).map(id => cwEsc(spLineLabel(id))).join(' · ')}</div>` : ''}
-      ${isUn ? `<div style="font-size:10px;color:#B45309;margin-top:3px">Assigning here affects THIS schedule only. If pushed as-is, this becomes a dated "⚠ Unassigned" task so nothing is missed.</div>` : ''}
-      <div id="sp-row-items-${i}" style="display:${isUn ? 'block' : 'none'};margin:5px 0 0 6px;padding-left:8px;border-left:2px solid ${isUn ? '#FDE68A' : 'var(--bd)'}">${itemsHtml}</div>
+      ${sameSupplier ? `<div style="font-size:11px;color:var(--i3);margin-top:3px">from: ${(row.lineIds||[]).map(id => cwEsc(spLineLabel(id))).join(' · ')}</div>` : ''}
+      ${isUn ? `<div style="font-size:11px;color:#92400E;margin-top:3px;font-weight:500">Assigning here affects THIS schedule only. If pushed as-is, this becomes a dated "⚠ Unassigned" task so nothing is missed.</div>` : ''}
+      <div id="sp-row-items-${i}" style="display:${isUn ? 'block' : 'none'};margin:5px 0 0 4px;padding-left:8px;border-left:2px solid ${isUn ? '#F59E0B' : 'var(--bd)'}">${itemsHtml}</div>
     </div>`;
   }).join('');
 
@@ -4206,25 +4207,25 @@ function renderSchedule() {
         <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetField('startDate',this.value)"></div>
         <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)"></div>
         <div class="fg" style="margin:0"><label>Crew size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
-        <div style="font-size:12px;color:var(--i3);padding-bottom:8px">
-          Scheduled: <strong>${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends ' + spNice(lastEnd) + ')' : ''}
-          &nbsp;·&nbsp; Quote labour: <strong>${manDays}</strong> man-day${manDays!==1?'s':''} ≈ <strong>${(manDays/crew).toFixed(1)}</strong> days with a crew of ${crew}
+        <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
+          Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}
+          &nbsp;·&nbsp; Quote labour: <strong style="color:var(--i1)">${manDays}</strong> man-day${manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(manDays/crew).toFixed(1)}</strong> days with a crew of ${crew}
           ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
         </div>
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:0 1 260px;min-width:230px">
-          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">On the quote <span style="font-weight:400;text-transform:none">— + adds a task · tick several for one combined task</span></div>
+          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick several for one combined task</span></div>
           <div style="max-height:430px;overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
           ${quoteListHtml ? `<button class="btn btn-outline btn-sm" onclick="spSeedSelected()" style="margin-top:8px" title="Combine the ticked lines into ONE task (their labour summed ÷ crew)">⊕ Add selected as one task</button>` : ''}
         </div>
         <div style="flex:1;min-width:340px">
-          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">Project Breakdown <span style="font-weight:400;text-transform:none">— dates cascade automatically, weekends skipped</span></div>
+          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Project Breakdown <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— dates cascade automatically, weekends skipped</span></div>
           ${taskRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet — type below, Enter adds each one.</div>'}
           <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Pour foundations) and press Enter…" onkeydown="spAddTaskKey(event)" style="width:100%;margin-top:8px;padding:7px 9px;border:1px dashed var(--bd);border-radius:5px;font-size:13px;box-sizing:border-box">
         </div>
         <div style="flex:1;min-width:340px">
-          <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">Deliveries <span style="font-weight:400;text-transform:none">— one TeamGantt task each, materials become its checklist</span></div>
+          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Deliveries <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— one TeamGantt task each, materials become its checklist</span></div>
           ${delivRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No deliveries — click rebuild below once the quote has materials.</div>'}
           <button class="btn btn-outline btn-sm" onclick="spRegenDeliveries()" style="margin-top:8px" title="Rebuild one row per supplier from the current Order List (replaces the rows above)">↻ Rebuild from Order List</button>
         </div>
