@@ -4301,7 +4301,7 @@ function renderSchedule() {
       <input type="checkbox" class="sp-seed-cb" value="${l.id}" ${spTicked.has(l.id)?'checked':''} onchange="spTick(this)" title="Tick to combine or attach with a task's ⇤" style="cursor:pointer;flex-shrink:0">
       <span style="flex:1;font-size:13px;color:var(--i1);min-width:0;line-height:1.25">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
       ${taskTag}${labPill(spManDaysOf(l))}
-      <button onclick="spSeedTask(${l.id})" title="Add as its own task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:13px;padding:1px 8px;color:var(--i1);font-weight:600;flex-shrink:0">+</button>
+      <button onclick="spSeedTask(${l.id})" title="Add as its own task (days from its labour ÷ team)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:13px;padding:1px 8px;color:var(--i1);font-weight:600;flex-shrink:0">+</button>
     </div>`;
   };
   let quoteListHtml = '';
@@ -4323,7 +4323,7 @@ function renderSchedule() {
     const d = dates[i];
     const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
     const linked = t.srcLineIds || [];
-    const quoted = linked.length ? `<span title="Covered labour: ${spDaysFmt(spLabDaysFor(linked))} man-days ÷ crew of ${crew} — your day count is never changed automatically" style="font-size:11px;color:var(--i2);white-space:nowrap">quoted ≈ <strong>${spDaysFmt(spLabDaysFor(linked)/crew)}d</strong></span>` : '';
+    const quoted = linked.length ? `<span title="Covered labour: ${spDaysFmt(spLabDaysFor(linked))} man-days ÷ team of ${crew} — your day count is never changed automatically" style="font-size:11px;color:var(--i2);white-space:nowrap">quoted ≈ <strong>${spDaysFmt(spLabDaysFor(linked)/crew)}d</strong></span>` : '';
     const attach = spTicked.size ? `<button onclick="spAttachSelected(${i})" title="Put the ${spTicked.size} ticked quote line(s) in this task" style="background:#EEF9F0;border:1px solid #BBF7D0;border-radius:3px;cursor:pointer;font-size:12px;padding:2px 8px;color:#15803D;font-weight:700">⇤ attach</button>` : '';
     const contained = linked.map(id => {
       const l = lines.find(x => x.id === id);
@@ -4412,10 +4412,10 @@ function renderSchedule() {
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
         <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetField('startDate',this.value)"></div>
         <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)"></div>
-        <div class="fg" style="margin:0"><label>Crew size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
+        <div class="fg" style="margin:0"><label>Team size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
         <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
-          Labour: <strong style="color:var(--i1)">£${Math.round(lab.cost).toLocaleString('en-GB')}</strong> · <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(lab.manDays/crew).toFixed(1)}</strong> days with a crew of ${crew}
+          Labour: <strong style="color:var(--i1)">£${Math.round(lab.cost).toLocaleString('en-GB')}</strong> · <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(lab.manDays/crew).toFixed(1)}</strong> days with a team of ${crew}
           &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}
           ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
         </div>
@@ -4425,7 +4425,7 @@ function renderSchedule() {
           <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick to combine or attach</span></div>
           <div style="max-height:460px;overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
           ${quoteListHtml ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
-            <button class="btn btn-outline btn-sm" onclick="spSeedSelected()" title="Combine the ticked lines into ONE task (their labour summed ÷ crew)">⊕ One combined task</button>
+            <button class="btn btn-outline btn-sm" onclick="spSeedSelected()" title="Combine the ticked lines into ONE task (their labour summed ÷ team)">⊕ One combined task</button>
             <button class="btn btn-outline btn-sm" onclick="spSeedSeparate()" title="Add each ticked line as its OWN task, in quote order">➕ Separate tasks</button>
           </div>${spTicked.size ? `<div style="font-size:11px;color:#15803D;font-weight:600;margin-top:5px">${spTicked.size} ticked — use the buttons above, or ⇤ on a task to attach them to it</div>` : ''}` : ''}
         </div>
