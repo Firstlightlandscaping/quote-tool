@@ -3984,24 +3984,66 @@ function spQuoteLabour() {
 // see them; they exist so unassigned materials can be bucketed for the push.
 function spRollup() {
   const rollup = buildSupplierRollup();
-  const ov = (schedulePlan && schedulePlan.supplierOverrides) || {};
-  if (!Object.keys(ov).length) return rollup;
+  const p = schedulePlan || {};
+  const ov = p.supplierOverrides || {};
+  const getSup = name => {
+    let sup = rollup.find(s => s.name === name);
+    if (!sup) {
+      sup = { name, items: [], total: 0, itemCount: 0, unassigned: name === SUP_UNASSIGNED };
+      const ui = rollup.findIndex(s => s.unassigned);
+      if (!sup.unassigned && ui >= 0) rollup.splice(ui, 0, sup); else rollup.push(sup);
+    }
+    return sup;
+  };
+  // 1. supplier overrides: move items out of the Unassigned bucket
   const un = rollup.find(s => s.unassigned);
-  if (!un) return rollup;
-  const moved = [];
-  un.items = un.items.filter(it => { const t = (ov[it.key]||'').trim(); if (t) { moved.push({ it, t }); return false; } return true; });
-  moved.forEach(({ it, t }) => {
-    let sup = rollup.find(s => s.name === t);
-    if (!sup) { sup = { name: t, items: [], total: 0, itemCount: 0, unassigned: false }; rollup.splice(rollup.length - 1, 0, sup); }
-    const dup = sup.items.find(x => x.key === it.key);
-    if (dup) {
-      dup.totalQty = Math.round((dup.totalQty + it.totalQty) * 1000) / 1000;
-      dup.totalCost += it.totalCost;
-      dup.sources = dup.sources.concat(it.sources);
-      dup.unitPrice = dup.totalQty ? dup.totalCost / dup.totalQty : 0;
-    } else sup.items.push(it);
+  if (un && Object.keys(ov).length) {
+    const moved = [];
+    un.items = un.items.filter(it => { const t = (ov[it.key]||'').trim(); if (t) { moved.push({ it, t }); return false; } return true; });
+    moved.forEach(({ it, t }) => {
+      const sup = getSup(t);
+      const dup = sup.items.find(x => x.key === it.key);
+      if (dup) {
+        dup.totalQty = Math.round((dup.totalQty + it.totalQty) * 1000) / 1000;
+        dup.totalCost += it.totalCost;
+        dup.sources = dup.sources.concat(it.sources);
+        dup.unitPrice = dup.totalQty ? dup.totalCost / dup.totalQty : 0;
+      } else sup.items.push(it);
+    });
+  }
+  // 2. extra items: order-only lines that exist ONLY in this plan (never on the quote).
+  //    Synthetic lineId -1; supplier overrides apply to them too (so they're assignable).
+  (p.extraItems || []).forEach(e => {
+    const target = (ov['extra:' + e.id] || e.supplier || SUP_UNASSIGNED).trim() || SUP_UNASSIGNED;
+    getSup(target).items.push({ key: 'extra:' + e.id, stockCode: '', description: e.desc || '', unit: e.unit || '',
+      totalQty: e.qty || 0, totalCost: 0, unitPrice: 0, url: '', extra: true,
+      sources: [{ name: 'added item', qty: e.qty || 0, lineId: -1 }] });
   });
-  rollup.forEach(s => { s.total = s.items.reduce((a,i) => a + i.totalCost, 0); s.itemCount = s.items.length; });
+  // 3. material edits: plan-scope qty/desc/unit overrides (quote & Order List untouched).
+  //    Qty scales the sources proportionally so existing splits keep their ratios.
+  const edits = p.matEdits || {};
+  rollup.forEach(s => s.items.forEach(it => {
+    const e = edits[it.key];
+    if (!e) return;
+    it.rawQty = it.totalQty; it.rawDesc = it.description; it.rawUnit = it.unit;
+    if (e.desc != null && e.desc !== '') it.description = e.desc;
+    if (e.unit != null) it.unit = e.unit;
+    if (e.qty != null && it.totalQty > 0 && e.qty !== it.totalQty) {
+      const f = e.qty / it.totalQty;
+      it.sources.forEach(src => { src.qty = Math.round(src.qty * f * 1000) / 1000; });
+      it.totalQty = e.qty;
+      it.totalCost = it.totalQty * (it.unitPrice || 0);
+    }
+    it.edited = true;
+  }));
+  // 4. stock items: flagged, kept for display but excluded from atoms/rows/checklists.
+  const stock = p.stockKeys || {};
+  rollup.forEach(s => s.items.forEach(it => { if (stock[it.key]) it.stock = true; }));
+  rollup.forEach(s => {
+    const live = s.items.filter(i => !i.stock);
+    s.total = live.reduce((a,i) => a + i.totalCost, 0);
+    s.itemCount = live.length;
+  });
   return rollup.filter(s => !(s.unassigned && !s.items.length));
 }
 // ATOMS: the finest grain of the rollup — (deliverable line × material × qty).
@@ -4012,11 +4054,14 @@ function spAtoms() {
   const out = {};
   spRollup().forEach(s => {
     const acc = {};
-    s.items.forEach(it => it.sources.forEach(src => {
+    s.items.forEach(it => {
+      if (it.stock) return; // stock items aren't ordered — kept out of rows/checklists
+      it.sources.forEach(src => {
       if (src.lineId == null) return;
       const k = src.lineId + '§' + it.key;
       acc[k] = (acc[k] || 0) + src.qty;
-    }));
+      });
+    });
     out[s.name] = Object.keys(acc).map(k => {
       const sep = k.indexOf('§');
       return { lineId: parseFloat(k.slice(0, sep)), key: k.slice(sep + 1), qty: Math.round(acc[k] * 1000) / 1000 };
@@ -4024,13 +4069,156 @@ function spAtoms() {
   });
   return out;
 }
-// Metadata per material key (description/unit/price/url) for display and costing.
+// Metadata per material key (description/unit/price/url + edit/extra flags) for display.
 function spItemMeta() {
   const map = {};
   spRollup().forEach(s => s.items.forEach(it => {
-    map[it.key] = { description: it.description, unit: it.unit, unitPrice: it.unitPrice || 0, url: it.url, stockCode: it.stockCode };
+    map[it.key] = { description: it.description, unit: it.unit, unitPrice: it.unitPrice || 0, url: it.url, stockCode: it.stockCode,
+      edited: !!it.edited, extra: !!it.extra, rawQty: it.rawQty, rawDesc: it.rawDesc, rawUnit: it.rawUnit };
   }));
   return map;
+}
+function spRowsOf(sup) { return (spEnsurePlan().deliveries||[]).filter(d => d.supplier === sup); }
+function spSupplierOfKey(key) { const s = spRollup().find(x => x.items.some(i => i.key === key)); return s ? s.name : null; }
+function spKeyTruthAtoms(key) {
+  const sup = spRollup().find(x => x.items.some(i => i.key === key));
+  const it = sup && sup.items.find(i => i.key === key);
+  if (!it || it.stock) return [];
+  const acc = {};
+  it.sources.forEach(src => { if (src.lineId != null) acc[src.lineId] = (acc[src.lineId]||0) + src.qty; });
+  return Object.keys(acc).map(lid => ({ lineId: parseFloat(lid), key, qty: Math.round(acc[lid]*1000)/1000 }));
+}
+// 📦 stock toggle — "we hold this, don't order it this job". Plan-scope; the quote's
+// pricing keeps the item (correctly — it was charged for), it just isn't ordered.
+function spToggleStock(key) {
+  const p = spEnsurePlan();
+  p.stockKeys = p.stockKeys || {};
+  if (p.stockKeys[key]) {
+    delete p.stockKeys[key];
+    const sup = spSupplierOfKey(key);
+    if (sup) { const rows = spRowsOf(sup); if (rows.length > 1) rows[0].alloc = (rows[0].alloc||[]).concat(spKeyTruthAtoms(key)); }
+  } else {
+    p.stockKeys[key] = true;
+    (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
+  }
+  spMark(); renderSchedule();
+}
+// ✎ edit a material's ORDER qty/wording — plan-scope only (formula/quote untouched).
+function spMatEditDialog(key) {
+  const sup = spRollup().find(x => x.items.some(i => i.key === key));
+  const it = sup && sup.items.find(i => i.key === key);
+  if (!it) return;
+  const existing = document.getElementById('sp-mat-dialog');
+  if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'sp-mat-dialog';
+  panel.dataset.key = key;
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:460px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:16px">✎ Edit order line</h3>
+      <p style="font-size:12px;color:var(--i3);margin:0 0 12px">Changes what you ORDER on this schedule only — the quote and Order List keep the formula's figures${it.edited && it.rawQty != null ? ' (formula: ' + Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') + (it.rawUnit ? ' (' + cwEsc(it.rawUnit) + ')' : '') + ')' : ''}.</p>
+      <div class="fg" style="margin-bottom:10px"><label>Description</label><input type="text" id="sp-me-desc" value="${cwEsc(it.description)}" style="width:100%"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div class="fg"><label>Quantity</label><input type="number" id="sp-me-qty" value="${Math.round(it.totalQty*1000)/1000}" min="0" step="any" style="width:100%"></div>
+        <div class="fg"><label>Unit</label><input type="text" id="sp-me-unit" value="${cwEsc(it.unit||'')}" placeholder="e.g. length, kg, pack" style="width:100%"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        ${it.edited ? '<button class="btn btn-outline" onclick="spResetMatEdit()" title="Back to the formula quantity and wording" style="margin-right:auto">↺ Reset to formula</button>' : ''}
+        <button class="btn btn-outline" onclick="document.getElementById('sp-mat-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="spSaveMatEdit()">Save</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  document.getElementById('sp-me-qty').focus();
+}
+function spSaveMatEdit() {
+  const panel = document.getElementById('sp-mat-dialog');
+  const key = panel.dataset.key;
+  const qty = parseFloat(document.getElementById('sp-me-qty').value);
+  const desc = document.getElementById('sp-me-desc').value.trim();
+  const unit = document.getElementById('sp-me-unit').value.trim();
+  if (!(qty > 0)) { toast('Enter a quantity'); return; }
+  const p = spEnsurePlan();
+  const supName = spSupplierOfKey(key);
+  const supNow = spRollup().find(x => x.name === supName);
+  const cur = supNow ? ((supNow.items.find(i => i.key === key)||{}).totalQty || 0) : 0;
+  if (key.indexOf('extra:') === 0) {
+    const ex = (p.extraItems||[]).find(e => 'extra:' + e.id === key);
+    if (ex) { ex.qty = qty; if (desc) ex.desc = desc; ex.unit = unit; }
+  } else {
+    (p.matEdits = p.matEdits || {})[key] = { qty, desc, unit };
+  }
+  // keep split drops in ratio (single-row suppliers re-derive via sync anyway)
+  if (cur > 0 && qty !== cur && supName) {
+    const rows = spRowsOf(supName);
+    if (rows.length > 1) { const f = qty / cur; rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key) a.qty = Math.round(a.qty*f*1000)/1000; })); }
+  }
+  panel.remove(); spMark(); renderSchedule();
+}
+function spResetMatEdit() {
+  const panel = document.getElementById('sp-mat-dialog');
+  const key = panel.dataset.key;
+  const p = spEnsurePlan();
+  const supName = spSupplierOfKey(key);
+  const supNow = spRollup().find(x => x.name === supName);
+  const it = supNow && supNow.items.find(i => i.key === key);
+  if (p.matEdits) delete p.matEdits[key];
+  if (it && it.rawQty > 0 && it.totalQty > 0 && it.rawQty !== it.totalQty && supName) {
+    const rows = spRowsOf(supName);
+    if (rows.length > 1) { const f = it.rawQty / it.totalQty; rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key) a.qty = Math.round(a.qty*f*1000)/1000; })); }
+  }
+  panel.remove(); spMark(); renderSchedule();
+}
+// + add item — an order-only line that exists ONLY in this plan (never on the quote).
+function spAddExtraDialog(rowIdx) {
+  const existing = document.getElementById('sp-extra-dialog');
+  if (existing) existing.remove();
+  const row = spEnsurePlan().deliveries[rowIdx];
+  if (!row) return;
+  const panel = document.createElement('div');
+  panel.id = 'sp-extra-dialog';
+  panel.dataset.row = rowIdx;
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:460px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:16px">+ Add item to "${cwEsc(row.label||row.supplier)}"</h3>
+      <p style="font-size:12px;color:var(--i3);margin:0 0 12px">An order-only line for this schedule — it never touches the quote or its pricing.</p>
+      <div class="fg" style="margin-bottom:10px"><label>Description</label><input type="text" id="sp-ex-desc" placeholder="e.g. Postcrete 20kg" style="width:100%"></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+        <div class="fg"><label>Quantity</label><input type="number" id="sp-ex-qty" value="1" min="0" step="any" style="width:100%"></div>
+        <div class="fg"><label>Unit</label><input type="text" id="sp-ex-unit" placeholder="e.g. bag" style="width:100%"></div>
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('sp-extra-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="spSaveExtra()">Add item</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  document.getElementById('sp-ex-desc').focus();
+}
+function spSaveExtra() {
+  const panel = document.getElementById('sp-extra-dialog');
+  const rowIdx = parseInt(panel.dataset.row);
+  const p = spEnsurePlan();
+  const row = p.deliveries[rowIdx];
+  const desc = document.getElementById('sp-ex-desc').value.trim();
+  const qty = parseFloat(document.getElementById('sp-ex-qty').value);
+  const unit = document.getElementById('sp-ex-unit').value.trim();
+  if (!row || !desc || !(qty > 0)) { toast('Enter a description and quantity'); return; }
+  const id = Date.now();
+  (p.extraItems = p.extraItems || []).push({ id, supplier: row.supplier, desc, qty, unit });
+  (row.alloc = row.alloc || []).push({ lineId: -1, key: 'extra:' + id, qty });
+  panel.remove(); spMark(); renderSchedule();
+}
+function spDelExtra(key) {
+  if (!confirm('Remove this added item?')) return;
+  const p = spEnsurePlan();
+  p.extraItems = (p.extraItems||[]).filter(e => 'extra:' + e.id !== key);
+  if (p.matEdits) delete p.matEdits[key];
+  if (p.supplierOverrides) delete p.supplierOverrides[key];
+  (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
+  spMark(); renderSchedule();
 }
 function spUnRowDefaults() { return { supplier: SUP_UNASSIGNED, label: '⚠ Unassigned — needs a supplier' }; }
 function spDefaultDeliveries() {
@@ -4113,7 +4301,8 @@ function spRowItems(row, meta) {
   (row.alloc || []).forEach(a => { acc[a.key] = (acc[a.key] || 0) + a.qty; });
   return Object.keys(acc).filter(k => acc[k] > 0).map(k => {
     const m = meta[k] || {};
-    return { key: k, stockCode: m.stockCode, desc: m.description || k.split('|')[0], unit: m.unit || '', qty: Math.round(acc[k]*1000)/1000, cost: acc[k] * (m.unitPrice||0), url: m.url };
+    return { key: k, stockCode: m.stockCode, desc: m.description || k.split('|')[0], unit: m.unit || '', qty: Math.round(acc[k]*1000)/1000, cost: acc[k] * (m.unitPrice||0), url: m.url,
+      edited: !!m.edited, extra: !!m.extra, rawQty: m.rawQty, rawDesc: m.rawDesc };
   }).sort((a,b) => (a.desc||'').localeCompare(b.desc||''));
 }
 // Grouped view of a row's atoms by source deliverable — the planning view.
@@ -4151,6 +4340,7 @@ function spAssignSupplierSel(sel) {
   toast('✓ ' + ((meta && meta.description) || 'material') + ' → ' + sup + ' (this schedule only)');
 }
 function spLineLabel(id) {
+  if (id === -1) return '(added item)';
   const l = lines.find(x => x.id === id);
   if (!l) return '(removed line)';
   return (l.misc ? '📦 ' : (l.code ? l.code + ' ' : '')) + (l.name || '');
@@ -4355,34 +4545,53 @@ function renderSchedule() {
   const delivRows = (p.deliveries||[]).map((row, i) => {
     const isUn = row.supplier === SUP_UNASSIGNED;
     const items = spRowItems(row, itemMeta);
-    if (isUn && !items.length) return ''; // everything assigned — the row disappears
+    // stock sub-list shows once per supplier, on its first row
+    const isFirstOfSup = (p.deliveries||[]).findIndex(d => d.supplier === row.supplier) === i;
+    const stockItems = isFirstOfSup ? (((spRollup().find(s => s.name === row.supplier))||{items:[]}).items.filter(x => x.stock)) : [];
+    if (isUn && !items.length && !stockItems.length) return ''; // everything assigned — the row disappears
     const tot = items.reduce((s,it) => s + it.cost, 0);
+    // per-item controls: ✎ edit (plan-only) + 📦 stock (skip ordering) / 🗑 for added items
+    const itemCtl = it => `<span style="display:inline-flex;gap:4px;flex-shrink:0">
+      <button data-key="${cwEsc(it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the order quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:var(--i2)">✎</button>
+      ${it.extra
+        ? `<button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:#DC2626">🗑</button>`
+        : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it this job" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:var(--i2)">📦</button>`}
+    </span>`;
+    const editedTag = it => it.edited ? ` <span title="Edited for this schedule — formula said ${it.rawQty != null ? Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') : 'something else'}" style="font-size:10px;color:#B45309;border:1px solid #FDE68A;border-radius:8px;padding:0 5px;cursor:help">edited</span>` : (it.extra ? ` <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px">added</span>` : '');
     let itemsHtml;
     if (isUn) {
       itemsHtml = items.map(it => `
         <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i1);padding:2px 0;flex-wrap:wrap">
-          <span style="flex:1;min-width:140px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}</span>
+          <span style="flex:1;min-width:140px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${editedTag(it)}</span>
           <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:11px;padding:2px 4px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:160px;font-weight:600">
             <option value="">assign supplier…</option>
             ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
             <option value="__new__">+ new supplier…</option>
           </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}
+          ${itemCtl(it)}
         </div>`).join('');
     } else {
       // Order-first view: combined total per material (what you'd phone through — and
       // exactly what the TeamGantt checklist will say), provenance inline in grey.
       const srcByKey = {};
       (row.alloc||[]).forEach(a => { if (a.qty > 0) (srcByKey[a.key] = srcByKey[a.key] || []).push(a); });
-      const lineName = id => { const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
+      const lineName = id => { if (id === -1) return 'added'; const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
       itemsHtml = items.map(it => {
         const srcs = srcByKey[it.key] || [];
-        const prov = srcs.length > 1
+        const prov = it.extra ? '' : (srcs.length > 1
           ? srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + Math.round(a.qty*1000)/1000 + ')').join(' + ')
-          : (srcs.length === 1 ? cwEsc(lineName(srcs[0].lineId)) : '');
-        return `<div style="font-size:12px;color:var(--i1);padding:1px 0"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${prov ? ' <span style="color:var(--i3);font-size:11px">— ' + prov + '</span>' : ''}</div>`;
+          : (srcs.length === 1 ? cwEsc(lineName(srcs[0].lineId)) : ''));
+        return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i1);padding:2px 0;flex-wrap:wrap"><span style="flex:1;min-width:140px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${editedTag(it)}${prov ? ' <span style="color:var(--i3);font-size:11px">— ' + prov + '</span>' : ''}</span>${itemCtl(it)}</div>`;
       }).join('');
     }
-    if (!items.length) itemsHtml = '<div style="font-size:12px;color:#B45309">No materials in this delivery — split things into it, or delete the row.</div>';
+    if (!items.length) itemsHtml = '<div style="font-size:12px;color:#B45309">No materials in this delivery — split things into it, add an item, or delete the row.</div>';
+    const stockHtml = stockItems.length ? `
+      <div style="margin-top:6px;padding-top:4px;border-top:1px dashed var(--bd)">
+        <div style="font-size:11px;font-weight:600;color:var(--i3)">📦 Stock — not ordered</div>
+        ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i3);padding:1px 0"><span style="flex:1;text-decoration:line-through">${Math.round(x.totalQty*1000)/1000} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 7px;color:var(--i2)">↺ restore</button></div>`).join('')}
+      </div>` : '';
+    const addBtn = `<button onclick="spAddExtraDialog(${i})" title="Add an order-only item to this delivery (never touches the quote)" style="background:none;border:1px dashed var(--bd);border-radius:4px;cursor:pointer;font-size:11px;padding:2px 9px;color:var(--i2);margin-top:5px">+ add item</button>`;
+    itemsHtml = itemsHtml + stockHtml + addBtn;
     return `<div style="background:${isUn ? '#FFFBEB' : 'white'};border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:6px;padding:7px 9px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1 1 120px;min-width:110px;padding:4px 7px;border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:4px;font-size:14px;font-weight:600;${isUn ? 'color:#92400E;background:white;' : 'color:var(--i1);'}">
