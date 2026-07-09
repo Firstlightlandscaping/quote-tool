@@ -327,6 +327,17 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
   body.contract-mode #contract-toolbar{display:none!important}
   .cw-pay,.cw-sign-row,.cw-bank,.cw-terms li{break-inside:avoid;page-break-inside:avoid}
 }
+/* ── Schedule tab drag & drop (gantt) ─────────────────────────────────────── */
+.sp-drag-row{position:relative;border-radius:5px;transition:background .15s ease,box-shadow .15s ease,transform .15s ease}
+.sp-drag-row:hover{background:#FAFAF9;box-shadow:0 1px 4px rgba(0,0,0,.08);transform:translateY(-1px)}
+.sp-grip{opacity:0;color:var(--i4);font-size:10px;letter-spacing:-1px;cursor:grab;user-select:none;flex-shrink:0;width:12px;text-align:center;transition:opacity .15s ease}
+.sp-drag-row:hover .sp-grip{opacity:1}
+.sp-task-card{transition:border-color .2s ease,background .2s ease,box-shadow .2s ease}
+body.sp-dragging .sp-task-card{border-color:#BBF7D0;background:#FDFEFB}
+body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:sp-pulse 1.2s ease-in-out infinite}
+.sp-drop-hover{border-color:#16A34A!important;background:#F0FDF4!important;box-shadow:0 0 0 3px rgba(22,163,74,.12)}
+@keyframes sp-pulse{0%,100%{background:transparent}50%{background:#F0FDF4}}
+.sp-drag-ghost{position:fixed;top:-200px;left:-200px;background:white;border:1px solid var(--bd);border-radius:16px;padding:6px 14px;font-size:13px;font-weight:600;color:var(--i1);box-shadow:0 6px 18px rgba(0,0,0,.18);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;z-index:99999}
 </style>
 </head>
 <body>
@@ -3963,8 +3974,9 @@ function spCascade(startISO, tasks) {
     return { start: spISO(start), end: spISO(end) };
   });
 }
-function spQuoteManDays() {
-  return lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labDays||0), 0);
+function spQuoteLabour() {
+  const cost = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labTotal||0), 0);
+  return { cost, manDays: cost / spRate() };
 }
 // The schedule's view of the rollup: the raw supplier rollup with the plan's
 // supplier OVERRIDES applied (plan.supplierOverrides = { itemKey: supplier }).
@@ -4087,6 +4099,7 @@ function spEnsurePlan() {
     startDate: spISO(new Date()),
     deadline: '',
     crewSize: 2,
+    manDayRate: 350,
     tasks: [],
     deliveries: spDefaultDeliveries()
   };
@@ -4148,7 +4161,12 @@ function spDaysFmt(n) { return parseFloat((n||0).toFixed(2)); }
 let spTicked = new Set();
 function spTick(cb) { const id = parseFloat(cb.value); if (cb.checked) spTicked.add(id); else spTicked.delete(id); renderSchedule(); }
 function spTickedLines() { return lines.filter(l => spTicked.has(l.id)); }
-function spLabDaysFor(ids) { return (ids||[]).reduce((s,id) => { const l = lines.find(x => x.id === id); return s + (l ? (l.labDays||0) : 0); }, 0); }
+// MAN-DAYS derive from labour VALUE, not the quote's days field: Neal prices £350 per
+// man-day (a £700/day line = a 2-man crew = 2 man-days per day), so labTotal ÷ rate is
+// unambiguous however the line was priced. Rate lives on the plan (default 350).
+function spRate() { return Math.max(1, (schedulePlan && schedulePlan.manDayRate) || 350); }
+function spManDaysOf(l) { return (l && l.labTotal ? l.labTotal : 0) / spRate(); }
+function spLabDaysFor(ids) { return (ids||[]).reduce((s,id) => s + spManDaysOf(lines.find(x => x.id === id)), 0); }
 // Tasks LINK to the quote lines they cover (task.srcLineIds). Grey-out in the quote
 // column is DERIVED from those links, so deleting a task un-greys its lines.
 function spNewTask(name, days, srcLineIds) {
@@ -4161,7 +4179,7 @@ function spSeedTask(lineId) {
   if (!l) return;
   const p = spEnsurePlan();
   const crew = Math.max(1, p.crewSize || 1);
-  spNewTask(l.name, Math.ceil((l.labDays||0) / crew), []);
+  spNewTask(l.name, Math.ceil(spManDaysOf(l) / crew), []);
   spAssignToTask(p.tasks.length - 1, [lineId]);
 }
 // ⊕ ticked lines → ONE combined task (their labour summed ÷ crew).
@@ -4170,7 +4188,7 @@ function spSeedSelected() {
   if (!picked.length) { toast('Tick some quote lines first'); return; }
   const p = spEnsurePlan();
   const crew = Math.max(1, p.crewSize || 1);
-  spNewTask(picked[0].name, Math.ceil(picked.reduce((s,l) => s + (l.labDays||0), 0) / crew), []);
+  spNewTask(picked[0].name, Math.ceil(picked.reduce((s,l) => s + spManDaysOf(l), 0) / crew), []);
   spAssignToTask(p.tasks.length - 1, picked.map(l => l.id));
 }
 // ➕ ticked lines → one task EACH, in quote order.
@@ -4180,7 +4198,7 @@ function spSeedSeparate() {
   const p = spEnsurePlan();
   const crew = Math.max(1, p.crewSize || 1);
   picked.forEach(l => {
-    spNewTask(l.name, Math.ceil((l.labDays||0) / crew), []);
+    spNewTask(l.name, Math.ceil(spManDaysOf(l) / crew), []);
     spAssignToTask(p.tasks.length - 1, [l.id]);
   });
 }
@@ -4207,24 +4225,35 @@ function spAttachSelected(i) {
   if (!spTicked.size) return;
   spAssignToTask(i, [...spTicked]);
 }
-// ── drag & drop: tray line (or group heading = all members) → task card / new-task zone
+// ── drag & drop: tray line (or group heading = all members) → task card / new-task zone.
+// Custom chip ghost instead of the browser's washed-out row snapshot; while a drag is
+// live, body.sp-dragging wakes the drop targets up (CSS above).
 function spDragLine(ev, ids) {
   ev.dataTransfer.setData('text/plain', JSON.stringify(ids));
   ev.dataTransfer.effectAllowed = 'move';
+  const first = lines.find(l => l.id === ids[0]);
+  const ghost = document.createElement('div');
+  ghost.className = 'sp-drag-ghost';
+  ghost.textContent = (first ? (first.misc ? '📦 ' : '') + (first.name || '') : 'deliverable') + (ids.length > 1 ? '  +' + (ids.length - 1) + ' more' : '');
+  document.body.appendChild(ghost);
+  if (ev.dataTransfer.setDragImage) ev.dataTransfer.setDragImage(ghost, 18, 16);
+  setTimeout(() => ghost.remove(), 0);
+  document.body.classList.add('sp-dragging');
 }
+function spDragEnd() { document.body.classList.remove('sp-dragging'); }
 function spDragIds(ev) {
   try { const ids = JSON.parse(ev.dataTransfer.getData('text/plain')); return Array.isArray(ids) ? ids.filter(id => lines.some(l => l.id === id)) : []; }
   catch(e) { return []; }
 }
-function spDragOver(ev, el) { ev.preventDefault(); el.style.borderColor = '#16A34A'; el.style.background = '#F0FDF4'; }
-function spDragLeave(el) { el.style.borderColor = ''; el.style.background = ''; }
+function spDragOver(ev, el) { ev.preventDefault(); el.classList.add('sp-drop-hover'); }
+function spDragLeave(el) { el.classList.remove('sp-drop-hover'); }
 function spDropOnTask(ev, taskIdx, el) {
-  ev.preventDefault(); spDragLeave(el);
+  ev.preventDefault(); spDragLeave(el); spDragEnd();
   const ids = spDragIds(ev);
   if (ids.length) spAssignToTask(taskIdx, ids);
 }
 function spDropNewTask(ev, el) {
-  ev.preventDefault(); spDragLeave(el);
+  ev.preventDefault(); spDragLeave(el); spDragEnd();
   const ids = spDragIds(ev);
   if (!ids.length) return;
   const first = lines.find(l => l.id === ids[0]);
@@ -4246,7 +4275,7 @@ function renderSchedule() {
   const cust = (document.getElementById('in-cust')||{value:''}).value.trim();
   const dates = spCascade(p.startDate, p.tasks);
   const schedDays = p.tasks.reduce((s,t) => s + Math.max(1, Math.round(t.days||1)), 0);
-  const manDays = spQuoteManDays();
+  const lab = spQuoteLabour();
   const crew = Math.max(1, p.crewSize || 1);
   const lastEnd = dates.length && dates[dates.length-1] ? dates[dates.length-1].end : null;
   const overDeadline = p.deadline && lastEnd && lastEnd > p.deadline;
@@ -4267,10 +4296,11 @@ function renderSchedule() {
     const inTask = ti !== undefined;
     const taskTag = inTask ? `<span style="font-size:10px;color:var(--i3);white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis" title="In task ${ti+1}: ${cwEsc(p.tasks[ti].name||'')}">→ ${ti+1}. ${cwEsc((p.tasks[ti].name||'').slice(0,14))}</span>` : '';
     return `
-    <div draggable="true" ondragstart="spDragLine(event,[${l.id}])" style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:grab;${indent?'padding-left:14px;':''}${inTask?'opacity:.5;':''}">
+    <div class="sp-drag-row" draggable="true" ondragstart="spDragLine(event,[${l.id}])" ondragend="spDragEnd()" style="display:flex;align-items:center;gap:6px;padding:3px 2px;${indent?'padding-left:14px;':''}${inTask?'opacity:.5;':''}">
+      <span class="sp-grip">⋮⋮</span>
       <input type="checkbox" class="sp-seed-cb" value="${l.id}" ${spTicked.has(l.id)?'checked':''} onchange="spTick(this)" title="Tick to combine or attach with a task's ⇤" style="cursor:pointer;flex-shrink:0">
       <span style="flex:1;font-size:13px;color:var(--i1);min-width:0;line-height:1.25">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
-      ${taskTag}${labPill(l.labDays)}
+      ${taskTag}${labPill(spManDaysOf(l))}
       <button onclick="spSeedTask(${l.id})" title="Add as its own task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:13px;padding:1px 8px;color:var(--i1);font-weight:600;flex-shrink:0">+</button>
     </div>`;
   };
@@ -4279,8 +4309,8 @@ function renderSchedule() {
     if (l.note || l.discount) return;
     if (l.groupId && !l.groupMember) {
       const members = lines.filter(x => x.groupMember === l.groupId);
-      const gLab = members.reduce((s,m) => s + (m.labDays||0), 0);
-      quoteListHtml += `<div draggable="true" ondragstart="spDragLine(event,[${members.map(m=>m.id).join(',')}])" title="Drag to put the WHOLE group in a task" style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px;margin-top:8px;color:var(--i1);cursor:grab">▸ ${cwEsc(l.name||'')} <span style="color:var(--i3);font-weight:400;font-size:11px">group</span> ${labPill(gLab)}</div>`;
+      const gLab = members.reduce((s,m) => s + spManDaysOf(m), 0);
+      quoteListHtml += `<div class="sp-drag-row" draggable="true" ondragstart="spDragLine(event,[${members.map(m=>m.id).join(',')}])" ondragend="spDragEnd()" title="Drag to put the WHOLE group in a task" style="display:flex;align-items:center;gap:6px;font-weight:700;font-size:13px;margin-top:8px;color:var(--i1);padding:2px"><span class="sp-grip">⋮⋮</span>▸ ${cwEsc(l.name||'')} <span style="color:var(--i3);font-weight:400;font-size:11px">group</span> ${labPill(gLab)}</div>`;
       return;
     }
     quoteListHtml += seedRow(l, !!l.groupMember);
@@ -4293,17 +4323,17 @@ function renderSchedule() {
     const d = dates[i];
     const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
     const linked = t.srcLineIds || [];
-    const quoted = linked.length ? `<span title="Combined quoted labour of the ${linked.length} covered line(s) — your day count is never changed automatically" style="font-size:11px;color:var(--i2);white-space:nowrap">quoted ≈ <strong>${spDaysFmt(spLabDaysFor(linked))}d</strong></span>` : '';
+    const quoted = linked.length ? `<span title="Covered labour: ${spDaysFmt(spLabDaysFor(linked))} man-days ÷ crew of ${crew} — your day count is never changed automatically" style="font-size:11px;color:var(--i2);white-space:nowrap">quoted ≈ <strong>${spDaysFmt(spLabDaysFor(linked)/crew)}d</strong></span>` : '';
     const attach = spTicked.size ? `<button onclick="spAttachSelected(${i})" title="Put the ${spTicked.size} ticked quote line(s) in this task" style="background:#EEF9F0;border:1px solid #BBF7D0;border-radius:3px;cursor:pointer;font-size:12px;padding:2px 8px;color:#15803D;font-weight:700">⇤ attach</button>` : '';
     const contained = linked.map(id => {
       const l = lines.find(x => x.id === id);
       const nm = l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)';
-      return `<div draggable="true" ondragstart="spDragLine(event,[${id}])" title="Drag to another task to move it" style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 24px;font-size:12px;color:var(--i2);cursor:grab">
-        <span style="color:var(--i3)">⤷</span><span style="flex:1;min-width:0;line-height:1.25">${cwEsc(nm)}</span>${l ? labPill(l.labDays) : ''}
+      return `<div class="sp-drag-row" draggable="true" ondragstart="spDragLine(event,[${id}])" ondragend="spDragEnd()" title="Drag to another task to move it" style="display:flex;align-items:center;gap:6px;padding:2px 0 2px 16px;font-size:12px;color:var(--i2)">
+        <span class="sp-grip">⋮⋮</span><span style="color:var(--i3)">⤷</span><span style="flex:1;min-width:0;line-height:1.25">${cwEsc(nm)}</span>${l ? labPill(spManDaysOf(l)) : ''}
         <button onclick="spUnassignLine(${i},${id})" title="Take out of this task" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:0 6px;color:#DC2626">×</button>
       </div>`;
     }).join('');
-    return `<div ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropOnTask(event,${i},this)" style="background:white;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-bottom:6px">
+    return `<div class="sp-task-card" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropOnTask(event,${i},this)" style="background:white;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
         <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:130px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
@@ -4383,9 +4413,10 @@ function renderSchedule() {
         <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetField('startDate',this.value)"></div>
         <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)"></div>
         <div class="fg" style="margin:0"><label>Crew size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
+        <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
-          Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}
-          &nbsp;·&nbsp; Quote labour: <strong style="color:var(--i1)">${manDays}</strong> man-day${manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(manDays/crew).toFixed(1)}</strong> days with a crew of ${crew}
+          Labour: <strong style="color:var(--i1)">£${Math.round(lab.cost).toLocaleString('en-GB')}</strong> · <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(lab.manDays/crew).toFixed(1)}</strong> days with a crew of ${crew}
+          &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}
           ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
         </div>
       </div>
@@ -4401,7 +4432,7 @@ function renderSchedule() {
         <div style="flex:1;min-width:380px">
           <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Project Breakdown <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— dates cascade automatically, weekends skipped</span></div>
           ${taskRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet — type below, or drag a deliverable into the zone underneath.</div>'}
-          <div ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropNewTask(event,this)" style="border:2px dashed var(--bd);border-radius:6px;padding:9px;text-align:center;font-size:12px;color:var(--i3);margin-top:6px">⟵ drag a deliverable (or a whole group) here to start a NEW task</div>
+          <div class="sp-newtask-zone" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropNewTask(event,this)" style="border:2px dashed var(--bd);border-radius:6px;padding:9px;text-align:center;font-size:12px;color:var(--i3);margin-top:6px">⟵ drag a deliverable (or a whole group) here to start a NEW task</div>
           <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
             <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Excavations)…" onkeydown="spAddTaskKey(event)" style="flex:1;padding:9px 10px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;color:var(--i1);box-sizing:border-box">
             <input type="number" id="sp-new-days" value="1" min="1" step="1" onkeydown="spAddTaskKey(event)" title="Working days" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
