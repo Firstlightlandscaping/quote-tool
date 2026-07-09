@@ -4038,6 +4038,7 @@ function spDefaultDeliveries() {
 // - suppliers with atoms but no row get a fresh row (e.g. new material/supplier on the quote)
 function spSyncDeliveries(p) {
   const atoms = spAtoms();
+  delete p.seededLineIds; // legacy — grey-out is now derived from task links
   p.deliveries = p.deliveries || [];
   p.deliveries.forEach(row => {
     if (!row.alloc && row.lineIds) {
@@ -4142,28 +4143,58 @@ function spLineLabel(id) {
   return (l.misc ? '📦 ' : (l.code ? l.code + ' ' : '')) + (l.name || '');
 }
 function spDaysFmt(n) { return parseFloat((n||0).toFixed(2)); }
-// Seed one quote line as a task: name from the line, days from its labour ÷ crew.
-// A seed is TEXT, not a link — grey-out (seededLineIds) is a memory aid only.
+// Transient tick state for the "On the quote" column — survives re-renders so
+// multi-select actually works; cleared after any add/attach action and on quote change.
+let spTicked = new Set();
+function spTick(cb) { const id = parseFloat(cb.value); if (cb.checked) spTicked.add(id); else spTicked.delete(id); renderSchedule(); }
+function spTickedLines() { return lines.filter(l => spTicked.has(l.id)); }
+function spLabDaysFor(ids) { return (ids||[]).reduce((s,id) => { const l = lines.find(x => x.id === id); return s + (l ? (l.labDays||0) : 0); }, 0); }
+// Tasks LINK to the quote lines they cover (task.srcLineIds). Grey-out in the quote
+// column is DERIVED from those links, so deleting a task un-greys its lines.
+function spNewTask(name, days, srcLineIds) {
+  spEnsurePlan().tasks.push({ id: Date.now() + Math.floor(Math.random()*1000), name: name || '', days: Math.max(1, Math.round(days||1)), srcLineIds: srcLineIds || [] });
+}
+// + on one line: task named from it, days from its labour ÷ crew, linked.
 function spSeedTask(lineId) {
   const l = lines.find(x => x.id === lineId);
   if (!l) return;
-  const p = spEnsurePlan();
-  const crew = Math.max(1, p.crewSize || 1);
-  p.tasks.push({ id: Date.now(), name: l.name || '', days: Math.max(1, Math.ceil((l.labDays||0) / crew)) });
-  (p.seededLineIds = p.seededLineIds || []).push(lineId);
+  const crew = Math.max(1, spEnsurePlan().crewSize || 1);
+  spNewTask(l.name, Math.ceil((l.labDays||0) / crew), [lineId]);
+  spTicked.delete(lineId);
   spMark(); renderSchedule();
 }
-// Merge several ticked quote lines into ONE task (combined labour ÷ crew).
+// ⊕ ticked lines → ONE combined task (their labour summed ÷ crew).
 function spSeedSelected() {
-  const ids = Array.from(document.querySelectorAll('.sp-seed-cb:checked')).map(c => parseFloat(c.value));
-  if (!ids.length) { toast('Tick some quote lines first'); return; }
-  const picked = ids.map(id => lines.find(x => x.id === id)).filter(Boolean);
-  if (!picked.length) return;
-  const p = spEnsurePlan();
-  const crew = Math.max(1, p.crewSize || 1);
-  const lab = picked.reduce((s,l) => s + (l.labDays||0), 0);
-  p.tasks.push({ id: Date.now(), name: picked[0].name || '', days: Math.max(1, Math.ceil(lab / crew)) });
-  p.seededLineIds = (p.seededLineIds || []).concat(ids);
+  const picked = spTickedLines();
+  if (!picked.length) { toast('Tick some quote lines first'); return; }
+  const crew = Math.max(1, spEnsurePlan().crewSize || 1);
+  spNewTask(picked[0].name, Math.ceil(picked.reduce((s,l) => s + (l.labDays||0), 0) / crew), picked.map(l => l.id));
+  spTicked.clear();
+  spMark(); renderSchedule();
+}
+// ➕ ticked lines → one task EACH, in quote order.
+function spSeedSeparate() {
+  const picked = spTickedLines();
+  if (!picked.length) { toast('Tick some quote lines first'); return; }
+  const crew = Math.max(1, spEnsurePlan().crewSize || 1);
+  picked.forEach(l => spNewTask(l.name, Math.ceil((l.labDays||0) / crew), [l.id]));
+  spTicked.clear();
+  spMark(); renderSchedule();
+}
+// ⇤ attach the ticked lines to an EXISTING task (days untouched — the row shows
+// the linked quoted labour beside your day count so you can judge it yourself).
+function spAttachSelected(i) {
+  const t = spEnsurePlan().tasks[i];
+  if (!t || !spTicked.size) return;
+  t.srcLineIds = [...new Set([...(t.srcLineIds||[]), ...spTicked])];
+  spTicked.clear();
+  spMark(); renderSchedule();
+}
+function spClearLinks(i) {
+  const t = spEnsurePlan().tasks[i];
+  if (!t || !(t.srcLineIds||[]).length) return;
+  if (!confirm('Unlink the ' + t.srcLineIds.length + ' quote line(s) from "' + (t.name||'this task') + '"? (The task itself stays.)')) return;
+  t.srcLineIds = [];
   spMark(); renderSchedule();
 }
 function spMark() { spDirty = true; const el = document.getElementById('sp-status'); if (el) { el.textContent = '● unsaved changes'; el.style.color = '#B45309'; } }
@@ -4190,15 +4221,16 @@ function renderSchedule() {
 
   // "On the quote" reference column — every priced line, groups as headings with their
   // summed labour (Neal often lumps a group's labour onto one member, so the heading
-  // total is the trustworthy figure). + seeds one task; tick several + ⊕ merges them.
-  const seeded = new Set(p.seededLineIds || []);
+  // total is the trustworthy figure). Grey-out is DERIVED from task links, so it can
+  // never go stale; ticks live in spTicked and survive re-renders.
+  const seeded = new Set((p.tasks||[]).flatMap(t => t.srcLineIds || []));
   const labPill = d => `<span style="border:1px solid var(--bd);border-radius:10px;padding:0 7px;font-size:11px;font-weight:700;color:var(--i1);font-family:'DM Mono',monospace;white-space:nowrap;background:var(--bg2)">${spDaysFmt(d)}d</span>`;
   const seedRow = (l, indent) => `
     <div style="display:flex;align-items:center;gap:6px;padding:3px 0;${indent?'padding-left:14px;':''}${seeded.has(l.id)?'opacity:.45;':''}">
-      <input type="checkbox" class="sp-seed-cb" value="${l.id}" title="Tick to combine into one task" style="cursor:pointer">
-      <span style="flex:1;font-size:13px;color:var(--i1);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(l.name||'')}">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
+      <input type="checkbox" class="sp-seed-cb" value="${l.id}" ${spTicked.has(l.id)?'checked':''} onchange="spTick(this)" title="Tick to add/attach with the buttons below or a task's ⇤" style="cursor:pointer;flex-shrink:0">
+      <span style="flex:1;font-size:13px;color:var(--i1);min-width:0;line-height:1.25">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
       ${labPill(l.labDays)}
-      <button onclick="spSeedTask(${l.id})" title="Add as a task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:13px;padding:1px 8px;color:var(--i1);font-weight:600">+</button>
+      <button onclick="spSeedTask(${l.id})" title="Add as a task (days from its labour ÷ crew)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:13px;padding:1px 8px;color:var(--i1);font-weight:600;flex-shrink:0">+</button>
     </div>`;
   let quoteListHtml = '';
   lines.forEach(l => {
@@ -4211,18 +4243,23 @@ function renderSchedule() {
     quoteListHtml += seedRow(l, !!l.groupMember);
   });
 
-  // Project Breakdown rows
+  // Project Breakdown rows — 🔗 chip shows linked quote lines (+ their quoted labour);
+  // ⇤ appears on every row while quote lines are ticked, to attach them to that task.
   const taskRows = p.tasks.map((t, i) => {
     const d = dates[i];
     const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
+    const linked = t.srcLineIds || [];
+    const chip = linked.length ? `<button onclick="spClearLinks(${i})" title="Covers: ${cwEsc(linked.map(id => spLineLabel(id)).join(' · '))} — click to unlink" style="background:var(--bg2);border:1px solid var(--bd);border-radius:10px;cursor:pointer;font-size:11px;padding:1px 7px;color:var(--i1);font-weight:600;white-space:nowrap">🔗${linked.length} · ${spDaysFmt(spLabDaysFor(linked))}d</button>` : '';
+    const attach = spTicked.size ? `<button onclick="spAttachSelected(${i})" title="Attach the ${spTicked.size} ticked quote line(s) to this task" style="background:#EEF9F0;border:1px solid #BBF7D0;border-radius:3px;cursor:pointer;font-size:12px;padding:2px 8px;color:#15803D;font-weight:700">⇤</button>` : '';
     return `<div style="display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid var(--bd)">
       <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
       <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:120px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
+      ${chip}${attach}
       <input type="number" value="${Math.max(1, Math.round(t.days||1))}" min="1" step="1" onchange="spTaskDays(${i},this.value)" title="Working days" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
       <span style="width:150px;font-size:12px;color:var(--i2);font-family:'DM Mono',monospace">${when}</span>
       <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▲</button>
       <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▼</button>
-      <button onclick="spDelTask(${i})" title="Remove" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 6px;color:#DC2626">×</button>
+      <button onclick="spDelTask(${i})" title="Remove (its linked quote lines un-grey)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 6px;color:#DC2626">×</button>
     </div>`;
   }).join('');
 
@@ -4297,38 +4334,49 @@ function renderSchedule() {
           ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
         </div>
       </div>
-      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
-        <div style="flex:0 1 260px;min-width:230px">
-          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick several for one combined task</span></div>
-          <div style="max-height:430px;overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
-          ${quoteListHtml ? `<button class="btn btn-outline btn-sm" onclick="spSeedSelected()" style="margin-top:8px" title="Combine the ticked lines into ONE task (their labour summed ÷ crew)">⊕ Add selected as one task</button>` : ''}
+      <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
+        <div style="flex:0 1 330px;min-width:290px">
+          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick to combine or attach</span></div>
+          <div style="max-height:460px;overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
+          ${quoteListHtml ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
+            <button class="btn btn-outline btn-sm" onclick="spSeedSelected()" title="Combine the ticked lines into ONE task (their labour summed ÷ crew)">⊕ One combined task</button>
+            <button class="btn btn-outline btn-sm" onclick="spSeedSeparate()" title="Add each ticked line as its OWN task, in quote order">➕ Separate tasks</button>
+          </div>${spTicked.size ? `<div style="font-size:11px;color:#15803D;font-weight:600;margin-top:5px">${spTicked.size} ticked — use the buttons above, or ⇤ on a task to attach them to it</div>` : ''}` : ''}
         </div>
-        <div style="flex:1;min-width:340px">
+        <div style="flex:1;min-width:380px">
           <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Project Breakdown <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— dates cascade automatically, weekends skipped</span></div>
-          ${taskRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet — type below, Enter adds each one.</div>'}
-          <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Pour foundations) and press Enter…" onkeydown="spAddTaskKey(event)" style="width:100%;margin-top:8px;padding:7px 9px;border:1px dashed var(--bd);border-radius:5px;font-size:13px;box-sizing:border-box">
+          ${taskRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet — type below, or use + / ⊕ / ➕ from the quote list.</div>'}
+          <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
+            <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Excavations)…" onkeydown="spAddTaskKey(event)" style="flex:1;padding:9px 10px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;color:var(--i1);box-sizing:border-box">
+            <input type="number" id="sp-new-days" value="1" min="1" step="1" onkeydown="spAddTaskKey(event)" title="Working days" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
+            <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
+          </div>
         </div>
-        <div style="flex:1;min-width:340px">
-          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Deliveries <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— one TeamGantt task each, materials become its checklist</span></div>
-          ${delivRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No deliveries — click rebuild below once the quote has materials.</div>'}
-          <button class="btn btn-outline btn-sm" onclick="spRegenDeliveries()" style="margin-top:8px" title="Rebuild one row per supplier from the current Order List (replaces the rows above)">↻ Rebuild from Order List</button>
-        </div>
+      </div>
+      <div style="margin-top:16px">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Deliveries <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— one TeamGantt task each, materials become its checklist</span></div>
+        ${delivRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No deliveries — click rebuild below once the quote has materials.</div>'}
+        <button class="btn btn-outline btn-sm" onclick="spRegenDeliveries()" style="margin-top:4px" title="Rebuild one row per supplier from the current Order List (replaces the rows above)">↻ Rebuild from Order List</button>
       </div>
     </div>
   </div>`;
 }
 
 function spSetField(k, v) { spEnsurePlan()[k] = v; spMark(); renderSchedule(); }
-function spAddTaskKey(e) {
-  if (e.key !== 'Enter') return;
-  e.preventDefault();
+function spAddTaskGo() {
   const inp = document.getElementById('sp-new-task');
-  const name = (inp.value||'').trim();
-  if (!name) return;
-  spEnsurePlan().tasks.push({ id: Date.now(), name, days: 1 });
+  const daysEl = document.getElementById('sp-new-days');
+  const name = (inp && inp.value || '').trim();
+  if (!name) { if (inp) inp.focus(); return; }
+  spNewTask(name, parseFloat(daysEl && daysEl.value) || 1, []);
   spMark(); renderSchedule();
   const again = document.getElementById('sp-new-task');
   if (again) again.focus();
+}
+function spAddTaskKey(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  spAddTaskGo();
 }
 function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); } }
 function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(1, Math.round(parseFloat(v)||1)); spMark(); renderSchedule(); } }
@@ -5152,7 +5200,7 @@ async function duplicateQuote(ref) {
   document.getElementById('in-estimate').checked = (sq.status === 'Estimate'); // a copied estimate stays an estimate
   // Carry the schedule plan onto the copy (editable there; saves under the new ref)
   schedulePlan = sq.schedulePlan ? JSON.parse(JSON.stringify(sq.schedulePlan)) : null;
-  spDirty = false;
+  spDirty = false; spTicked.clear();
   isDirty = true;
   syncH(); renderLines();
   showTab('quote', document.querySelectorAll('.tab')[0]);
@@ -5267,7 +5315,7 @@ function loadQuote(ref) {
     }
   });
   schedulePlan = q.schedulePlan ? JSON.parse(JSON.stringify(q.schedulePlan)) : null;
-  spDirty = false;
+  spDirty = false; spTicked.clear();
   isDirty=false; syncH(); renderLines();
   // Explicitly update ungroup button after loading
   const _ugb = document.getElementById('ungroup-btn');
@@ -5542,7 +5590,7 @@ async function newQuote() {
   lines=[]; isDirty=false;
   ['in-cust','in-ref','in-a1','in-city','in-post','in-sum','in-sign'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
   document.getElementById('in-estimate').checked = false;
-  schedulePlan = null; spDirty = false;
+  schedulePlan = null; spDirty = false; spTicked.clear();
   document.getElementById('in-vno').value='242 6140 37';
   document.getElementById('in-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('save-status').textContent='';
