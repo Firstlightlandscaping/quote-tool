@@ -4078,6 +4078,72 @@ function spItemMeta() {
   }));
   return map;
 }
+// Shared bits for item rows (used by the unassigned inline list AND the items dialog)
+function spItemCtlHtml(it) {
+  return `<span style="display:inline-flex;gap:5px;flex-shrink:0">
+    <button data-key="${cwEsc(it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the order quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
+    ${it.extra
+      ? `<button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
+      : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it this job" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button>`}
+  </span>`;
+}
+function spEditedTagHtml(it) {
+  if (it.edited) return ` <span title="Edited for this schedule — formula said ${it.rawQty != null ? Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') : 'something else'}" style="font-size:10px;color:#B45309;border:1px solid #FDE68A;border-radius:8px;padding:0 5px;cursor:help">edited</span>`;
+  return it.extra ? ` <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px">added</span>` : '';
+}
+// ☰ items — a proper read-out of one delivery (split-dialog sized, no split controls):
+// combined order lines with provenance on their own sub-line, per-item ✎/📦 controls,
+// the supplier's stock list, and + add item. Auto-refreshes after any item action.
+function spItemsDialog(rowIdx) {
+  const p = spEnsurePlan();
+  const row = p.deliveries[rowIdx];
+  if (!row) return;
+  const existing = document.getElementById('sp-items-dialog');
+  if (existing) existing.remove();
+  const meta = spItemMeta();
+  const items = spRowItems(row, meta);
+  const tot = items.reduce((s,it) => s + it.cost, 0);
+  const srcByKey = {};
+  (row.alloc||[]).forEach(a => { if (a.qty > 0) (srcByKey[a.key] = srcByKey[a.key] || []).push(a); });
+  const lineName = id => { if (id === -1) return 'added'; const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
+  const stockItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items.filter(x => x.stock);
+  const itemHtml = items.map(it => {
+    const srcs = srcByKey[it.key] || [];
+    const prov = it.extra ? '' : (srcs.length > 1
+      ? 'from ' + srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + Math.round(a.qty*1000)/1000 + ')').join(' · ')
+      : (srcs.length === 1 ? 'from ' + cwEsc(lineName(srcs[0].lineId)) : ''));
+    return `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
+      <div style="display:flex;align-items:center;gap:10px">
+        <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
+        ${spItemCtlHtml(it)}
+      </div>
+      ${prov ? `<div style="font-size:12px;color:var(--i3);margin-top:2px;padding-left:2px">${prov}</div>` : ''}
+    </div>`;
+  }).join('');
+  const stockHtml = stockItems.length ? `
+    <div style="margin-top:10px">
+      <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not ordered</div>
+      ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${Math.round(x.totalQty*1000)/1000} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+    </div>` : '';
+  const panel = document.createElement('div');
+  panel.id = 'sp-items-dialog';
+  panel.dataset.rowId = row.id;
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9998;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:640px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:17px">${cwEsc(row.label||row.supplier)} <span style="font-weight:400;font-size:13px;color:var(--i3)">· ${items.length} item${items.length!==1?'s':''} · £${Math.round(tot).toLocaleString('en-GB')}</span></h3>
+      <p style="font-size:13px;color:var(--i2);margin:0 0 8px">What this delivery orders — these lines become its TeamGantt checklist. Edits here change THIS schedule only.</p>
+      <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
+        ${itemHtml || '<div style="font-size:13px;color:#B45309;padding:8px 0">No materials in this delivery — split things into it, add an item, or delete the row.</div>'}
+        ${stockHtml}
+      </div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-outline" onclick="spAddExtraDialog(${rowIdx})" title="Add an order-only item (never touches the quote)">+ Add item</button>
+        <button class="btn btn-primary" onclick="document.getElementById('sp-items-dialog').remove()">Done</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+}
 function spRowsOf(sup) { return (spEnsurePlan().deliveries||[]).filter(d => d.supplier === sup); }
 function spSupplierOfKey(key) { const s = spRollup().find(x => x.items.some(i => i.key === key)); return s ? s.name : null; }
 function spKeyTruthAtoms(key) {
@@ -4545,65 +4611,42 @@ function renderSchedule() {
   const delivRows = (p.deliveries||[]).map((row, i) => {
     const isUn = row.supplier === SUP_UNASSIGNED;
     const items = spRowItems(row, itemMeta);
-    // stock sub-list shows once per supplier, on its first row
-    const isFirstOfSup = (p.deliveries||[]).findIndex(d => d.supplier === row.supplier) === i;
-    const stockItems = isFirstOfSup ? (((spRollup().find(s => s.name === row.supplier))||{items:[]}).items.filter(x => x.stock)) : [];
+    // the unassigned row shows its own stock sub-list inline; normal rows show stock in ☰ items
+    const stockItems = isUn ? (((spRollup().find(s => s.name === row.supplier))||{items:[]}).items.filter(x => x.stock)) : [];
     if (isUn && !items.length && !stockItems.length) return ''; // everything assigned — the row disappears
     const tot = items.reduce((s,it) => s + it.cost, 0);
-    // per-item controls: ✎ edit (plan-only) + 📦 stock (skip ordering) / 🗑 for added items
-    const itemCtl = it => `<span style="display:inline-flex;gap:4px;flex-shrink:0">
-      <button data-key="${cwEsc(it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the order quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:var(--i2)">✎</button>
-      ${it.extra
-        ? `<button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:#DC2626">🗑</button>`
-        : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it this job" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:var(--i2)">📦</button>`}
-    </span>`;
-    const editedTag = it => it.edited ? ` <span title="Edited for this schedule — formula said ${it.rawQty != null ? Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') : 'something else'}" style="font-size:10px;color:#B45309;border:1px solid #FDE68A;border-radius:8px;padding:0 5px;cursor:help">edited</span>` : (it.extra ? ` <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px">added</span>` : '');
-    let itemsHtml;
+    let itemsHtml = '';
     if (isUn) {
       itemsHtml = items.map(it => `
-        <div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i1);padding:2px 0;flex-wrap:wrap">
-          <span style="flex:1;min-width:140px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${editedTag(it)}</span>
-          <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:11px;padding:2px 4px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:160px;font-weight:600">
+        <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--i1);padding:3px 0;flex-wrap:wrap">
+          <span style="flex:1;min-width:160px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
+          <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:170px;font-weight:600">
             <option value="">assign supplier…</option>
             ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
             <option value="__new__">+ new supplier…</option>
           </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}
-          ${itemCtl(it)}
+          ${spItemCtlHtml(it)}
         </div>`).join('');
-    } else {
-      // Order-first view: combined total per material (what you'd phone through — and
-      // exactly what the TeamGantt checklist will say), provenance inline in grey.
-      const srcByKey = {};
-      (row.alloc||[]).forEach(a => { if (a.qty > 0) (srcByKey[a.key] = srcByKey[a.key] || []).push(a); });
-      const lineName = id => { if (id === -1) return 'added'; const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
-      itemsHtml = items.map(it => {
-        const srcs = srcByKey[it.key] || [];
-        const prov = it.extra ? '' : (srcs.length > 1
-          ? srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + Math.round(a.qty*1000)/1000 + ')').join(' + ')
-          : (srcs.length === 1 ? cwEsc(lineName(srcs[0].lineId)) : ''));
-        return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i1);padding:2px 0;flex-wrap:wrap"><span style="flex:1;min-width:140px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${editedTag(it)}${prov ? ' <span style="color:var(--i3);font-size:11px">— ' + prov + '</span>' : ''}</span>${itemCtl(it)}</div>`;
-      }).join('');
+      if (!items.length) itemsHtml = '<div style="font-size:12px;color:#B45309">Nothing left to assign.</div>';
+      if (stockItems.length) itemsHtml += `
+        <div style="margin-top:6px;padding-top:4px;border-top:1px dashed #FDE68A">
+          <div style="font-size:11px;font-weight:600;color:var(--i3)">📦 Stock — not ordered</div>
+          ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--i3);padding:2px 0"><span style="flex:1;text-decoration:line-through">${Math.round(x.totalQty*1000)/1000} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+        </div>`;
+      itemsHtml += `<button onclick="spAddExtraDialog(${i})" title="Add an order-only item to this delivery (never touches the quote)" style="background:none;border:1px dashed #F59E0B;border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#92400E;margin-top:6px">+ add item</button>`;
     }
-    if (!items.length) itemsHtml = '<div style="font-size:12px;color:#B45309">No materials in this delivery — split things into it, add an item, or delete the row.</div>';
-    const stockHtml = stockItems.length ? `
-      <div style="margin-top:6px;padding-top:4px;border-top:1px dashed var(--bd)">
-        <div style="font-size:11px;font-weight:600;color:var(--i3)">📦 Stock — not ordered</div>
-        ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--i3);padding:1px 0"><span style="flex:1;text-decoration:line-through">${Math.round(x.totalQty*1000)/1000} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:1px 7px;color:var(--i2)">↺ restore</button></div>`).join('')}
-      </div>` : '';
-    const addBtn = `<button onclick="spAddExtraDialog(${i})" title="Add an order-only item to this delivery (never touches the quote)" style="background:none;border:1px dashed var(--bd);border-radius:4px;cursor:pointer;font-size:11px;padding:2px 9px;color:var(--i2);margin-top:5px">+ add item</button>`;
-    itemsHtml = itemsHtml + stockHtml + addBtn;
     return `<div style="background:${isUn ? '#FFFBEB' : 'white'};border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:6px;padding:7px 9px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1 1 120px;min-width:110px;padding:4px 7px;border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:4px;font-size:14px;font-weight:600;${isUn ? 'color:#92400E;background:white;' : 'color:var(--i1);'}">
         <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
         <span style="font-size:12px;color:var(--i2);white-space:nowrap">${items.length} · <strong>£${Math.round(tot).toLocaleString('en-GB')}</strong></span>
-        ${isUn ? '' : `<button onclick="spToggleRowItems(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Show this delivery's materials">▾ items</button>`}
+        ${isUn ? '' : `<button onclick="spItemsDialog(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Open this delivery's materials — edit, mark as stock, add items">☰ items</button>`}
         ${!isUn && items.length ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Split this delivery — move a task's section or part-quantities to a new drop">⑃ split</button>` : ''}
         <button onclick="spDelDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 8px;color:#DC2626" title="Remove this delivery row">×</button>
       </div>
       ${row._drift ? `<div style="font-size:11px;color:#DC2626;margin-top:3px;font-weight:600">⚠ The quote changed since this supplier was split — quantities may not match the Order List. <button data-sup="${cwEsc(row.supplier)}" onclick="spResetSupplier(this.dataset.sup)" style="background:none;border:1px solid #DC2626;border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:#DC2626">Reset ${cwEsc(row.supplier)} rows</button></div>` : ''}
       ${isUn ? `<div style="font-size:11px;color:#92400E;margin-top:3px;font-weight:500">Assigning here affects THIS schedule only. If pushed as-is, this becomes a dated "⚠ Unassigned" task so nothing is missed.</div>` : ''}
-      <div id="sp-row-items-${i}" style="display:${isUn ? 'block' : 'none'};margin:5px 0 0 4px;padding-left:8px;border-left:2px solid ${isUn ? '#F59E0B' : 'var(--bd)'}">${itemsHtml}</div>
+      ${isUn ? `<div style="margin:5px 0 0 4px;padding-left:8px;border-left:2px solid #F59E0B">${itemsHtml}</div>` : ''}
     </div>`;
   }).join('');
 
@@ -4656,6 +4699,15 @@ function renderSchedule() {
       </div>
     </div>
   </div>`;
+  // If the ☰ items dialog is open, rebuild it against the fresh state (rows found by id,
+  // so index shifts from sync are safe); close it if its row vanished.
+  const idlg = document.getElementById('sp-items-dialog');
+  if (idlg) {
+    const rid = parseFloat(idlg.dataset.rowId);
+    const idx = (p.deliveries||[]).findIndex(d => d.id === rid);
+    idlg.remove();
+    if (idx >= 0) spItemsDialog(idx);
+  }
 }
 
 function spSetField(k, v) { spEnsurePlan()[k] = v; spMark(); renderSchedule(); }
