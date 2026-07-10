@@ -4125,11 +4125,11 @@ function spItemsDialog(rowIdx) {
   const itemHtml = items.map(it => {
     const srcs = srcByKey[it.key] || [];
     const prov = it.extra ? '' : (srcs.length > 1
-      ? 'from ' + srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + Math.round(a.qty*1000)/1000 + ')').join(' · ')
+      ? 'from ' + srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + spQtyDisp(a.qty) + ')').join(' · ')
       : (srcs.length === 1 ? 'from ' + cwEsc(lineName(srcs[0].lineId)) : ''));
     return `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
       <div style="display:flex;align-items:center;gap:10px">
-        <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
+        <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
         ${spItemCtlHtml(it)}
       </div>
       ${prov ? `<div style="font-size:12px;color:var(--i3);margin-top:2px;padding-left:2px">${prov}</div>` : ''}
@@ -4138,7 +4138,7 @@ function spItemsDialog(rowIdx) {
   const stockHtml = stockItems.length ? `
     <div style="margin-top:10px">
       <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not ordered</div>
-      ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${Math.round(x.totalQty*1000)/1000} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+      ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
     </div>` : '';
   const panel = document.createElement('div');
   panel.id = 'sp-items-dialog';
@@ -4530,6 +4530,10 @@ function spLineLabel(id) {
   return (l.misc ? '📦 ' : (l.code ? l.code + ' ' : '')) + (l.name || '');
 }
 function spDaysFmt(n) { return parseFloat((n||0).toFixed(2)); }
+// Order-quantity DISPLAY rounding (Neal: standard rounding — 33.5→34, 33.4→33; never
+// show 0 for a real remainder). Presentation + checklist only: atoms, splits, £ and
+// the materials check all keep full precision, and the ✎ edit dialog shows the truth.
+function spQtyDisp(n) { if (n > 0 && n < 1) return 1; return Math.round(n); }
 // Transient tick state for the "On the quote" column — survives re-renders so
 // multi-select actually works; cleared after any add/attach action and on quote change.
 let spTicked = new Set();
@@ -4739,7 +4743,7 @@ function renderSchedule() {
     if (isUn) {
       itemsHtml = items.map(it => `
         <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--i1);padding:3px 0;flex-wrap:wrap">
-          <span style="flex:1;min-width:160px"><strong>${it.qty}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
+          <span style="flex:1;min-width:160px"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
           <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:170px;font-weight:600">
             <option value="">assign supplier…</option>
             ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
@@ -4751,7 +4755,7 @@ function renderSchedule() {
       if (stockItems.length) itemsHtml += `
         <div style="margin-top:6px;padding-top:4px;border-top:1px dashed #FDE68A">
           <div style="font-size:11px;font-weight:600;color:var(--i3)">📦 Stock — not ordered</div>
-          ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--i3);padding:2px 0"><span style="flex:1;text-decoration:line-through">${Math.round(x.totalQty*1000)/1000} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+          ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:8px;font-size:12px;color:var(--i3);padding:2px 0"><span style="flex:1;text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
         </div>`;
       itemsHtml += `<button onclick="spAddExtraDialog(${i})" title="Add an order-only item to this delivery (never touches the quote)" style="background:none;border:1px dashed #F59E0B;border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#92400E;margin-top:6px">+ add item</button>`;
     }
