@@ -4743,7 +4743,7 @@ function spAddTaskKey(e) {
   e.preventDefault();
   spAddTaskGo();
 }
-function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); } }
+function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); renderSchedule(); } } // re-render: tray "→ task" tags + the dates rail show the name
 function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(1, Math.round(parseFloat(v)||1)); spMark(); renderSchedule(); } }
 // Per-task headcount — defaults to the team size (undefined = follow the team box);
 // only affects the labour comparisons, never the date cascade (2 days is 2 days).
