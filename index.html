@@ -4579,7 +4579,8 @@ function renderSchedule() {
     const d = dates[i];
     const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
     const linked = t.srcLineIds || [];
-    const quoted = linked.length ? `<span title="Covered labour: ${spDaysFmt(spLabDaysFor(linked))} man-days ÷ team of ${crew} — your day count is never changed automatically" style="font-size:11px;color:var(--i2);white-space:nowrap">quoted ≈ <strong>${spDaysFmt(spLabDaysFor(linked)/crew)}d</strong></span>` : '';
+    const men = spMenOf(t, crew);
+    const quoted = linked.length ? `<span title="Covered labour: ${spDaysFmt(spLabDaysFor(linked))} man-days ÷ ${men} on this task — your day count is never changed automatically" style="font-size:11px;color:var(--i2);white-space:nowrap">quoted ≈ <strong>${spDaysFmt(spLabDaysFor(linked)/men)}d</strong></span>` : '';
     const attach = spTicked.size ? `<button onclick="spAttachSelected(${i})" title="Put the ${spTicked.size} ticked quote line(s) in this task" style="background:#EEF9F0;border:1px solid #BBF7D0;border-radius:3px;cursor:pointer;font-size:12px;padding:2px 8px;color:#15803D;font-weight:700">⇤ attach</button>` : '';
     const contained = linked.map(id => {
       const l = lines.find(x => x.id === id);
@@ -4595,6 +4596,7 @@ function renderSchedule() {
         <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:130px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
         ${attach}${quoted}
         <input type="number" value="${Math.max(1, Math.round(t.days||1))}" min="1" step="1" onchange="spTaskDays(${i},this.value)" title="Working days" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
+        <span style="display:inline-flex;align-items:center;gap:2px;font-size:12px;color:var(--i2)" title="How many of YOUR team are on this task (default: team size). Affects the quoted ≈ comparison and capacity only — never the dates.">👤<input type="number" value="${men}" min="1" step="1" onchange="spTaskMen(${i},this.value)" style="width:38px;padding:5px 2px;border:1px solid ${t.men ? 'var(--i3)' : 'var(--bd)'};border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)"></span>
         <span style="width:148px;font-size:12px;color:var(--i2);font-family:'DM Mono',monospace">${when}</span>
         <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▲</button>
         <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▼</button>
@@ -4672,7 +4674,7 @@ function renderSchedule() {
         <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
           Labour: <strong style="color:var(--i1)">£${Math.round(lab.cost).toLocaleString('en-GB')}</strong> · <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(lab.manDays/crew).toFixed(1)}</strong> days with a team of ${crew}
-          &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}
+          &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}${p.tasks.length ? ', capacity <strong style="color:var(--i1)" title="Σ days × men across the tasks — compare against the quoted man-days once everything is placed">' + spDaysFmt(p.tasks.reduce((s,t) => s + Math.max(1, Math.round(t.days||1)) * spMenOf(t, crew), 0)) + '</strong> man-days' : ''}
           ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
         </div>
       </div>
@@ -4743,6 +4745,10 @@ function spAddTaskKey(e) {
 }
 function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); } }
 function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(1, Math.round(parseFloat(v)||1)); spMark(); renderSchedule(); } }
+// Per-task headcount — defaults to the team size (undefined = follow the team box);
+// only affects the labour comparisons, never the date cascade (2 days is 2 days).
+function spTaskMen(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { const n = Math.round(parseFloat(v)); t.men = (n >= 1 ? n : undefined); spMark(); renderSchedule(); } }
+function spMenOf(t, crew) { return Math.max(1, t.men || crew || 1); }
 function spMoveTask(i, dir) {
   const ts = spEnsurePlan().tasks, j = i + dir;
   if (j < 0 || j >= ts.length) return;
