@@ -4834,7 +4834,10 @@ function renderSchedule() {
             <div style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:4px">Plan dates</div>
             <div style="font-size:12px;color:var(--i2);padding:1px 0">Start · <strong style="color:var(--i1)">${p.startDate ? spNice(p.startDate) : '—'}</strong></div>
             ${p.tasks.map((t,ti) => { const d = dates[ti]; const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
-              return `<div style="display:flex;gap:5px;align-items:baseline;font-size:12px;padding:1px 0;color:var(--i1)"><span style="color:var(--i3)">${ti+1}.</span><span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(t.name||'')}">${cwEsc(t.name||'')}</span><span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--i2);white-space:nowrap">${when}</span></div>`; }).join('') || '<div style="font-size:12px;color:var(--i3);padding:2px 0">No tasks yet</div>'}
+              return `<div style="padding:3px 0;border-bottom:1px solid var(--bd)">
+                <div style="font-size:12px;color:var(--i1);line-height:1.25"><span style="color:var(--i3)">${ti+1}.</span> ${cwEsc(t.name||'')}</div>
+                <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--i2);padding-left:16px">${when}</div>
+              </div>`; }).join('') || '<div style="font-size:12px;color:var(--i3);padding:2px 0">No tasks yet</div>'}
             ${p.deadline ? `<div style="font-size:12px;padding-top:3px;margin-top:3px;border-top:1px dashed var(--bd);color:${overDeadline ? '#DC2626' : 'var(--i2)'}">⚑ Deadline <strong>${spNice(p.deadline)}</strong></div>` : ''}
           </div>
           <div style="flex:1;min-width:340px">
