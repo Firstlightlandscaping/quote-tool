@@ -2957,9 +2957,32 @@ function editMiscComponent(idx) {
   showLineCompDialog('builder', idx);
 }
 
+// Reset the three component-entry sub-forms (deliverable picker, price-list picker,
+// manual fields). Without this, text typed into them lingered invisibly after
+// "+ Add to Quote" and greeted the NEXT misc item (2026-07-10 bug).
+function resetMiscEntryForms() {
+  ['mcc-desc','mcc-unit','mcc-supplier','mcc-url','mcc-notes','mcd-search','mcm-search'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  const q=document.getElementById('mcc-qty'); if(q) q.value='1';
+  const c=document.getElementById('mcc-cost'); if(c) c.value='0';
+  const ch=document.getElementById('mcc-charged'); if(ch) ch.value='0.00';
+  ['mcd-qty','mcm-qty'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['mcd-select','mcm-select'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['mcd-prev','mcm-prev'].forEach(id => { const el=document.getElementById(id); if(el) el.innerHTML=''; });
+  if (typeof mcdFilterDels === 'function') mcdFilterDels();
+  if (typeof mcmFilterMpl === 'function') mcmFilterMpl();
+}
 function addMisc() {
   const desc = document.getElementById('mc-desc').value.trim();
   if (!desc) { toast('Enter a description'); return; }
+  // Guard: a component typed/picked but never "+ Add component"-ed would be silently
+  // DROPPED (a real quote once lost a £1,271 material this way). Ask before discarding.
+  const pendingManual = document.getElementById('mcc-desc').value.trim();
+  const pendingDel = document.getElementById('mcd-select') ? document.getElementById('mcd-select').value : '';
+  const pendingMpl = document.getElementById('mcm-select') ? document.getElementById('mcm-select').value : '';
+  if (pendingManual || pendingDel || pendingMpl) {
+    const what = pendingManual ? '"' + pendingManual + '"' : 'a selected component';
+    if (!confirm('You have ' + what + ' typed/selected in the components section but NOT added to this item (press "+ Add component" / "+ Add material" first).\n\nOK = add the misc item WITHOUT it (discard it)\nCancel = go back')) return;
+  }
   const xdesc = document.getElementById('mc-xdesc').value.trim()||desc;
   const qty = parseFloat(document.getElementById('mc-qty').value)||1;
   const matCost = parseFloat(document.getElementById('mc-mat').value)||0;
@@ -2973,6 +2996,7 @@ function addMisc() {
   document.getElementById('mc-qty').value='1'; document.getElementById('mc-mat').value='0';
   miscComponents = [];
   renderMiscComponents();
+  resetMiscEntryForms();
   const md = document.getElementById('misc-details'); if (md) md.open = false;
   toast('Misc item added');
 }
@@ -4530,6 +4554,7 @@ async function duplicateQuote(ref) {
   document.getElementById('in-sum').value = sq.sum||'';
   document.getElementById('in-ref').value = ''; // blank — assigned at save time
   document.getElementById('in-estimate').checked = (sq.status === 'Estimate'); // a copied estimate stays an estimate
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
   isDirty = true;
   syncH(); renderLines();
   showTab('quote', document.querySelectorAll('.tab')[0]);
@@ -4643,6 +4668,7 @@ function loadQuote(ref) {
       if (members.length) l.unitPrice = members.reduce((s, x) => s + x.qty * (x.unitPrice || 0), 0);
     }
   });
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
   isDirty=false; syncH(); renderLines();
   // Explicitly update ungroup button after loading
   const _ugb = document.getElementById('ungroup-btn');
@@ -4917,6 +4943,7 @@ async function newQuote() {
   lines=[]; isDirty=false;
   ['in-cust','in-ref','in-a1','in-city','in-post','in-sum','in-sign'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
   document.getElementById('in-estimate').checked = false;
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
   document.getElementById('in-vno').value='242 6140 37';
   document.getElementById('in-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('save-status').textContent='';
