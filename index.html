@@ -4274,8 +4274,6 @@ function spAddExtraDialog(rowIdx) {
   const row = spEnsurePlan().deliveries[rowIdx];
   if (!row) return;
   const isUnRow = row.supplier === SUP_UNASSIGNED;
-  const delOpts = dels.filter(d => !d.archived && (d.materials||[]).length).sort((a,b) => (a.name||'').localeCompare(b.name||''))
-    .map(d => `<option value="${cwEsc(d.code)}">${cwEsc(d.code)} — ${cwEsc(d.name||'')} (${(d.materials||[]).length} mat${(d.materials||[]).length!==1?'s':''})</option>`).join('');
   const panel = document.createElement('div');
   panel.id = 'sp-extra-dialog';
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -4286,18 +4284,24 @@ function spAddExtraDialog(rowIdx) {
       <div style="border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:10px">
         <div style="font-size:12px;font-weight:700;color:var(--i1);margin-bottom:6px">Option 1 — From a deliverable <span style="font-weight:400;color:var(--i3)">(all its materials at once, suppliers from the price list)</span></div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <div class="fg" style="flex:1;min-width:220px;margin:0"><label>Deliverable</label><select id="sp-ax-del" style="width:100%"><option value="">— pick a deliverable —</option>${delOpts}</select></div>
+          <div class="fg" style="flex:1;min-width:240px;margin:0"><label>Select deliverable</label>
+            <input type="text" id="sp-ax-dsearch" placeholder="Filter by code or name..." autocomplete="off" oninput="spAxFilterDels()" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px 8px">
+            <select id="sp-ax-del" style="width:100%"><option value="">— select a deliverable —</option></select>
+          </div>
           <div class="fg" style="margin:0"><label>× qty</label><input type="number" id="sp-ax-dqty" value="1" min="0" step="any" style="width:70px"></div>
           <button class="btn btn-outline btn-sm" onclick="spAxAddDeliverable()">Add all</button>
         </div>
       </div>
       <div style="border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:10px">
         <div style="font-size:12px;font-weight:700;color:var(--i1);margin-bottom:6px">Option 2 — From the price list <span style="font-weight:400;color:var(--i3)">(supplier &amp; price come with it)</span></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
-          <div class="fg" style="flex:1;min-width:200px;margin:0"><label>Search materials</label><input type="text" id="sp-ax-search" placeholder="Type to search…" oninput="spAxSearch()" style="width:100%"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <div class="fg" style="flex:1;min-width:240px;margin:0"><label>Select material</label>
+            <input type="text" id="sp-ax-msearch" placeholder="Filter by code or name..." autocomplete="off" oninput="spAxFilterMpl()" style="width:100%;margin-bottom:4px;font-size:12px;padding:4px 8px">
+            <select id="sp-ax-mat" style="width:100%"><option value="">— select a material —</option></select>
+          </div>
           <div class="fg" style="margin:0"><label>Qty</label><input type="number" id="sp-ax-mqty" value="1" min="0" step="any" style="width:70px"></div>
+          <button class="btn btn-outline btn-sm" onclick="spAxAddMplSel()">Add material</button>
         </div>
-        <div id="sp-ax-mpl" style="max-height:150px;overflow-y:auto;font-size:12px;color:var(--i2)">Type above to search the price list…</div>
       </div>
       <div style="border:1px solid var(--bd);border-radius:8px;padding:12px;margin-bottom:12px">
         <div style="font-size:12px;font-weight:700;color:var(--i1);margin-bottom:6px">Option 3 — Add manually</div>
@@ -4315,13 +4319,43 @@ function spAddExtraDialog(rowIdx) {
       </div>
     </div>`;
   document.body.appendChild(panel);
+  spAxFilterDels();
+  spAxFilterMpl();
   document.getElementById('sp-ax-desc').focus();
+}
+// Filter-box-above-dropdown pattern, cloned from the misc pickers (mcdFilterDels /
+// mcmFilterMpl): ALL deliverables listed (category → code order, numeric-aware),
+// materials in the price list's code order.
+function spAxFilterDels() {
+  const sel = document.getElementById('sp-ax-del');
+  if (!sel) return;
+  const q = (document.getElementById('sp-ax-dsearch').value || '').toLowerCase().trim();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a deliverable —</option>' +
+    dels.filter(d => !q ||
+        d.code.toLowerCase().includes(q) ||
+        (d.name||'').toLowerCase().includes(q) ||
+        (d.category||'').toLowerCase().includes(q))
+      .sort((a,b) => (a.category||'').localeCompare(b.category||'') || (a.code||'').localeCompare(b.code||'', undefined, {numeric:true}))
+      .map(d => { const n=(d.materials||[]).length; return `<option value="${cwEsc(d.code)}"${d.code===prev?' selected':''}>${cwEsc(d.code)} — ${cwEsc(d.name||'')} (${n} mat${n!==1?'s':''})</option>`; }).join('');
+}
+function spAxFilterMpl() {
+  const sel = document.getElementById('sp-ax-mat');
+  if (!sel) return;
+  const q = (document.getElementById('sp-ax-msearch').value || '').toLowerCase().trim();
+  const prev = sel.value;
+  sel.innerHTML = '<option value="">— select a material —</option>' +
+    mpl.filter(m => !q ||
+        m.code.toLowerCase().includes(q) ||
+        (m.description||'').toLowerCase().includes(q) ||
+        (m.category||'').toLowerCase().includes(q))
+      .map(m => `<option value="${cwEsc(m.code)}"${m.code===prev?' selected':''}>${cwEsc(m.code)} — ${cwEsc(m.description||'')} (${cwEsc(m.unit||'')}, £${(m.pricePerUnit||0).toFixed(2)})</option>`).join('');
 }
 function spAxAddDeliverable() {
   const code = document.getElementById('sp-ax-del').value;
   const mult = parseFloat(document.getElementById('sp-ax-dqty').value) || 1;
   const d = dels.find(x => x.code === code);
-  if (!d) { toast('Pick a deliverable first'); return; }
+  if (!d) { toast('Select a deliverable first'); return; }
   const mplSup = {};
   mpl.forEach(m => { if (m.code && m.supplier) mplSup[m.code] = m.supplier.trim(); });
   const items = (d.materials || []).map(m => ({
@@ -4330,28 +4364,23 @@ function spAxAddDeliverable() {
     qty: Math.round(m.qtyPerUnit * mult * 1000) / 1000,
     price: m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit)
   })).filter(it => it.qty > 0);
-  if (!items.length) { toast('That deliverable has no materials'); return; }
+  if (!items.length) { toast('That deliverable has no materials to add'); return; }
   spAxPush(items);
+  document.getElementById('sp-ax-del').value = '';
+  document.getElementById('sp-ax-dsearch').value = '';
+  spAxFilterDels();
   toast('✓ ' + items.length + ' item' + (items.length!==1?'s':'') + ' added from ' + (d.name || code));
 }
-function spAxSearch() {
-  const q = (document.getElementById('sp-ax-search').value || '').toLowerCase().trim();
-  const box = document.getElementById('sp-ax-mpl');
-  if (!box) return;
-  if (q.length < 2) { box.innerHTML = 'Type at least 2 characters…'; return; }
-  const hits = mpl.filter(m => !m.archived && ((m.description||'').toLowerCase().includes(q) || (m.code||'').toLowerCase().includes(q) || (m.supplier||'').toLowerCase().includes(q))).slice(0, 25);
-  box.innerHTML = hits.length ? hits.map(m => `
-    <div style="display:flex;align-items:center;gap:8px;padding:4px 2px;border-bottom:1px solid var(--bd)">
-      <span style="flex:1;min-width:0;color:var(--i1)">${cwEsc(m.description||'')} <span style="color:var(--i3)">(${cwEsc(m.unit||'')})</span></span>
-      <span style="font-size:11px;color:var(--i3);white-space:nowrap">${cwEsc(m.supplier||'no supplier')} · £${(m.pricePerUnit||0).toFixed(2)}</span>
-      <button data-code="${cwEsc(m.code)}" onclick="spAxAddMpl(this.dataset.code)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:2px 10px;color:var(--i1);font-weight:600">add</button>
-    </div>`).join('') : 'No matches.';
-}
-function spAxAddMpl(code) {
+function spAxAddMplSel() {
+  const code = document.getElementById('sp-ax-mat').value;
   const m = mpl.find(x => x.code === code);
-  if (!m) return;
+  if (!m) { toast('Select a material first'); return; }
   const qty = parseFloat(document.getElementById('sp-ax-mqty').value) || 1;
   spAxPush([{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0 }]);
+  document.getElementById('sp-ax-mat').value = '';
+  document.getElementById('sp-ax-msearch').value = '';
+  document.getElementById('sp-ax-mqty').value = '1';
+  spAxFilterMpl();
   toast('✓ ' + qty + ' × ' + (m.description||code) + (m.supplier ? ' → ' + m.supplier : ' → Unassigned'));
 }
 function spAxAddManual() {
