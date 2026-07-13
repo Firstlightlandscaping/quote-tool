@@ -3116,6 +3116,16 @@ function openDiscountDialog() {
   const existing = document.getElementById('discount-dialog');
   if (existing) existing.remove();
   const d = lines.find(l => l.discount);
+  // Re-open the dialog in the form the discount was ENTERED. Only the ex-VAT figure is stored
+  // (unitPrice, unrounded), but an inc-VAT entry leaves a fingerprint: the stored ex value isn't a
+  // clean 2dp number while its inc equivalent is. A perfectly-dividing inc entry (£120 inc → £100.00
+  // ex) is indistinguishable from an ex entry and re-opens as ex — same discount either way. This
+  // also stops Edit→Save nibbling pennies: the pre-fill is the exact figure originally typed, not
+  // the rounded ex conversion.
+  const dEx = d ? Math.abs(d.unitPrice) : 0;
+  const dMult = d ? 1 + (d.vat || 0) / 100 : 1;
+  const dWasInc = !!d && Math.abs(dEx - round2(dEx)) > 1e-9 && Math.abs(dEx * dMult - round2(dEx * dMult)) < 1e-9;
+  const dAmt = d ? round2(dWasInc ? dEx * dMult : dEx).toFixed(2) : '';
   const panel = document.createElement('div');
   panel.id = 'discount-dialog';
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -3128,10 +3138,10 @@ function openDiscountDialog() {
         <input type="text" id="dd-label" value="${cwEsc(d ? d.name : 'Discount')}" placeholder="e.g. Discount" style="width:100%">
       </div>
       <div style="display:grid;grid-template-columns:1fr 110px 90px;gap:12px;margin-bottom:6px">
-        <div class="fg"><label>Amount (£)</label><input type="number" id="dd-amount" min="0" step="0.01" value="${d ? Math.abs(d.unitPrice).toFixed(2) : ''}" placeholder="e.g. 100.00" oninput="updateDiscountHint()" style="width:100%"></div>
+        <div class="fg"><label>Amount (£)</label><input type="number" id="dd-amount" min="0" step="0.01" value="${dAmt}" placeholder="e.g. 100.00" oninput="updateDiscountHint()" style="width:100%"></div>
         <div class="fg"><label>Entered as</label><select id="dd-basis" onchange="updateDiscountHint()" style="width:100%">
-          <option value="ex" selected>ex VAT</option>
-          <option value="inc">inc VAT</option>
+          <option value="ex" ${dWasInc ? '' : 'selected'}>ex VAT</option>
+          <option value="inc" ${dWasInc ? 'selected' : ''}>inc VAT</option>
         </select></div>
         <div class="fg"><label>VAT</label><select id="dd-vat" onchange="updateDiscountHint()" style="width:100%">
           <option value="20" ${!d || d.vat===20 ? 'selected':''}>20%</option>
