@@ -5519,10 +5519,17 @@ function cdRefresh(){
       '</div>';
     return;
   }
-  const rows = buildPaymentSchedule(total, readScheduleOpts());
+  const o = readScheduleOpts();
+  const rows = buildPaymentSchedule(total, o);
   const sum = round2(rows.reduce((s,r)=>s+r.amount,0));
+  // Deposit + Completion = 100% → no pool for weekly payments; grey the weeks field and say why,
+  // otherwise the inert input reads as a bug.
+  const covered = Math.abs(round2(total - round2(total*o.depositPct/100) - round2(total*o.completionPct/100))) < 0.005;
+  const weeksEl = document.getElementById('cw-weeks');
+  if (weeksEl){ weeksEl.disabled = covered; weeksEl.style.opacity = covered ? '.45' : ''; }
   body.innerHTML = '<table class="cw-preview-tbl"><tr><td>Total</td><td class="r">' + money(total) + '</td></tr>' +
     rows.map(r => '<tr><td>' + r.label + '</td><td class="r">' + money(r.amount) + '</td></tr>').join('') + '</table>' +
+    (covered ? '<div style="margin-top:5px;font-size:11px;color:#64748b">Deposit + Completion cover 100% of the total — no weekly payments</div>' : '') +
     (sum !== total ? '<div style="color:#dc2626;font-size:11px">⚠ milestones sum ' + money(sum) + ' ≠ total</div>' : '');
 }
 function openContractDialog(){
