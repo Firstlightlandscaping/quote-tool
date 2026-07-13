@@ -4006,19 +4006,21 @@ function buildPaymentSchedule(total, opts){
   opts = opts || {};
   const depositPct = opts.depositPct != null ? opts.depositPct : 10;
   const completionPct = opts.completionPct != null ? opts.completionPct : 10;
-  const n = Math.max(1, Math.floor(opts.stagedCount || 1));   // always at least one weekly payment (Start of works)
+  const n = Math.max(1, Math.floor(opts.stagedCount || 1));   // at least one weekly payment (Start of works) when there's a pool to split
   total = round2(total);
   const deposit = round2(total * depositPct / 100);
   const completion = round2(total * completionPct / 100);
   const pool = round2(total - deposit - completion);          // the weekly payments split this
-  const per = round2(pool / n);
   const rows = [{ label:'Deposit', amount: deposit }];
-  let stagedSum = 0;
-  for (let k=1; k<=n; k++){
-    const label = k===1 ? 'Start of works' : ('End of ' + ordinalWord(k-1) + ' week');
-    const amount = (k===n) ? round2(pool - stagedSum) : per;   // last weekly payment absorbs the rounding remainder
-    stagedSum = round2(stagedSum + amount);
-    rows.push({ label, amount });
+  if (Math.abs(pool) >= 0.005) {                              // deposit + completion = 100% → no middle payments at all (no £0.00 line)
+    const per = round2(pool / n);
+    let stagedSum = 0;
+    for (let k=1; k<=n; k++){
+      const label = k===1 ? 'Start of works' : ('End of ' + ordinalWord(k-1) + ' week');
+      const amount = (k===n) ? round2(pool - stagedSum) : per;   // last weekly payment absorbs the rounding remainder
+      stagedSum = round2(stagedSum + amount);
+      rows.push({ label, amount });
+    }
   }
   rows.push({ label:'Completion of works', amount: completion });
   return rows;
@@ -4110,15 +4112,25 @@ function renderContract(opts){
 
   let payHtml;
   if (opts.freeText && opts.freeText.trim()) {
-    // Custom: Deposit & Completion are auto; the free text is the MIDDLE payments only.
-    const deposit = round2(total * (opts.depositPct != null ? opts.depositPct : 10) / 100);
-    const completion = round2(total * (opts.completionPct != null ? opts.completionPct : 10) / 100);
-    payHtml = '<div class="cw-pay">' +
-      '<div><span class="pl">Total:</span> ' + money(total) + '</div>' +
-      '<div><span class="pl">Deposit:</span> ' + money(deposit) + '</div>' +
-      formatMiddleLines(opts.freeText) +
-      '<div><span class="pl">Completion of works:</span> ' + money(completion) + '</div>' +
-    '</div>';
+    if (opts.freeTextFull) {
+      // Custom (2026-07-13 onwards): the free text IS the whole schedule, printed exactly as typed.
+      // Only the Total line is auto (it's a fact of the quote, not a payment).
+      payHtml = '<div class="cw-pay">' +
+        '<div><span class="pl">Total:</span> ' + money(total) + '</div>' +
+        formatMiddleLines(opts.freeText) +
+      '</div>';
+    } else {
+      // LEGACY custom (contracts generated before the freeTextFull flag): the free text was the
+      // MIDDLE payments only — Deposit & Completion are auto. Kept so old snapshots re-render exactly.
+      const deposit = round2(total * (opts.depositPct != null ? opts.depositPct : 10) / 100);
+      const completion = round2(total * (opts.completionPct != null ? opts.completionPct : 10) / 100);
+      payHtml = '<div class="cw-pay">' +
+        '<div><span class="pl">Total:</span> ' + money(total) + '</div>' +
+        '<div><span class="pl">Deposit:</span> ' + money(deposit) + '</div>' +
+        formatMiddleLines(opts.freeText) +
+        '<div><span class="pl">Completion of works:</span> ' + money(completion) + '</div>' +
+      '</div>';
+    }
   } else {
     const rows = buildPaymentSchedule(total, opts);
     payHtml = '<div class="cw-pay"><div><span class="pl">Total:</span> ' + money(total) + '</div>' +
@@ -4188,7 +4200,7 @@ function viewSavedContract(ref){
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq || !sq.contractMeta) { toast('No saved contract for ' + ref); return; }
   const m = sq.contractMeta, snap = m.snapshot;
-  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText, terms: m.termsSnapshot || null };
+  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText, freeTextFull:!!m.freeTextFull, terms: m.termsSnapshot || null };
   if (!snap || !snap.lines) { loadQuote(ref); renderContract(optsFromMeta); return; } // old contract: render from current quote
   // Temporarily load the snapshot into the (hidden) builder, render the contract, then restore.
   const ids = ['in-cust','in-a1','in-city','in-post','in-ref','in-vno','in-date'];
@@ -4248,8 +4260,9 @@ function parseAmounts(text){
   (text||'').split(/\n/).forEach(line => { const a = lineAmount(line); if (a) out.push(a.value); });
   return out;
 }
-// Render the free-text middle lines like the standard schedule: bold label + amount aligned in a column
+// Render free-text schedule lines like the standard schedule: bold label + amount aligned in a column
 // (via .pl). A line with no amount prints as-is (e.g. a note); amounts are normalised to £ format.
+// New custom contracts pass the WHOLE schedule through here; legacy ones pass middle lines only.
 function formatMiddleLines(text){
   return (text||'').split(/\n/).map(line => {
     const t = line.trim();
@@ -4259,25 +4272,19 @@ function formatMiddleLines(text){
     return '<div>' + cwEsc(t) + '</div>';
   }).join('');
 }
-// The standard MIDDLE lines only (staged payments between deposit and completion), as text.
-function middleScheduleText(){
+// The WHOLE standard schedule (Deposit + weeklies + Completion) as editable text — seeds the
+// free-text box (pre-fill on switching to Custom, and the Reset link) from the current % inputs.
+function fullScheduleText(){
   const total = contractGrandTotal();
-  return buildPaymentSchedule(total, readScheduleOpts()).slice(1, -1).map(r => r.label + ': ' + money(r.amount)).join('\n');
+  return buildPaymentSchedule(total, readScheduleOpts()).map(r => r.label + ': ' + money(r.amount)).join('\n');
 }
-// Deposit/completion £ + the remainder the middle must cover, from the current dialog % inputs.
-function customParts(){
-  const total = contractGrandTotal();
-  const depPct = parseFloat((document.getElementById('cw-deposit')||{}).value) || 0;
-  const compPct = parseFloat((document.getElementById('cw-completion')||{}).value) || 0;
-  const deposit = round2(total * depPct / 100), completion = round2(total * compPct / 100);
-  return { total, depPct, compPct, deposit, completion, remainder: round2(total - deposit - completion) };
-}
-function cdResetMiddle(){ const ft = document.getElementById('cw-freetext'); if (ft){ ft.value = middleScheduleText(); cdRefresh(); } }
+function cdResetMiddle(){ const ft = document.getElementById('cw-freetext'); if (ft){ ft.value = fullScheduleText(); cdRefresh(); } }
 function cdToggleMode(){
   const custom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
   document.getElementById('cw-std-block').style.display = custom ? 'none' : 'block';
   document.getElementById('cw-custom-block').style.display = custom ? 'block' : 'none';
-  if (custom) { const ft = document.getElementById('cw-freetext'); if (!ft.value.trim()) ft.value = middleScheduleText(); }
+  document.getElementById('cw-pct-row').style.display = custom ? 'none' : 'grid';   // % fields are Standard-only
+  if (custom) { const ft = document.getElementById('cw-freetext'); if (!ft.value.trim()) ft.value = fullScheduleText(); }
   cdRefresh();
 }
 function cdRefresh(){
@@ -4285,20 +4292,26 @@ function cdRefresh(){
   const total = contractGrandTotal();
   const body = document.getElementById('cw-preview-body');
   if (custom) {
-    // Custom = auto deposit + your MIDDLE lines + auto completion. Check the middle sums to the remainder.
-    const p = customParts();
-    const mid = round2(parseAmounts(document.getElementById('cw-freetext').value).reduce((s,a)=>s+a,0));
-    const diff = round2(p.remainder - mid), ok = Math.abs(diff) < 0.01;
+    // Custom = the free text IS the whole schedule (Total is auto). Preview the lines as they'll
+    // print and soft-check that the amounts add up to the contract total.
+    const txt = (document.getElementById('cw-freetext')||{}).value || '';
+    const lineRows = txt.split(/\n/).map(line => {
+      const t = line.trim();
+      if (!t) return '';
+      const a = lineAmount(line);
+      if (a) return '<tr><td>' + cwEsc(a.label || '—') + '</td><td class="r">' + money(a.value) + '</td></tr>';
+      return '<tr><td colspan="2">' + cwEsc(t) + '</td></tr>';   // note line, no amount
+    }).join('');
+    const sum = round2(parseAmounts(txt).reduce((s,a)=>s+a,0));
+    const diff = round2(total - sum), ok = Math.abs(diff) < 0.01;
     body.innerHTML =
       '<table class="cw-preview-tbl">' +
-      '<tr><td>Total</td><td class="r">' + money(p.total) + '</td></tr>' +
-      '<tr><td>Deposit (' + p.depPct + '%)</td><td class="r">' + money(p.deposit) + '</td></tr>' +
-      '<tr><td>Your middle lines</td><td class="r">' + money(mid) + '</td></tr>' +
-      '<tr><td>Completion (' + p.compPct + '%)</td><td class="r">' + money(p.completion) + '</td></tr>' +
+      '<tr><td>Total</td><td class="r">' + money(total) + '</td></tr>' +
+      lineRows +
       '</table>' +
       '<div style="margin-top:5px;font-size:11px;color:' + (ok ? '#15803D' : '#dc2626') + '">' +
-        (ok ? '✓ Adds up — middle lines match the remainder (' + money(p.remainder) + ')'
-            : '⚠ Middle lines should total ' + money(p.remainder) + ' (remainder after deposit + completion) — off by ' + money(Math.abs(diff))) +
+        (ok ? '✓ Adds up — your lines total ' + money(sum) + ', matching the contract total'
+            : '⚠ Your lines total ' + money(sum) + ' but the contract total is ' + money(total) + ' — off by ' + money(Math.abs(diff))) +
       '</div>';
     return;
   }
@@ -4334,12 +4347,21 @@ function openContractDialog(){
   const comp = cm && cm.completionPct != null ? cm.completionPct : 10;
   const weeks = cm && cm.stagedCount ? cm.stagedCount : suggestN;
   const isCustom = !!(cm && cm.freeText);
-  const ftVal = (cm && cm.freeText) || '';
+  let ftVal = (cm && cm.freeText) || '';
+  if (isCustom && !cm.freeTextFull) {
+    // LEGACY custom meta: the stored text was the MIDDLE payments only (deposit/completion were
+    // auto). The box now holds the WHOLE schedule, so wrap the old text in the auto lines it
+    // used to get — regenerating then prints the same schedule under the new verbatim rules.
+    const dPct = cm.depositPct != null ? cm.depositPct : 10, cPct = cm.completionPct != null ? cm.completionPct : 10;
+    ftVal = 'Deposit: ' + money(round2(total * dPct / 100)) + '\n' + ftVal + '\nCompletion of works: ' + money(round2(total * cPct / 100));
+  }
   const cmStatus = (cm && cm.status) || 'Generated';
   const wrap = document.createElement('div');
   wrap.id = 'cw-dialog';
   wrap.innerHTML =
-    '<div class="cw-modal-back" onclick="if(event.target===this)removeContractDialog()">' +
+    // Close on backdrop click ONLY if the press STARTED on the backdrop — a text-selection drag that
+    // ends outside the modal fires a click on the backdrop and must not close the dialog.
+    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeContractDialog()">' +
       '<div class="cw-modal">' +
         '<h3>' + (cm ? 'Contract of Works' : 'Generate Contract of Works') + '</h3>' +
         '<div class="cw-modal-sub">' + cwEsc(ref) + ' · Total ' + money(total) + ' (inc VAT)</div>' +
@@ -4350,14 +4372,16 @@ function openContractDialog(){
               ['Generated','Sent','Signed'].map(s => '<option ' + (s===cmStatus?'selected':'') + '>' + s + '</option>').join('') +
               '</select></div>' : '') +
         '<div class="cw-fg"><label>Contract date</label><input type="date" id="cw-date" value="' + date + '"></div>' +
-        '<div class="cw-row2"><div class="cw-fg"><label>Deposit %</label><input type="number" id="cw-deposit" value="' + dep + '" min="0" max="100" oninput="cdRefresh()"></div>' +
+        // % fields are STANDARD-mode only (hidden in Custom — the free text is the whole schedule).
+        // They stay in the DOM because the Custom pre-fill/Reset and the saved meta still read them.
+        '<div class="cw-row2" id="cw-pct-row"' + (isCustom?' style="display:none"':'') + '><div class="cw-fg"><label>Deposit %</label><input type="number" id="cw-deposit" value="' + dep + '" min="0" max="100" oninput="cdRefresh()"></div>' +
         '<div class="cw-fg"><label>Completion %</label><input type="number" id="cw-completion" value="' + comp + '" min="0" max="100" oninput="cdRefresh()"></div></div>' +
         '<div style="margin-bottom:12px;font-size:13px">' +
           '<label style="font-weight:600"><input type="radio" name="cw-mode" value="standard" ' + (isCustom?'':'checked') + ' onchange="cdToggleMode()"> Standard — weekly payments</label>' +
           '<label style="font-weight:600;margin-left:16px"><input type="radio" name="cw-mode" value="custom" ' + (isCustom?'checked':'') + ' onchange="cdToggleMode()"> Custom (free text)</label>' +
         '</div>' +
         '<div class="cw-fg" id="cw-std-block"' + (isCustom?' style="display:none"':'') + '><label>Number of weekly payments</label><input type="number" id="cw-weeks" value="' + weeks + '" min="1" max="12" oninput="cdRefresh()"><span class="cw-hint">suggested ' + suggestN + ' (from labour days ÷ 5)</span></div>' +
-        '<div class="cw-fg" id="cw-custom-block"' + (isCustom?'':' style="display:none"') + '><label>Middle payments — one per line (Deposit &amp; Completion are added automatically)</label><textarea id="cw-freetext" rows="6" oninput="cdRefresh()" placeholder="Start of works: £0.00&#10;End of first week: £0.00">' + cwEsc(ftVal) + '</textarea><a href="#" onclick="cdResetMiddle();return false;" style="font-size:11px">↻ Reset to even split</a></div>' +
+        '<div class="cw-fg" id="cw-custom-block"' + (isCustom?'':' style="display:none"') + '><label>Payment schedule — printed exactly as typed, one payment per line (only the Total line is added automatically)</label><textarea id="cw-freetext" rows="6" oninput="cdRefresh()" placeholder="Deposit: £500.00&#10;On delivery of stone: £250.00&#10;Completion of works: £750.00">' + cwEsc(ftVal) + '</textarea><a href="#" onclick="cdResetMiddle();return false;" style="font-size:11px">↻ Reset to even split</a><span class="cw-hint" style="margin-left:10px">Reset rebuilds from the Standard settings</span></div>' +
         '<div class="cw-preview"><div class="cw-preview-t">Payment schedule preview</div><div id="cw-preview-body"></div></div>' +
         '<div class="cw-modal-btns"><button class="btn btn-primary" onclick="doGenerateContract()">' + (cm?'Regenerate &amp; Preview':'Generate &amp; Preview') + '</button>' +
         '<button class="btn btn-outline" onclick="removeContractDialog()">Cancel</button></div>' +
@@ -4369,18 +4393,25 @@ function openContractDialog(){
 async function doGenerateContract(){
   const isCustom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
   if (isCustom) {
-    // Soft check: middle payments should equal the remainder after deposit + completion.
-    const p = customParts();
-    const mid = round2(parseAmounts((document.getElementById('cw-freetext')||{}).value).reduce((s,a)=>s+a,0));
-    const diff = round2(p.remainder - mid);
-    if (Math.abs(diff) > 0.01 && !confirm('Your middle payments add up to ' + money(mid) + ', but the remainder after deposit + completion is ' + money(p.remainder) + ' (off by ' + money(Math.abs(diff)) + ').\n\nGenerate anyway?')) return;
+    const txt = ((document.getElementById('cw-freetext')||{}).value || '').trim();
+    if (!txt) {
+      // Empty box → renderContract falls back to the STANDARD schedule; make that explicit.
+      if (!confirm('The payment schedule box is empty — the Standard weekly schedule will be printed instead.\n\nContinue?')) return;
+    } else {
+      // Soft check: the typed schedule should add up to the contract total.
+      const total = contractGrandTotal();
+      const sum = round2(parseAmounts(txt).reduce((s,a)=>s+a,0));
+      const diff = round2(total - sum);
+      if (Math.abs(diff) > 0.01 && !confirm('Your payment lines add up to ' + money(sum) + ', but the contract total is ' + money(total) + ' (off by ' + money(Math.abs(diff)) + ').\n\nGenerate anyway?')) return;
+    }
   }
   const opts = {
     contractDate: (document.getElementById('cw-date')||{}).value || '',
     depositPct: parseFloat((document.getElementById('cw-deposit')||{}).value) || 0,
     completionPct: parseFloat((document.getElementById('cw-completion')||{}).value) || 0,
     stagedCount: parseInt((document.getElementById('cw-weeks')||{}).value) || 0,
-    freeText: isCustom ? ((document.getElementById('cw-freetext')||{}).value || '') : ''
+    freeText: isCustom ? ((document.getElementById('cw-freetext')||{}).value || '') : '',
+    freeTextFull: isCustom   // new-format flag: the free text is the WHOLE schedule (see renderContract)
   };
   removeContractDialog();
   renderContract(opts);
@@ -4398,6 +4429,7 @@ async function saveContractSnapshot(opts){
     contractDate: opts.contractDate || new Date().toISOString().split('T')[0],
     depositPct: opts.depositPct, completionPct: opts.completionPct, stagedCount: opts.stagedCount,
     schedule: rows, freeText: (opts.freeText||'').trim() || null,
+    freeTextFull: !!(opts.freeTextFull && (opts.freeText||'').trim()),   // new custom format: free text = whole schedule (legacy metas lack this → middle-only rendering)
     termsVersion: (contractTerms && contractTerms.version) || CONTRACT_TERMS_VERSION,
     termsSnapshot: contractTerms ? JSON.parse(JSON.stringify({ version: contractTerms.version, sections: contractTerms.sections })) : null,
     total,
