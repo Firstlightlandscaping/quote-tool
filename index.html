@@ -4487,8 +4487,18 @@ function spSyncDeliveries(p) {
       if (drift) rows.forEach(r => r._drift = true);
     }
   });
-  // A row whose supplier no longer has any materials: single rows empty out via auto-track
-  // above; anything left holding atoms for a vanished supplier is stale → flag it.
+  // The Unassigned row is derived bookkeeping, not planning: assigning its LAST item removes
+  // the whole bucket from the rollup, so the supplier loop above never revisits the row and
+  // it lingered holding the moved item (read as a duplicate, with a misleading quote-changed
+  // banner — and it would have pushed a duplicate checklist to TeamGantt). Delete it; the
+  // create branch above rebuilds it the moment anything unassigned reappears.
+  p.deliveries = p.deliveries.filter(row => {
+    if (row.supplier === SUP_UNASSIGNED && !atoms[SUP_UNASSIGNED]) { spDirty = true; return false; }
+    return true;
+  });
+  // A REAL supplier row whose materials vanished (quote change): single rows empty out via
+  // auto-track above; anything left holding atoms for a vanished supplier is stale → flag it
+  // (deliberately a flag, not a rewrite — it may be a dated/split row the user built).
   p.deliveries.forEach(row => { if (!atoms[row.supplier] && row.alloc.length) row._drift = true; });
 }
 // Collapse a split supplier back to one fresh row (dates/labels of the splits are lost).
@@ -5053,11 +5063,49 @@ function spConfirmSplit(i) {
   document.getElementById('sp-split-dialog').remove();
   spMark(); renderSchedule();
 }
+// Push-ready serialisation of the plan, computed at SAVE time by the same functions
+// that render the tab — so what the push agent writes to TeamGantt is exactly what
+// the items dialogs show. The agent (scripts/push-to-teamgantt.js) reads plan.tg
+// VERBATIM and never recomputes rollups/edits/splits/stock itself; if the mapping
+// ever looks wrong in TeamGantt, fix it HERE (or upstream), not in the script.
+function spExportForPush() {
+  const p = spEnsurePlan();
+  const crew = Math.max(1, p.crewSize || 1);
+  const dates = spCascade(p.startDate, p.tasks);
+  const meta = spItemMeta();
+  return {
+    ref: (document.getElementById('in-ref')||{value:''}).value.trim(),
+    customer: g('in-cust') || '',
+    startDate: p.startDate || '',
+    deadline: p.deadline || '',
+    tasks: p.tasks.map((t, i) => ({
+      name: (t.name || '').trim() || ('Task ' + (i + 1)),
+      days: Math.max(1, Math.round(t.days || 1)),
+      men: spMenOf(t, crew),
+      start: dates[i] ? dates[i].start : '',
+      end: dates[i] ? dates[i].end : ''
+    })),
+    deliveries: p.deliveries.map(row => {
+      const items = spRowItems(row, meta);
+      return {
+        name: row.label || row.supplier,
+        supplier: row.supplier,
+        date: row.date || '',
+        unassigned: row.supplier === SUP_UNASSIGNED,
+        // The crew-facing checklist — same line format as the ☰ items dialog
+        checklist: items.map(it => spQtyDisp(it.qty) + ' × ' + it.desc + (it.unit ? ' (' + it.unit + ')' : '')),
+        // Supplier/product URLs → the TeamGantt task's Notes
+        links: items.filter(it => it.url).map(it => ({ desc: it.desc, url: it.url }))
+      };
+    }).filter(d => d.checklist.length)
+  };
+}
 async function saveSchedulePlan() {
   const ref = (document.getElementById('in-ref')||{value:''}).value.trim();
   if (!ref) { toast('Save the quote first (it needs a QT number), then save the schedule'); return; }
   if (!schedulePlan) { toast('Nothing to save yet'); return; }
   (schedulePlan.deliveries||[]).forEach(d => { delete d._drift; }); // transient render flag, not data
+  schedulePlan.tg = spExportForPush();
   schedulePlan.updatedAt = new Date().toISOString();
   const sq = savedQuotes.find(q => q.ref === ref);
   if (sq) sq.schedulePlan = JSON.parse(JSON.stringify(schedulePlan));
