@@ -4030,8 +4030,16 @@ function spQuoteMaterials() {
     .reduce((s,l) => s + lineMat(l), 0);
   return { charged, allowed: charged / 1.1, profit: charged / 11 };
 }
+// Job materials cost = orders + stock at replacement (supplier) cost. Stock is NOT
+// ordered but is NOT free — it gets replaced — so it's margin-NEUTRAL (Neal's ruling
+// 2026-07-14: £1,000 of stock on a job isn't £1,000 of extra profit). Only REMOVED
+// items (charged but never bought) genuinely add to the margin, by being excluded.
 function spPlannedSpend() {
-  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.stock ? 0 : (it.supCost || 0)), 0), 0);
+  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.removed ? 0 : (it.supCost || 0)), 0), 0);
+}
+// The stock slice of spPlannedSpend, for showing separately in the check strip.
+function spStockSpend() {
+  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.stock && !it.removed ? (it.supCost || 0) : 0), 0), 0);
 }
 // The schedule's view of the rollup: the raw supplier rollup with the plan's
 // supplier OVERRIDES applied (plan.supplierOverrides = { itemKey: supplier }).
@@ -4094,10 +4102,17 @@ function spRollup() {
     it.edited = true;
   }));
   // 4. stock items: flagged, kept for display but excluded from atoms/rows/checklists.
+  //    Margin-neutral: not ordered, but their supplier cost still counts as job cost
+  //    (using stock isn't free — it gets replaced). See spPlannedSpend.
   const stock = p.stockKeys || {};
   rollup.forEach(s => s.items.forEach(it => { if (stock[it.key]) it.stock = true; }));
+  // 5. removed items ("not needed"): flagged, excluded from atoms/rows/checklists AND
+  //    from planned spend — the one state that genuinely adds to the materials margin
+  //    (charged on the quote, never bought).
+  const removed = p.removedKeys || {};
+  rollup.forEach(s => s.items.forEach(it => { if (removed[it.key]) it.removed = true; }));
   rollup.forEach(s => {
-    const live = s.items.filter(i => !i.stock);
+    const live = s.items.filter(i => !i.stock && !i.removed);
     s.total = live.reduce((a,i) => a + i.totalCost, 0);
     s.itemCount = live.length;
   });
@@ -4112,7 +4127,7 @@ function spAtoms() {
   spRollup().forEach(s => {
     const acc = {};
     s.items.forEach(it => {
-      if (it.stock) return; // stock items aren't ordered — kept out of rows/checklists
+      if (it.stock || it.removed) return; // stocked/removed items aren't ordered — kept out of rows/checklists
       it.sources.forEach(src => {
       if (src.lineId == null) return;
       const k = src.lineId + '§' + it.key;
@@ -4141,7 +4156,7 @@ function spItemCtlHtml(it) {
     <button data-key="${cwEsc(it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the order quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
     ${it.extra
       ? `<button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
-      : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it this job" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button>`}
+      : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it, but its replacement cost still counts (margin-neutral)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Not needed — don't buy it at all; the saving lands in the materials margin (quote unchanged)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑 remove</button>`}
   </span>`;
 }
 function spEditedTagHtml(it) {
@@ -4163,7 +4178,9 @@ function spItemsDialog(rowIdx) {
   const srcByKey = {};
   (row.alloc||[]).forEach(a => { if (a.qty > 0) (srcByKey[a.key] = srcByKey[a.key] || []).push(a); });
   const lineName = id => { if (id === -1) return 'added'; const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
-  const stockItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items.filter(x => x.stock);
+  const supItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items;
+  const stockItems = supItems.filter(x => x.stock && !x.removed);
+  const removedItems = supItems.filter(x => x.removed);
   const itemHtml = items.map(it => {
     const srcs = srcByKey[it.key] || [];
     const prov = it.extra ? '' : (srcs.length > 1
@@ -4182,6 +4199,11 @@ function spItemsDialog(rowIdx) {
       <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not ordered</div>
       ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
     </div>` : '';
+  const removedHtml = removedItems.length ? `
+    <div style="margin-top:10px">
+      <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#DC2626">🗑 Removed — not needed, not costed</div>
+      ${removedItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Put it back on the order" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+    </div>` : '';
   const panel = document.createElement('div');
   panel.id = 'sp-items-dialog';
   panel.dataset.rowId = row.id;
@@ -4193,6 +4215,7 @@ function spItemsDialog(rowIdx) {
       <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
         ${itemHtml || '<div style="font-size:13px;color:#B45309;padding:8px 0">No materials in this delivery — split things into it, add an item, or delete the row.</div>'}
         ${stockHtml}
+        ${removedHtml}
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
         <button class="btn btn-outline" onclick="spAddExtraDialog(${rowIdx})" title="Add an order-only item (never touches the quote)">+ Add item</button>
@@ -4206,7 +4229,7 @@ function spSupplierOfKey(key) { const s = spRollup().find(x => x.items.some(i =>
 function spKeyTruthAtoms(key) {
   const sup = spRollup().find(x => x.items.some(i => i.key === key));
   const it = sup && sup.items.find(i => i.key === key);
-  if (!it || it.stock) return [];
+  if (!it || it.stock || it.removed) return [];
   const acc = {};
   it.sources.forEach(src => { if (src.lineId != null) acc[src.lineId] = (acc[src.lineId]||0) + src.qty; });
   return Object.keys(acc).map(lid => ({ lineId: parseFloat(lid), key, qty: Math.round(acc[lid]*1000)/1000 }));
@@ -4222,6 +4245,22 @@ function spToggleStock(key) {
     if (sup) { const rows = spRowsOf(sup); if (rows.length > 1) rows[0].alloc = (rows[0].alloc||[]).concat(spKeyTruthAtoms(key)); }
   } else {
     p.stockKeys[key] = true;
+    (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
+  }
+  spMark(); renderSchedule();
+}
+// 🗑 remove toggle — "not needed, don't buy it" (e.g. charged for a waste van, hiring a
+// skip instead). Plan-scope; the quote still charges the client for it, so the saved
+// supplier cost lands in the materials margin (unlike 📦 stock, which is margin-neutral).
+function spToggleRemoved(key) {
+  const p = spEnsurePlan();
+  p.removedKeys = p.removedKeys || {};
+  if (p.removedKeys[key]) {
+    delete p.removedKeys[key];
+    const sup = spSupplierOfKey(key);
+    if (sup) { const rows = spRowsOf(sup); if (rows.length > 1) rows[0].alloc = (rows[0].alloc||[]).concat(spKeyTruthAtoms(key)); }
+  } else {
+    p.removedKeys[key] = true;
     (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
   }
   spMark(); renderSchedule();
@@ -4429,9 +4468,12 @@ function spAxAddManual() {
   const desc = document.getElementById('sp-ax-desc').value.trim();
   const qty = parseFloat(document.getElementById('sp-ax-qty').value);
   if (!desc || !(qty > 0)) { toast('Enter a description and quantity'); return; }
+  const price = parseFloat(document.getElementById('sp-ax-price').value) || 0;
+  // An unpriced item counts £0 in the materials check, silently flattering the margin.
+  if (!(price > 0) && !confirm('No £ entered — "' + desc + '" will count as £0 cost in the materials check, making the margin look better than it is.\n\nAdd without a price?')) return;
   spAxPush([{ supplier: document.getElementById('sp-ax-sup').value, desc, qty,
     unit: document.getElementById('sp-ax-unit').value.trim(),
-    price: parseFloat(document.getElementById('sp-ax-price').value) || 0 }]);
+    price }]);
   toast('✓ ' + qty + ' × ' + desc + ' added');
   ['sp-ax-desc','sp-ax-unit','sp-ax-price'].forEach(id => { document.getElementById(id).value = ''; });
   document.getElementById('sp-ax-qty').value = '1';
@@ -4494,6 +4536,17 @@ function spSyncDeliveries(p) {
       const drift = Object.keys({ ...sum, ...truth }).some(k => Math.abs((sum[k] || 0) - (truth[k] || 0)) > 0.002);
       if (drift) rows.forEach(r => r._drift = true);
     }
+  });
+  // A supplier whose EVERY item is stocked/removed (atoms exist but are empty): scrub any
+  // leftover allocs and drop undated rows — otherwise stocking/removing the last item left
+  // an empty shell row behind. Dated rows are kept (the user set that date deliberately)
+  // and can be × deleted or reused.
+  p.deliveries = p.deliveries.filter(row => {
+    const a = atoms[row.supplier];
+    if (!a || a.length) return true;
+    if (row.alloc.length) { row.alloc = []; spDirty = true; }
+    if (!row.date) { spDirty = true; return false; }
+    return true;
   });
   // The Unassigned row is derived bookkeeping, not planning: assigning its LAST item removes
   // the whole bucket from the rollup, so the supplier loop above never revisits the row and
@@ -4877,13 +4930,15 @@ function renderSchedule() {
         ${(() => {
           const qm = spQuoteMaterials();
           if (!qm.charged) return '';
-          const planned = spPlannedSpend();
+          const planned = spPlannedSpend();          // orders + stock at replacement cost, removed items excluded
+          const stockCost = spStockSpend();
+          const orders = planned - stockCost;
           const projMargin = qm.charged - planned;
           const diff = projMargin - qm.profit;
           const money = v => '£' + Math.round(v).toLocaleString('en-GB');
           const col = diff < -0.5 ? '#DC2626' : '#15803D';
           const arrow = diff < -0.5 ? '▼' : (diff > 0.5 ? '▲' : '·');
-          return `<div title="Quote charges ${money(qm.charged)} for materials (incl. your 10% markup) → allows ${money(qm.allowed)} at supplier cost. Planned = every delivery row at supplier prices: stock skipped, edits applied, added items included (misc components ÷1.1 — approximate for legacy hand-priced ones; unpriced additions count £0). Projected margin = charged − planned. Nothing here changes the quote." style="font-size:12px;color:var(--i2);margin-bottom:6px;cursor:help">Materials check: quote charges <strong style="color:var(--i1)">${money(qm.charged)}</strong> → allows <strong style="color:var(--i1)">${money(qm.allowed)}</strong> at supplier cost · planned orders <strong style="color:var(--i1)">${money(planned)}</strong> → margin <strong style="color:${col}">${money(projMargin)}</strong> vs ${money(qm.profit)} quoted <strong style="color:${col}">${arrow}${Math.abs(Math.round(diff)) > 0 ? ' ' + money(Math.abs(diff)) : ''}</strong></div>`;
+          return `<div title="Quote charges ${money(qm.charged)} for materials (incl. your 10% markup) → allows ${money(qm.allowed)} at supplier cost. Planned cost = delivery rows at supplier prices (edits applied, added items included; misc components ÷1.1 — approximate for legacy hand-priced ones; unpriced additions count £0) + stock at replacement cost (using stock isn't free — it gets replaced, so it's margin-neutral). Removed items cost nothing — that saving lands in the margin. Projected margin = charged − planned. Nothing here changes the quote." style="font-size:12px;color:var(--i2);margin-bottom:6px;cursor:help">Materials check: quote charges <strong style="color:var(--i1)">${money(qm.charged)}</strong> → allows <strong style="color:var(--i1)">${money(qm.allowed)}</strong> at supplier cost · planned orders <strong style="color:var(--i1)">${money(orders)}</strong>${stockCost > 0.5 ? ` + stock <strong style="color:var(--i1)">${money(stockCost)}</strong>` : ''} → margin <strong style="color:${col}">${money(projMargin)}</strong> vs ${money(qm.profit)} quoted <strong style="color:${col}">${arrow}${Math.abs(Math.round(diff)) > 0 ? ' ' + money(Math.abs(diff)) : ''}</strong></div>`;
         })()}
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
           <div style="flex:0 0 235px;min-width:210px;position:sticky;top:10px;background:white;border:1px solid var(--bd);border-radius:6px;padding:8px 10px">
