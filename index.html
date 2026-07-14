@@ -3227,9 +3227,17 @@ function reorderDomRows() {
   Array.from(tbody.querySelectorAll('tr[id^="misc-edit-row-"]')).forEach(tr => {
     editRowMap[tr.id.replace('misc-edit-row-', '')] = tr;
   });
+  // Expanded group MEMBER rows have no data-drag-id (members aren't draggable), so they
+  // must be collected separately — without this they were stranded at the top of the
+  // tbody after a drag, detached from their group header (collapse/re-render fixed it).
+  const memberRowMap = {};
+  Array.from(tbody.querySelectorAll('tr[data-member-row]')).forEach(tr => {
+    memberRowMap[tr.dataset.memberRow] = tr;
+  });
   lines.forEach(l => {
     const id = String(l.id);
     if (rowMap[id]) tbody.appendChild(rowMap[id]);
+    if (memberRowMap[id]) tbody.appendChild(memberRowMap[id]);
     if (editRowMap[id]) tbody.appendChild(editRowMap[id]);
   });
 }
@@ -3636,7 +3644,7 @@ function renderLines() {
       if (expanded) {
         groupLines.forEach(gl => {
           const ga = amt(gl);
-          rendered += `<tr class="no-print group-member-row" style="background:#F8FBFF;border-left:3px solid #93C5FD">
+          rendered += `<tr class="no-print group-member-row" data-member-row="${gl.id}" style="background:#F8FBFF;border-left:3px solid #93C5FD">
             <td class="no-print"></td>
             <td class="no-print"></td>
             <td class="no-print" style="vertical-align:middle;padding-left:20px">
