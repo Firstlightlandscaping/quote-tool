@@ -4405,12 +4405,21 @@ function spAxPush(arr) {
   });
   spMark(); renderSchedule();
 }
+// Standalone entry for order-only extras (Neal 2026-07-15): adding an item shouldn't
+// require opening some other supplier's ☰ dialog. The confirm is deliberate — an extra
+// item is pure cost (the customer isn't paying for it), so it needs an explicit yes.
+function spAddExtraNew() {
+  if (!confirm("This adds an item to the ORDER only — it is NOT on the quote, so the customer is not paying for it.\n\nIts cost comes straight out of this job's profit (the materials check will show the hit). Continue?")) return;
+  spAddExtraDialog(null);
+}
 function spAddExtraDialog(rowIdx) {
   const existing = document.getElementById('sp-extra-dialog');
   if (existing) existing.remove();
-  const row = spEnsurePlan().deliveries[rowIdx];
-  if (!row) return;
-  const isUnRow = row.supplier === SUP_UNASSIGNED;
+  // rowIdx null = the standalone "+ Add item not on quote" button (no host row, no
+  // supplier prefill). Items route to their own supplier's row either way (spAxPush).
+  const row = rowIdx != null ? spEnsurePlan().deliveries[rowIdx] : null;
+  if (rowIdx != null && !row) return;
+  const isUnRow = !row || row.supplier === SUP_UNASSIGNED;
   const panel = document.createElement('div');
   panel.id = 'sp-extra-dialog';
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
@@ -4542,6 +4551,13 @@ function spDelExtra(key) {
   if (p.matEdits) delete p.matEdits[key];
   if (p.supplierOverrides) delete p.supplierOverrides[key];
   (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
+  // Drop rows this delete left EMPTY (no allocations, nothing in the rollup bucket, no
+  // date set) — a row created just for an extra shouldn't linger as a shell after the
+  // extra goes. Scoped to THIS action so quote-drift rows are never silently deleted.
+  const buckets = {};
+  spRollup().forEach(s => { buckets[s.name] = s.items.filter(i => !i.stock && !i.removed).length; });
+  p.deliveries = (p.deliveries||[]).filter(r =>
+    (r.alloc||[]).length || r.date || (buckets[r.supplier] || 0) > 0 || r.supplier === SUP_UNASSIGNED);
   spMark(); renderSchedule();
 }
 function spUnRowDefaults() { return { supplier: SUP_UNASSIGNED, label: '⚠ Unassigned — needs a supplier' }; }
@@ -5014,6 +5030,7 @@ function renderSchedule() {
           <div style="flex:1;min-width:340px">
             ${delivRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No deliveries — click rebuild below once the quote has materials.</div>'}
             <button class="btn btn-outline btn-sm" onclick="spRegenDeliveries()" style="margin-top:4px" title="Rebuild one row per supplier from the current Order List (replaces the rows above)">↻ Rebuild from Order List</button>
+            <button class="btn btn-outline btn-sm" onclick="spAddExtraNew()" style="margin-top:4px;margin-left:6px;border-color:#F59E0B;color:#92400E" title="Add an order-only item — NOT on the quote, so its cost comes out of the job's profit">+ Add item not on quote</button>
           </div>
         </div>
       </div>
@@ -5074,10 +5091,33 @@ function spDelivDateFromTask(i, sel) {
   spMark(); renderSchedule();
 }
 function spDelDeliv(i) {
-  const d = spEnsurePlan().deliveries[i];
+  const p = spEnsurePlan();
+  const d = p.deliveries[i];
   if (!d) return;
-  if (!confirm('Remove the delivery "' + (d.label||d.supplier) + '"? Its materials will simply not be scheduled (rebuild adds them back).')) return;
-  spEnsurePlan().deliveries.splice(i, 1);
+  // Sync re-creates a row for any supplier that still has live materials, so a plain
+  // splice was a silent no-op for quote-backed rows (Neal-reported 2026-07-15). Be
+  // honest per situation instead:
+  const rowsForSupplier = p.deliveries.filter(r => r.supplier === d.supplier).length;
+  const live = ((spRollup().find(s => s.name === d.supplier) || { items: [] }).items).filter(x => !x.stock && !x.removed);
+  if (rowsForSupplier === 1 && live.length) {
+    const extras = live.filter(x => x.extra);
+    if (extras.length === live.length) {
+      // row exists ONLY because of added items — deleting it deletes them too
+      if (!confirm('Remove this delivery AND its ' + extras.length + ' added item' + (extras.length > 1 ? 's' : '') + '? They are order-only items, so nothing on the quote changes.')) return;
+      const keys = new Set(extras.map(x => x.key));
+      p.extraItems = (p.extraItems || []).filter(e => !keys.has('extra:' + e.id));
+      keys.forEach(k => { if (p.matEdits) delete p.matEdits[k]; if (p.supplierOverrides) delete p.supplierOverrides[k]; });
+      (p.deliveries || []).forEach(r => { r.alloc = (r.alloc || []).filter(a => !keys.has(a.key)); });
+      p.deliveries.splice(i, 1);
+      spMark(); renderSchedule();
+      return;
+    }
+    // quote-backed: the row would bounce straight back — explain instead of pretending
+    alert('This delivery has ' + live.length + ' material' + (live.length > 1 ? 's' : '') + ' from the quote, so the row would just come back — every quote material needs a delivery to live on.\n\nTo take materials off the order, open ☰ items and use 📦 stock or 🗑 remove — the row disappears by itself once it has nothing left to order.');
+    return;
+  }
+  if (!confirm('Remove the delivery "' + (d.label || d.supplier) + '"?')) return;
+  p.deliveries.splice(i, 1);
   spMark(); renderSchedule();
 }
 function spToggleRowItems(i) { const el = document.getElementById('sp-row-items-' + i); if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
