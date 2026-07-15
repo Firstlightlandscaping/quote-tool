@@ -6384,7 +6384,7 @@ function renderPM() {
       <td class="r"><input type="number" id="pm-cost-${d.code}" value="${computeMatCostPerUnit(d).toFixed(2)}" readonly title="Auto-calculated from materials (incl. 10% markup) — edit the materials below to change it" style="width:80px;text-align:right;background:transparent;border:none;color:var(--i2);cursor:default;font-family:'DM Mono',monospace"></td>
       <td>
         <div style="display:flex;align-items:flex-start;gap:4px;min-width:220px;max-width:380px">
-          <textarea rows="2" style="flex:1;font-size:12px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;resize:none;font-family:inherit;line-height:1.4;overflow:hidden;white-space:nowrap;text-overflow:ellipsis" placeholder="Enter client-facing description..." oninput="updateDel('${d.code}','xeroDescription',this.value)" onfocus="this.style.whiteSpace='normal';this.rows=12;this.style.overflow='auto'" onblur="this.style.whiteSpace='nowrap';this.rows=2;this.style.overflow='hidden'">${(d.xeroDescription||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
+          <textarea rows="2" style="flex:1;font-size:12px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;resize:none;font-family:inherit;line-height:1.4;overflow:hidden" placeholder="Enter client-facing description..." oninput="updateDel('${d.code}','xeroDescription',this.value)" onfocus="this.rows=12;this.style.overflow='auto'" onblur="this.rows=2;this.style.overflow='hidden'">${(d.xeroDescription||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
         </div>
       </td>
       <td style="font-size:11px;color:var(--i3);text-align:center;white-space:nowrap" id="pm-matcount-${d.code}">${(d.materials||[]).length} mats</td>
