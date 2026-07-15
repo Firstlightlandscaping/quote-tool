@@ -3251,54 +3251,54 @@ function reorderDomRows() {
   Array.from(tbody.querySelectorAll('tr[data-member-row]')).forEach(tr => {
     memberRowMap[tr.dataset.memberRow] = tr;
   });
+  // Re-appending every row destroys the browser's scroll anchor, which yanks the
+  // viewport to the top of the table (worst on long quotes). Preserve the scroll
+  // position and the clicked button's focus across the shuffle.
+  const scrollX = window.scrollX, scrollY = window.scrollY;
+  const focused = document.activeElement;
   lines.forEach(l => {
     const id = String(l.id);
     if (rowMap[id]) tbody.appendChild(rowMap[id]);
     if (memberRowMap[id]) tbody.appendChild(memberRowMap[id]);
     if (editRowMap[id]) tbody.appendChild(editRowMap[id]);
   });
+  if (focused && focused !== document.body && document.contains(focused)) {
+    try { focused.focus({ preventScroll: true }); } catch (e) {}
+  }
+  window.scrollTo(scrollX, scrollY);
 }
 
-function mvUp(id) {
-  const i = lines.findIndex(l => l.id === id);
-  if (i <= 0) return;
-  // Find the previous non-member line to swap with
-  let target = i - 1;
-  while (target > 0 && lines[target].groupMember) target--;
-  if (lines[target].groupMember) return; // all above are group members
-  // If target is a group header, move above the whole group block
-  if (lines[target].groupId && !lines[target].groupMember) {
-    // Find the first line of that group
-    let groupStart = target;
-    while (groupStart > 0 && (lines[groupStart-1].groupMember === lines[target].groupId || lines[groupStart-1].groupId === lines[target].groupId)) groupStart--;
-    // Move our line above the group
-    const [moved] = lines.splice(i, 1);
-    lines.splice(groupStart, 0, moved);
-  } else {
-    [lines[target], lines[i]] = [lines[i], lines[target]];
+// ▲▼ arrows move whole BLOCKS (a group header carries all its members), using the
+// same getDragBlocks the drag path uses. The old line-based versions moved ONLY the
+// header when clicked on a group, stranding its members above it in the lines array
+// (and persisting that scrambled order on save).
+function mvBlock(id, dir) {
+  const blocks = getDragBlocks();
+  const bi = blocks.findIndex(b => b.id === id);
+  if (bi < 0) return;
+  const ni = bi + dir;
+  if (ni < 0 || ni >= blocks.length) return;
+  [blocks[bi], blocks[ni]] = [blocks[ni], blocks[bi]];
+  const rebuilt = blocks.flatMap(b => b.lines);
+  // getDragBlocks skips orphaned members (rows separated from their header, e.g. a
+  // quote saved while the old header-only bug was live) — re-attach them under their
+  // header instead of silently dropping them from the quote.
+  if (rebuilt.length !== lines.length) {
+    const seen = new Set(rebuilt.map(l => l.id));
+    lines.filter(l => !seen.has(l.id)).forEach(orphan => {
+      const hi = rebuilt.findIndex(x => x.groupId === orphan.groupMember && !x.groupMember);
+      if (hi >= 0) {
+        let insertAt = hi + 1;
+        while (insertAt < rebuilt.length && rebuilt[insertAt].groupMember === orphan.groupMember) insertAt++;
+        rebuilt.splice(insertAt, 0, orphan);
+      } else rebuilt.push(orphan);
+    });
   }
+  lines = rebuilt;
   isDirty = true; reorderDomRows();
 }
-function mvDn(id) {
-  const i = lines.findIndex(l => l.id === id);
-  if (i >= lines.length - 1) return;
-  // Find the next non-member line to swap with
-  let target = i + 1;
-  while (target < lines.length - 1 && lines[target].groupMember) target++;
-  if (lines[target].groupMember) return; // all below are group members
-  // If target is a group header, move below the whole group block
-  if (lines[target].groupId && !lines[target].groupMember) {
-    // Find the last line of that group
-    let groupEnd = target;
-    while (groupEnd < lines.length - 1 && lines[groupEnd+1].groupMember === lines[target].groupId) groupEnd++;
-    // Move our line after the group
-    const [moved] = lines.splice(i, 1);
-    lines.splice(groupEnd, 0, moved);
-  } else {
-    [lines[target], lines[i]] = [lines[i], lines[target]];
-  }
-  isDirty = true; reorderDomRows();
-}
+function mvUp(id) { mvBlock(id, -1); }
+function mvDn(id) { mvBlock(id, 1); }
 
 // ── DRAG AND DROP REORDER ──────────────────────────────────────────────────────
 let dragSrcId = null;      // line id being dragged
