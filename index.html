@@ -7469,8 +7469,8 @@ async function confirmDupDel(sourceCode) {
 
   if (!newCode) { toast('Enter a code for the new deliverable'); return; }
   if (!newName) { toast('Enter a name for the new deliverable'); return; }
-  if (!/^[A-Z]{2,6}[-]?[0-9]{1,4}$/.test(newCode)) {
-    toast('Code must be letters followed by numbers (e.g. LSP002)'); return;
+  if (!/^[A-Z]{1,6}[-]?[0-9]{1,4}$/.test(newCode)) {
+    toast('Code must be letters followed by numbers (e.g. LSP002 or T008)'); return;
   }
   if (dels.find(d => d.code === newCode)) {
     toast('Code ' + newCode + ' already exists'); return;
