@@ -3917,7 +3917,13 @@ function olMatTable(l) {
 // materials are scaled by line qty; misc-item components are fixed (NOT scaled, per lineMat).
 // Returns: [{ name, items:[{stockCode,description,unit,totalQty,totalCost,unitPrice,url,sources,mixedUnits}], total, itemCount, unassigned }]
 const SUP_UNASSIGNED = 'Unassigned';   // bucket for materials with no supplier set yet (needs attention)
-function buildSupplierRollup() {
+// opts.matOverrides (schedule only): when a deliverable line's charged materials cost
+// (l.matCost, per unit, incl the 10% markup) no longer matches its materials snapshot
+// (snapshot supplier cost × 1.1), the line's material prices are SCALED so the line's
+// planned spend follows the manual override (override ÷ 1.1 = assumed supplier cost).
+// Untouched lines match their snapshot by construction, so their factor is exactly 1.
+// The Order List calls this WITHOUT the flag and keeps showing raw price-list rates.
+function buildSupplierRollup(opts) {
   const mplSupplier = {}, mplUrl = {};
   mpl.forEach(m => { if (!m.code) return; if (m.supplier) mplSupplier[m.code] = m.supplier.trim(); if (m.supplierUrl) mplUrl[m.code] = m.supplierUrl; });
   const suppliers = {};
@@ -3934,14 +3940,24 @@ function buildSupplierRollup() {
     it.supCost += (o.supUnit != null ? o.supUnit : (o.unitPrice || 0)) * o.qty;
     if (o.unit) it._units.add(o.unit.trim());
     if (o.url && !it.url) it.url = o.url;
+    if (o.overridePriced) it.overridePriced = true;
     it.sources.push({ name: o.sourceName || '', qty: Math.round(o.qty * 1000) / 1000, misc: !!o.fromMisc, lineId: o.sourceLineId });
   }
   // Deliverable materials — scaled by line qty. Skip group headers (their materials live on members).
   lines.filter(l => !l.misc && !l.note && !l.discount && !(l.groupId && !l.groupMember)).forEach(l => {
-    (l.materials || []).forEach(m => {
+    const mats = l.materials || [];
+    if (!mats.length) return;
+    const matPrice = m => m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit);
+    let f = 1;
+    if (opts && opts.matOverrides) {
+      const supPerUnit = mats.reduce((s, m) => s + matPrice(m) * m.qtyPerUnit, 0);
+      // per-unit tolerance 1p: absorbs 2dp rounding on the stored matCost, never a real override
+      if (supPerUnit > 0 && Math.abs((l.matCost || 0) - supPerUnit * 1.1) > 0.01) f = (l.matCost || 0) / (supPerUnit * 1.1);
+    }
+    mats.forEach(m => {
       const qty = Math.round((m.qtyPerUnit * l.qty) * 1000) / 1000;
-      const unitPrice = m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit);
-      addItem(mplSupplier[m.stockCode], { stockCode: m.stockCode, description: m.description, unit: m.unit, qty, unitPrice, url: mplUrl[m.stockCode], sourceName: (l.code ? l.code + ' ' : '') + l.name, sourceLineId: l.id });
+      const unitPrice = matPrice(m) * f;
+      addItem(mplSupplier[m.stockCode], { stockCode: m.stockCode, description: m.description, unit: m.unit, qty, unitPrice, url: mplUrl[m.stockCode], sourceName: (l.code ? l.code + ' ' : '') + l.name, sourceLineId: l.id, overridePriced: f !== 1 });
     });
   });
   // Misc-item components — fixed qty, NOT scaled by line qty.
@@ -4046,7 +4062,7 @@ function spStockSpend() {
 // Overrides are plan-scope ONLY — the Price Manager, quote and Order List never
 // see them; they exist so unassigned materials can be bucketed for the push.
 function spRollup() {
-  const rollup = buildSupplierRollup();
+  const rollup = buildSupplierRollup({ matOverrides: true });
   const p = schedulePlan || {};
   const ov = p.supplierOverrides || {};
   const getSup = name => {
@@ -4146,7 +4162,7 @@ function spItemMeta() {
   const map = {};
   spRollup().forEach(s => s.items.forEach(it => {
     map[it.key] = { description: it.description, unit: it.unit, unitPrice: it.unitPrice || 0, url: it.url, stockCode: it.stockCode,
-      edited: !!it.edited, extra: !!it.extra, rawQty: it.rawQty, rawDesc: it.rawDesc, rawUnit: it.rawUnit };
+      edited: !!it.edited, extra: !!it.extra, overridePriced: !!it.overridePriced, rawQty: it.rawQty, rawDesc: it.rawDesc, rawUnit: it.rawUnit };
   }));
   return map;
 }
@@ -4156,12 +4172,15 @@ function spItemCtlHtml(it) {
     <button data-key="${cwEsc(it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the order quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
     ${it.extra
       ? `<button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
-      : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it, but its replacement cost still counts (margin-neutral)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Not needed — don't buy it at all; the saving lands in the materials margin (quote unchanged)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑 remove</button>`}
+      : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it, but it still counts as a cost because it gets replaced (no change to profit)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Not needed — don't buy it at all; the saving becomes extra profit (quote unchanged)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑 remove</button>`}
   </span>`;
 }
 function spEditedTagHtml(it) {
-  if (it.edited) return ` <span title="Edited for this schedule — formula said ${it.rawQty != null ? Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') : 'something else'}" style="font-size:10px;color:#B45309;border:1px solid #FDE68A;border-radius:8px;padding:0 5px;cursor:help">edited</span>`;
-  return it.extra ? ` <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px">added</span>` : '';
+  let h = '';
+  if (it.edited) h += ` <span title="Edited for this schedule — formula said ${it.rawQty != null ? Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') : 'something else'}" style="font-size:10px;color:#B45309;border:1px solid #FDE68A;border-radius:8px;padding:0 5px;cursor:help">edited</span>`;
+  else if (it.extra) h += ` <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px">added</span>`;
+  if (it.overridePriced) h += ` <span title="Priced from the material cost you typed on the quote line (less the 10% markup), not the price list — so the profit figure follows what you actually charged" style="font-size:10px;color:#6D28D9;border:1px solid #DDD6FE;border-radius:8px;padding:0 5px;cursor:help">quote-priced</span>`;
+  return h;
 }
 // ☰ items — a proper read-out of one delivery (split-dialog sized, no split controls):
 // combined order lines with provenance on their own sub-line, per-item ✎/📦 controls,
@@ -4591,7 +4610,7 @@ function spRowItems(row, meta) {
   return Object.keys(acc).filter(k => acc[k] > 0).map(k => {
     const m = meta[k] || {};
     return { key: k, stockCode: m.stockCode, desc: m.description || k.split('|')[0], unit: m.unit || '', qty: Math.round(acc[k]*1000)/1000, cost: acc[k] * (m.unitPrice||0), url: m.url,
-      edited: !!m.edited, extra: !!m.extra, rawQty: m.rawQty, rawDesc: m.rawDesc };
+      edited: !!m.edited, extra: !!m.extra, overridePriced: !!m.overridePriced, rawQty: m.rawQty, rawDesc: m.rawDesc };
   }).sort((a,b) => (a.desc||'').localeCompare(b.desc||''));
 }
 // Grouped view of a row's atoms by source deliverable — the planning view.
@@ -4938,7 +4957,7 @@ function renderSchedule() {
           const money = v => '£' + Math.round(v).toLocaleString('en-GB');
           const col = diff < -0.5 ? '#DC2626' : '#15803D';
           const arrow = diff < -0.5 ? '▼' : (diff > 0.5 ? '▲' : '·');
-          return `<div title="Quote charges ${money(qm.charged)} for materials (incl. your 10% markup) → allows ${money(qm.allowed)} at supplier cost. Planned cost = delivery rows at supplier prices (edits applied, added items included; misc components ÷1.1 — approximate for legacy hand-priced ones; unpriced additions count £0) + stock at replacement cost (using stock isn't free — it gets replaced, so it's margin-neutral). Removed items cost nothing — that saving lands in the margin. Projected margin = charged − planned. Nothing here changes the quote." style="font-size:12px;color:var(--i2);margin-bottom:6px;cursor:help">Materials check: quote charges <strong style="color:var(--i1)">${money(qm.charged)}</strong> → allows <strong style="color:var(--i1)">${money(qm.allowed)}</strong> at supplier cost · planned orders <strong style="color:var(--i1)">${money(orders)}</strong>${stockCost > 0.5 ? ` + stock <strong style="color:var(--i1)">${money(stockCost)}</strong>` : ''} → margin <strong style="color:${col}">${money(projMargin)}</strong> vs ${money(qm.profit)} quoted <strong style="color:${col}">${arrow}${Math.abs(Math.round(diff)) > 0 ? ' ' + money(Math.abs(diff)) : ''}</strong></div>`;
+          return `<div title="The customer pays ${money(qm.charged)} for materials on this quote (that includes your 10% markup). Take the markup off and you have ${money(qm.allowed)} to spend with suppliers. Planned orders = everything on the delivery rows added up at buying prices, including items you've added by hand (at the price you gave them — a blank price counts as £0). Stock items aren't ordered but still count as cost — they get replaced. Removed items cost nothing, so that money becomes extra profit. If you changed a line's material cost by hand on the quote, its items are priced from your figure instead of the price list (marked quote-priced). Profit on orders = what you charge minus what you plan to spend. Profit on quote (${money(qm.profit)}) is your normal 10% markup — ▲ green means this plan beats it, ▼ red means materials are costing more than the quote allows. Nothing here changes the quote." style="font-size:12px;color:var(--i2);margin-bottom:6px;cursor:help">Materials check: quote charges <strong style="color:var(--i1)">${money(qm.charged)}</strong> → allows <strong style="color:var(--i1)">${money(qm.allowed)}</strong> at supplier cost · planned orders <strong style="color:var(--i1)">${money(orders)}</strong>${stockCost > 0.5 ? ` + stock <strong style="color:var(--i1)">${money(stockCost)}</strong>` : ''} → profit on orders <strong style="color:${col}">${money(projMargin)}</strong> vs profit on quote ${money(qm.profit)} <strong style="color:${col}">${arrow}${Math.abs(Math.round(diff)) > 0 ? ' ' + money(Math.abs(diff)) : ''}</strong></div>`;
         })()}
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
           <div style="flex:0 0 235px;min-width:210px;position:sticky;top:10px;background:white;border:1px solid var(--bd);border-radius:6px;padding:8px 10px">
