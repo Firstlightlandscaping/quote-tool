@@ -1340,16 +1340,33 @@ async function restoreRun() {
 
 // ── SUPABASE DATA FUNCTIONS ───────────────────────────────────────────────────
 
+// Paged GET for the boot load. PostgREST silently caps ANY single response at 1000
+// rows — no error, the tail just vanishes. materials crossed 1000 rows in July 2026
+// and the app silently dropped the last ~47 rows (25 deliverables fell back to the
+// stale hardcoded seed prices). EVERY table that can grow must load through this.
+// The order MUST be a total order (unique across rows) or pages can overlap/skip.
+async function sbAllPages(table, query) {
+  const pageSize = 1000;
+  let offset = 0, all = [];
+  while (true) {
+    const page = await sb('GET', table, null, `${query}&limit=${pageSize}&offset=${offset}`);
+    all = all.concat(page);
+    if (!Array.isArray(page) || page.length < pageSize) break;
+    offset += pageSize;
+  }
+  return all;
+}
+
 async function loadFromSupabase() {
-  // Load all data in parallel
+  // Load all data in parallel (each table paged — see sbAllPages)
   const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows] = await Promise.all([
-    sb('GET', 'deliverables', null, '?order=code'),
-    sb('GET', 'materials', null, '?order=del_code,idx'),
-    sb('GET', 'mpl', null, '?order=code'),
-    sb('GET', 'quotes', null, '?order=saved.desc'),
-    sb('GET', 'quote_lines', null, '?order=quote_ref,sort_order,line_id'),
-    sb('GET', 'group_templates', null, '?order=name').catch(() => []),
-    sb('GET', 'staff', null, '?order=name').catch(() => []),
+    sbAllPages('deliverables', '?order=code'),
+    sbAllPages('materials', '?order=del_code,idx,id'),
+    sbAllPages('mpl', '?order=code'),
+    sbAllPages('quotes', '?order=saved.desc,ref'),
+    sbAllPages('quote_lines', '?order=quote_ref,sort_order,line_id'),
+    sbAllPages('group_templates', '?order=name,id').catch(() => []),
+    sbAllPages('staff', '?order=name,id').catch(() => []),
     // Bank details for contracts — lives only in Supabase (behind RLS+Auth), never in this file.
     // .catch keeps load working if the table/column isn't there yet (run supabase/contract-feature.sql).
     sb('GET', 'company_settings', null, '?limit=1').catch(() => [])
