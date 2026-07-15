@@ -1721,7 +1721,7 @@ function populateSignDropdown() {
   if (!sel) return;
   const current = sel.value;
   sel.innerHTML = '<option value="">— select —</option>' +
-    staffList.map(s => `<option value="${s}" ${s===current?'selected':''}>${s}</option>`).join('');
+    staffList.map(s => `<option value="${cwEsc(s)}" ${s===current?'selected':''}>${cwEsc(s)}</option>`).join('');
   if (current) sel.value = current;
 }
 
@@ -1906,7 +1906,7 @@ function g(id) { return document.getElementById(id).value.trim(); }
 function syncH() {
   const cust = g('in-cust'), a1 = g('in-a1'), city = g('in-city'), post = g('in-post'), sign = g('in-sign'), vno = g('in-vno'), dr = g('in-date'), ref = g('in-ref');
   const ds = dr ? new Date(dr+'T00:00:00').toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : '—';
-  const cl = [cust, a1, city, post].filter(Boolean);
+  const cl = [cust, a1, city, post].filter(Boolean).map(cwEsc); // escape: '<Ltd>' in a name used to become a real element and swallow the address
   const ch = cl.length ? cl.join('<br>') : '<em style="color:var(--i4)">Enter details below</em>';
   document.getElementById('qh-cust').innerHTML = ch;
   document.getElementById('qh-date').textContent = ds;
@@ -3002,10 +3002,10 @@ function renderMiscComponents() {
   el.innerHTML = miscComponents.map((c, i) => `
     <div style="display:flex;align-items:flex-start;gap:8px;padding:8px;background:white;border-radius:6px;border:1px solid var(--bd);margin-bottom:6px">
       <div style="flex:1">
-        <div style="font-weight:600;font-size:12px">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
+        <div style="font-weight:600;font-size:12px">${c.qty} &times; ${cwEsc(c.desc)} <span style="font-weight:400;color:var(--i3)">(${cwEsc(c.unit)})</span></div>
         ${c.cost ? `<div style="font-size:11px;color:var(--i3)">Cost: £${(c.supplierCost!==undefined?c.supplierCost:(c.cost/1.1)).toFixed(2)} → Charged: £${c.cost.toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
         <div style="font-size:11px;color:var(--i3);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          ${c.supplier ? `<span>Supplier: ${c.supplier}</span>` : ''}
+          ${c.supplier ? `<span>Supplier: ${cwEsc(c.supplier)}</span>` : ''}
           ${c.url ? `<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Order link</a>` : ''}
           ${c.notes ? `<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.textContent=this.textContent.includes('▶')?'📝 Notes ▼':'📝 Notes ▶'" style="background:none;border:none;cursor:pointer;font-size:10px;color:var(--i3);padding:0">📝 Notes ▶</button><div style="display:none;font-size:11px;color:var(--i2);font-style:italic;width:100%;margin-top:2px">${c.notes}</div>` : ''}
         </div>
@@ -3506,9 +3506,9 @@ function miscEditComponentsHtml(l) {
   return (l.miscComponents||[]).map((c,ci) => `
                     <div style="display:flex;align-items:center;gap:6px;padding:6px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
                       <div style="flex:1">
-                        <div style="font-weight:600">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
+                        <div style="font-weight:600">${c.qty} &times; ${cwEsc(c.desc)} <span style="font-weight:400;color:var(--i3)">(${cwEsc(c.unit)})</span></div>
                         ${c.cost ? `<div style="color:var(--i3)">£${c.cost}/unit · £${(c.qty*c.cost).toFixed(2)} total</div>` : ''}
-                        ${c.supplier ? `<div style="color:var(--i3)">${c.supplier}</div>` : ''}
+                        ${c.supplier ? `<div style="color:var(--i3)">${cwEsc(c.supplier)}</div>` : ''}
                         ${c.url ? `<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Link</a>` : ''}
                       </div>
                       <button class="btn btn-outline btn-sm" onclick="editLineComponent(${l.id},${ci})">Edit</button>
@@ -3651,7 +3651,7 @@ function renderLines() {
             <button onclick="toggleGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--i3)">${expanded?'▼':'▶'}</button>
             <div>
               <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:2px">GROUP — ${groupLines.length} items <button onclick="editGroupHeader(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;padding:0;margin-left:4px" title="Edit group name/description">✏️</button><button onclick="showAddToGroupDialog('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--bl);text-transform:none;letter-spacing:0;font-weight:600" title="Add an existing line from this quote into this group">+ Add line</button><button onclick="removeGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--i2);text-transform:none;letter-spacing:0;font-weight:600" title="Ungroup — return items as individual lines (items kept)">↩ Ungroup</button></div>
-              <div class="l-name" style="font-weight:700">${l.name}</div>
+              <div class="l-name" style="font-weight:700">${cwEsc(l.name)}</div>
               <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
                 <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
                 <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
@@ -3661,8 +3661,8 @@ function renderLines() {
           </div>
           <!-- PRINT ONLY: matches normal deliverable format — bold heading + regular description -->
           <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
-            <div class="l-name">${l.name}</div>
-            ${(l.xdesc && l.xdesc !== l.name) ? `<div class="l-xdesc" style="margin-top:2px">${l.xdesc}</div>` : ''}
+            <div class="l-name">${cwEsc(l.name)}</div>
+            ${(l.xdesc && l.xdesc !== l.name) ? `<div class="l-xdesc" style="margin-top:2px">${cwEsc(l.xdesc)}</div>` : ''}
           </div>
         </td>
         <td class="r" style="vertical-align:top;padding-top:12px">1</td>
@@ -3690,7 +3690,7 @@ function renderLines() {
             </td>
             <td style="min-width:200px;padding-left:28px">
               <div class="l-code" style="opacity:.7">${gl.code||''}</div>
-              <div class="l-name" style="color:var(--i2)">${gl.name}</div>
+              <div class="l-name" style="color:var(--i2)">${cwEsc(gl.name)}</div>
               ${(gl.labDays||gl.labRate)?`<div class="l-lab" id="lab-tag-${gl.id}">✱ ${gl.labDays||0}d × £${gl.labRate||0}/day = £${(gl.labTotal||0).toFixed(2)}</div>`:''}<span id="lab-tag-anchor-${gl.id}"></span>
               ${(gl.matCost)?`<div id="mat-tag-${gl.id}" style="display:inline-block;margin-top:3px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${lineMat(gl).toFixed(2)}</div>`:''}<span id="mat-tag-anchor-${gl.id}"></span>
             </td>
@@ -3703,7 +3703,7 @@ function renderLines() {
           rendered += gl.misc ? miscEditPanelRow(gl) : `<tr id="lab-edit-row-${gl.id}" style="display:none">
             <td colspan="8" style="padding:0">
               <div style="padding:12px 16px 12px 44px;background:#F8FAFC;border-left:3px solid #3B82F6;border-bottom:1px solid var(--bd)">
-                <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#3B82F6;margin-bottom:10px">EDIT: ${gl.name}</div>
+                <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#3B82F6;margin-bottom:10px">EDIT: ${cwEsc(gl.name)}</div>
                 <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
                   <div>
                     <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Qty</label>
@@ -3753,9 +3753,9 @@ function renderLines() {
           <div id="misc-comps-${l.id}" style="display:none;margin-top:6px">
             ${l.miscComponents.map((c,ci) => `
               <div style="padding:6px 8px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
-                <div style="font-weight:600">${c.qty} &times; ${c.desc} <span style="font-weight:400;color:var(--i3)">(${c.unit})</span></div>
+                <div style="font-weight:600">${c.qty} &times; ${cwEsc(c.desc)} <span style="font-weight:400;color:var(--i3)">(${cwEsc(c.unit)})</span></div>
                 ${c.cost ? `<div style="color:var(--i3)">Supplier: £${(c.supplierCost!==undefined?c.supplierCost:c.cost/1.1).toFixed(2)} · Charged: £${c.cost.toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
-                ${c.supplier ? `<div style="color:var(--i3)">Supplier: ${c.supplier}</div>` : ''}
+                ${c.supplier ? `<div style="color:var(--i3)">Supplier: ${cwEsc(c.supplier)}</div>` : ''}
                 ${c.url ? `<div><a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Supplier link</a></div>` : ''}
                 ${c.notes ? `<div style="color:var(--i2);font-style:italic">${c.notes}</div>` : ''}
               </div>
@@ -3778,7 +3778,7 @@ function renderLines() {
         <button class="del-btn" onclick="rmLine(${l.id})">×</button>
       </td>
       <td style="min-width:200px">
-        <div class="no-print">${codeTag}<div class="l-name">${optTag}<span id="name-disp-${l.id}">${l.name}</span></div>
+        <div class="no-print">${codeTag}<div class="l-name">${optTag}<span id="name-disp-${l.id}">${cwEsc(l.name)}</span></div>
           <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
             <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
             <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
@@ -3786,8 +3786,8 @@ function renderLines() {
           ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}
         </div>
         <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
-          <div class="l-name" id="name-print-${l.id}">${l.name}</div>
-          ${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc" style="margin-top:2px">' + (l.xdesc) + '</div>' : ''}
+          <div class="l-name" id="name-print-${l.id}">${cwEsc(l.name)}</div>
+          ${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc" style="margin-top:2px">' + cwEsc(l.xdesc) + '</div>' : ''}
         </div>
       </td>
       <td class="r" style="vertical-align:top;padding-top:12px">
@@ -3816,7 +3816,7 @@ function renderLines() {
       rendered += `<tr id="lab-edit-row-${l.id}" style="display:none">
         <td colspan="8" style="padding:0">
           <div style="padding:12px 16px;background:#F8FAFC;border-left:3px solid #3B82F6;border-bottom:1px solid var(--bd)">
-            <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#3B82F6;margin-bottom:10px">EDIT: ${l.name}</div>
+            <div style="font-size:10px;font-weight:700;letter-spacing:.06em;color:#3B82F6;margin-bottom:10px">EDIT: ${cwEsc(l.name)}</div>
             <div style="display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap">
               <div>
                 <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Qty</label>
@@ -3943,7 +3943,7 @@ function olMatTable(l) {
     const tQty = Math.round((m.qtyPerUnit*l.qty)*1000)/1000;
     const unitPrice = m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit/m.qtyPerUnit : m.pricePerUnit);
     const tCost = unitPrice * tQty;
-    h += `<tr><td style="font-family:'DM Mono',monospace;font-size:11px">${m.stockCode||''}</td><td>${m.description}</td><td class="r">${m.qtyPerUnit}</td><td class="r" style="font-weight:600">${tQty}</td><td>${m.unit}</td><td class="r">£${unitPrice.toFixed(4)}</td><td class="r">£${tCost.toFixed(2)}</td></tr>`;
+    h += `<tr><td style="font-family:'DM Mono',monospace;font-size:11px">${m.stockCode||''}</td><td>${cwEsc(m.description)}</td><td class="r">${m.qtyPerUnit}</td><td class="r" style="font-weight:600">${tQty}</td><td>${m.unit}</td><td class="r">£${unitPrice.toFixed(4)}</td><td class="r">£${tCost.toFixed(2)}</td></tr>`;
   });
   return h + '</tbody></table>';
 }
@@ -5262,24 +5262,24 @@ function renderOrderList() {
       const gLab = members.reduce((s,m)=>s+(m.labTotal||0),0);
       const gTot = members.reduce((s,m)=>s+amt(m),0);
       const cid = 'ol-grp-'+l.groupId;
-      html += `<div class="ol-group-wrap"><div class="ol-group-header" onclick="olToggle('${cid}')"><div class="ol-group-header-left"><span class="ol-group-chevron" id="${cid}-chev">&#9660;</span><div><div class="ol-group-title">${l.name}</div><div class="ol-group-meta">Mat: £${gMat.toFixed(2)} | Labour: £${gLab.toFixed(2)} | Total: £${gTot.toFixed(2)}</div></div></div><span class="ol-group-badge">${members.length} item${members.length!==1?'s':''}</span></div><div class="ol-group-members" id="${cid}">`;
+      html += `<div class="ol-group-wrap"><div class="ol-group-header" onclick="olToggle('${cid}')"><div class="ol-group-header-left"><span class="ol-group-chevron" id="${cid}-chev">&#9660;</span><div><div class="ol-group-title">${cwEsc(l.name)}</div><div class="ol-group-meta">Mat: £${gMat.toFixed(2)} | Labour: £${gLab.toFixed(2)} | Total: £${gTot.toFixed(2)}</div></div></div><span class="ol-group-badge">${members.length} item${members.length!==1?'s':''}</span></div><div class="ol-group-members" id="${cid}">`;
       members.forEach(m => {
-        html += `<div class="ol-group-member-wrap"><div class="ol-member-head"><div><span class="ol-member-code">${m.code||''}</span><span class="ol-member-name">${m.name}</span></div><div class="ol-member-meta">Qty: ${m.qty} | Mat: £${(m.matCost*m.qty).toFixed(2)} | Total: £${amt(m).toFixed(2)}</div></div>${olMatTable(m)}</div>`;
+        html += `<div class="ol-group-member-wrap"><div class="ol-member-head"><div><span class="ol-member-code">${m.code||''}</span><span class="ol-member-name">${cwEsc(m.name)}</span></div><div class="ol-member-meta">Qty: ${m.qty} | Mat: £${(m.matCost*m.qty).toFixed(2)} | Total: £${amt(m).toFixed(2)}</div></div>${olMatTable(m)}</div>`;
       });
       html += `</div></div>`;
     } else {
-      html += `<div class="ol-section"><div class="ol-del-head"><div><div class="ol-del-name">${l.code} - ${l.name}</div><div class="ol-del-meta">Qty: ${l.qty} ${l.unit||''} | Mat: £${(l.matCost*l.qty).toFixed(2)} | Labour: ${l.labDays||0}d x £${l.labRate||0} = £${(l.labTotal||0).toFixed(2)} | Total: £${amt(l).toFixed(2)}</div></div></div>${olMatTable(l)}</div>`;
+      html += `<div class="ol-section"><div class="ol-del-head"><div><div class="ol-del-name">${l.code} - ${cwEsc(l.name)}</div><div class="ol-del-meta">Qty: ${l.qty} ${l.unit||''} | Mat: £${(l.matCost*l.qty).toFixed(2)} | Labour: ${l.labDays||0}d x £${l.labRate||0} = £${(l.labTotal||0).toFixed(2)} | Total: £${amt(l).toFixed(2)}</div></div></div>${olMatTable(l)}</div>`;
     }
   });
   if (miscLines.length) {
     miscLines.forEach(l => {
       const comps = l.miscComponents || [];
       const cid = 'ol-misc-'+l.id;
-      html += `<div class="ol-misc-wrap"><div class="ol-misc-header" onclick="olToggle('${cid}')"><div class="ol-misc-header-left"><span class="ol-misc-chevron" id="${cid}-chev">&#9660;</span><div><div class="ol-misc-title">&#128230; ${l.name}</div><div class="ol-misc-meta">Qty: ${l.qty} ${l.unit||''} | Mat: £${lineMat(l).toFixed(2)} | Labour: £${(l.labTotal||0).toFixed(2)} | Total: £${amt(l).toFixed(2)}</div></div></div><span class="ol-misc-badge">${comps.length} component${comps.length!==1?'s':''}</span></div><div class="ol-misc-body" id="${cid}">`;
+      html += `<div class="ol-misc-wrap"><div class="ol-misc-header" onclick="olToggle('${cid}')"><div class="ol-misc-header-left"><span class="ol-misc-chevron" id="${cid}-chev">&#9660;</span><div><div class="ol-misc-title">&#128230; ${cwEsc(l.name)}</div><div class="ol-misc-meta">Qty: ${l.qty} ${l.unit||''} | Mat: £${lineMat(l).toFixed(2)} | Labour: £${(l.labTotal||0).toFixed(2)} | Total: £${amt(l).toFixed(2)}</div></div></div><span class="ol-misc-badge">${comps.length} component${comps.length!==1?'s':''}</span></div><div class="ol-misc-body" id="${cid}">`;
       if (comps.length) {
         comps.forEach(c => {
           const lt = (c.cost||0)*(c.qty||0);
-          html += `<div class="ol-misc-comp-row"><div class="ol-misc-comp-main"><div class="ol-misc-comp-name">${c.desc||'-'}</div><div class="ol-misc-comp-detail">${c.qty} ${c.unit||''} x £${(c.cost||0).toFixed(2)} each</div>${c.supplier?`<div class="ol-misc-comp-supplier">Supplier: <strong>${c.supplier}</strong></div>`:''} ${c.url?`<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" class="ol-misc-comp-link">&#128279; ${cwEsc(c.url)}</a>`:''}</div><div class="ol-misc-comp-cost"><div class="ol-misc-comp-unit">£${(c.cost||0).toFixed(2)}/unit</div><div class="ol-misc-comp-total">£${lt.toFixed(2)}</div></div></div>`;
+          html += `<div class="ol-misc-comp-row"><div class="ol-misc-comp-main"><div class="ol-misc-comp-name">${cwEsc(c.desc||'-')}</div><div class="ol-misc-comp-detail">${c.qty} ${cwEsc(c.unit||'')} x £${(c.cost||0).toFixed(2)} each</div>${c.supplier?`<div class="ol-misc-comp-supplier">Supplier: <strong>${cwEsc(c.supplier)}</strong></div>`:''} ${c.url?`<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" class="ol-misc-comp-link">&#128279; ${cwEsc(c.url)}</a>`:''}</div><div class="ol-misc-comp-cost"><div class="ol-misc-comp-unit">£${(c.cost||0).toFixed(2)}/unit</div><div class="ol-misc-comp-total">£${lt.toFixed(2)}</div></div></div>`;
         });
       } else {
         html += '<div class="ol-misc-no-comps">No components stored.</div>';
@@ -6353,7 +6353,7 @@ function renderSaved() {
     return `<div class="sq-item" style="cursor:pointer" onclick="loadQuote('${sq.ref}')">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span class="sq-ref" style="font-family:'DM Mono',monospace;font-weight:600;min-width:80px">${sq.ref}</span>
-        <span class="sq-cust" style="flex:1;min-width:120px">${sq.customer||'—'}</span>
+        <span class="sq-cust" style="flex:1;min-width:120px">${cwEsc(sq.customer||'—')}</span>
         <span class="sq-date" style="color:var(--i3);font-size:12px;min-width:90px">${d}</span>
         <span style="font-weight:600;min-width:80px;text-align:right">£${total.toFixed(2)}</span>
         <select onclick="event.stopPropagation()" onchange="updateQuoteStatus('${sq.ref}',this.value)"
@@ -6810,7 +6810,7 @@ function renderGroupTemplates() {
   el.innerHTML = groupTemplates.map(t => `
     <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)">
       <div style="flex:1">
-        <div style="font-weight:600;font-size:13px">${t.name}</div>
+        <div style="font-weight:600;font-size:13px">${cwEsc(t.name)}</div>
         ${t.description ? `<div style="font-size:11px;color:var(--i3);margin-top:2px">${t.description}</div>` : ''}
       </div>
       <button class="btn btn-outline btn-sm" onclick="editGroupTemplate(${t.id})">Edit</button>
@@ -6978,7 +6978,7 @@ function renderNDMats() {
   document.getElementById('nd-mats-list').innerHTML=ndMats.length
     ? ndMats.map((m,i)=>`<div style="display:flex;align-items:center;gap:8px;font-size:12px;padding:6px 10px;background:#F8F7F4;border-radius:6px">
         <span style="font-family:'DM Mono',monospace;font-size:10px;color:var(--i3);min-width:70px">${m.stockCode}</span>
-        <span style="flex:1">${m.description}</span>
+        <span style="flex:1">${cwEsc(m.description)}</span>
         <span style="color:var(--i3)">${m.qtyPerUnit} ${m.unit}</span>
         <span style="font-family:'DM Mono',monospace">£${m.pricePerUnit.toFixed(2)}</span>
         <button class="btn btn-red btn-sm" onclick="ndMats.splice(${i},1);renderNDMats()">×</button>
@@ -7630,7 +7630,7 @@ function openXdescModal(id) {
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">${l.note ? 'TEXT NOTE' : 'CLIENT DESCRIPTION — ' + l.name}</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i3);margin-bottom:6px">${l.note ? 'TEXT NOTE' : 'CLIENT DESCRIPTION — ' + cwEsc(l.name)}</div>
       <p style="font-size:11px;color:var(--i3);margin:0 0 10px">${l.note ? 'This text prints on the quote as a note, with no price columns.' : 'This text prints on the quote. Internal name never shown to client.'}</p>
       <textarea id="xdesc-modal-ta" rows="8" style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical">${(l.xdesc||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
       <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
@@ -7745,7 +7745,7 @@ function showGroupDialog(selected) {
         <label>Use saved template (optional)</label>
         <select id="gd-template" onchange="applyGroupTemplate()" style="width:100%">
           <option value="">— new group —</option>
-          ${groupTemplates.map(t => `<option value="${t.id}" data-desc="${(t.description||'').replace(/"/g,'&quot;')}">${t.name}</option>`).join('')}
+          ${groupTemplates.map(t => `<option value="${t.id}" data-desc="${(t.description||'').replace(/"/g,'&quot;')}">${cwEsc(t.name)}</option>`).join('')}
         </select>
        </div>`
     : '';
