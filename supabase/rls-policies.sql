@@ -6,13 +6,15 @@
 -- you've confirmed you can log in to the target project. The dashboard bypasses RLS, so a
 -- bad policy can always be undone from there (see the disable snippet at the bottom).
 
--- ── Enable RLS + an authenticated-only "full access" policy on all 7 tables ──────────
+-- ── Enable RLS + an authenticated-only "full access" policy on all app tables ────────
 -- No policy for the anon role = anon is denied everything (full lockdown).
 do $$
 declare t text; p record;
 begin
-  -- 8 tables: the original 7 + company_settings (bank details — added with the contract feature).
-  foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings']
+  -- 9 tables: the original 7 + company_settings (bank details — added with the contract feature)
+  -- + qt_counter (the quote-number counter behind next_qt_number(); not in backups, discovered
+  --   2026-07-15 via the Supabase advisor email — it had RLS off and was anon-writable on live).
+  foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings','qt_counter']
   loop
     begin
       execute format('alter table public.%I enable row level security', t);
@@ -57,7 +59,7 @@ end $$;
 -- do $$
 -- declare t text;
 -- begin
---   foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings']
+--   foreach t in array array['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings','qt_counter']
 --   loop
 --     execute format('alter table public.%I disable row level security', t);
 --   end loop;
