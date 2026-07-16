@@ -4133,7 +4133,7 @@ function spRollup() {
   (p.extraItems || []).forEach(e => {
     const target = (ov['extra:' + e.id] || e.supplier || SUP_UNASSIGNED).trim() || SUP_UNASSIGNED;
     getSup(target).items.push({ key: 'extra:' + e.id, stockCode: '', description: e.desc || '', unit: e.unit || '',
-      totalQty: e.qty || 0, totalCost: (e.qty || 0) * (e.price || 0), supCost: (e.qty || 0) * (e.price || 0), unitPrice: e.price || 0, url: '', extra: true,
+      totalQty: e.qty || 0, totalCost: (e.qty || 0) * (e.price || 0), supCost: (e.qty || 0) * (e.price || 0), unitPrice: e.price || 0, url: e.url || '', extra: true,
       sources: [{ name: 'added item', qty: e.qty || 0, lineId: -1 }] });
   });
   // 3. material edits: plan-scope qty/desc/unit overrides (quote & Order List untouched).
@@ -4145,6 +4145,9 @@ function spRollup() {
     it.rawQty = it.totalQty; it.rawDesc = it.description; it.rawUnit = it.unit;
     if (e.desc != null && e.desc !== '') it.description = e.desc;
     if (e.unit != null) it.unit = e.unit;
+    // plan-scope supplier-link override (e.g. specified product out of stock — point THIS
+    // job at a substitute without touching the price list); empty = keep the mpl link
+    if (e.url) { it.rawUrl = it.url; it.url = e.url; }
     if (e.qty != null && it.totalQty > 0 && e.qty !== it.totalQty) {
       const f = e.qty / it.totalQty;
       it.sources.forEach(src => { src.qty = Math.round(src.qty * f * 1000) / 1000; });
@@ -4244,7 +4247,7 @@ function spItemsDialog(rowIdx) {
       : (srcs.length === 1 ? 'from ' + cwEsc(lineName(srcs[0].lineId)) : ''));
     return `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
       <div style="display:flex;align-items:center;gap:10px">
-        <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
+        <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
         ${spItemCtlHtml(it)}
       </div>
       ${prov ? `<div style="font-size:12px;color:var(--i3);margin-top:2px;padding-left:2px">${prov}</div>` : ''}
@@ -4337,10 +4340,11 @@ function spMatEditDialog(key) {
       <h3 style="margin:0 0 4px;font-size:16px">✎ Edit order line</h3>
       <p style="font-size:12px;color:var(--i3);margin:0 0 12px">Changes what you ORDER on this schedule only — the quote and Order List keep the formula's figures${it.edited && it.rawQty != null ? ' (formula: ' + Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') + (it.rawUnit ? ' (' + cwEsc(it.rawUnit) + ')' : '') + ')' : ''}.</p>
       <div class="fg" style="margin-bottom:10px"><label>Description</label><input type="text" id="sp-me-desc" value="${cwEsc(it.description)}" style="width:100%"></div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px">
         <div class="fg"><label>Quantity</label><input type="number" id="sp-me-qty" value="${Math.round(it.totalQty*1000)/1000}" min="0" step="any" style="width:100%"></div>
         <div class="fg"><label>Unit</label><input type="text" id="sp-me-unit" value="${cwEsc(it.unit||'')}" placeholder="e.g. length, kg, pack" style="width:100%"></div>
       </div>
+      <div class="fg" style="margin-bottom:16px"><label>Supplier link (URL) — shown on the item and pushed to the TeamGantt note</label><input type="text" id="sp-me-url" value="${cwEsc(it.url||'')}" placeholder="https://... (e.g. the substitute product if the specified one is out of stock)" style="width:100%"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         ${it.edited ? '<button class="btn btn-outline" onclick="spResetMatEdit()" title="Back to the formula quantity and wording" style="margin-right:auto">↺ Reset to formula</button>' : ''}
         <button class="btn btn-outline" onclick="document.getElementById('sp-mat-dialog').remove()">Cancel</button>
@@ -4356,6 +4360,8 @@ function spSaveMatEdit() {
   const qty = parseFloat(document.getElementById('sp-me-qty').value);
   const desc = document.getElementById('sp-me-desc').value.trim();
   const unit = document.getElementById('sp-me-unit').value.trim();
+  const urlRaw = (document.getElementById('sp-me-url')||{value:''}).value.trim();
+  const url = urlRaw ? normSupplierUrl(urlRaw) : '';
   if (!(qty > 0)) { toast('Enter a quantity'); return; }
   const p = spEnsurePlan();
   const supName = spSupplierOfKey(key);
@@ -4363,9 +4369,9 @@ function spSaveMatEdit() {
   const cur = supNow ? ((supNow.items.find(i => i.key === key)||{}).totalQty || 0) : 0;
   if (key.indexOf('extra:') === 0) {
     const ex = (p.extraItems||[]).find(e => 'extra:' + e.id === key);
-    if (ex) { ex.qty = qty; if (desc) ex.desc = desc; ex.unit = unit; }
+    if (ex) { ex.qty = qty; if (desc) ex.desc = desc; ex.unit = unit; ex.url = url; }
   } else {
-    (p.matEdits = p.matEdits || {})[key] = { qty, desc, unit };
+    (p.matEdits = p.matEdits || {})[key] = { qty, desc, unit, url };
   }
   // keep split drops in ratio (single-row suppliers re-derive via sync anyway)
   if (cur > 0 && qty !== cur && supName) {
@@ -4399,7 +4405,7 @@ function spAxPush(arr) {
   arr.forEach((e, k) => {
     const id = Date.now() + k + Math.floor(Math.random() * 100);
     const sup = (e.supplier || '').trim();
-    p.extraItems.push({ id, supplier: sup, desc: e.desc, qty: Math.round(e.qty * 1000) / 1000, unit: e.unit || '', price: e.price || 0 });
+    p.extraItems.push({ id, supplier: sup, desc: e.desc, qty: Math.round(e.qty * 1000) / 1000, unit: e.unit || '', price: e.price || 0, url: e.url ? normSupplierUrl(e.url) : '' });
     const rows = spRowsOf(sup || SUP_UNASSIGNED);
     if (rows.length) (rows[0].alloc = rows[0].alloc || []).push({ lineId: -1, key: 'extra:' + id, qty: Math.round(e.qty * 1000) / 1000 });
   });
@@ -4459,6 +4465,7 @@ function spAddExtraDialog(rowIdx) {
           <div class="fg" style="margin:0"><label>£ each <span style="font-weight:400;color:var(--i3)">(opt.)</span></label><input type="number" id="sp-ax-price" min="0" step="0.01" placeholder="0" style="width:76px"></div>
           <button class="btn btn-outline btn-sm" onclick="spAxAddManual()">Add</button>
         </div>
+        <div class="fg" style="margin:8px 0 0"><label>Link (URL) <span style="font-weight:400;color:var(--i3)">(opt. — shown on the item, pushed to the TeamGantt note)</span></label><input type="text" id="sp-ax-url" placeholder="https://..." style="width:100%"></div>
       </div>
       <div style="display:flex;justify-content:flex-end">
         <button class="btn btn-primary" onclick="document.getElementById('sp-extra-dialog').remove()">Done</button>
@@ -4502,13 +4509,14 @@ function spAxAddDeliverable() {
   const mult = parseFloat(document.getElementById('sp-ax-dqty').value) || 1;
   const d = dels.find(x => x.code === code);
   if (!d) { toast('Select a deliverable first'); return; }
-  const mplSup = {};
-  mpl.forEach(m => { if (m.code && m.supplier) mplSup[m.code] = m.supplier.trim(); });
+  const mplSup = {}, mplUrl = {};
+  mpl.forEach(m => { if (!m.code) return; if (m.supplier) mplSup[m.code] = m.supplier.trim(); if (m.supplierUrl) mplUrl[m.code] = m.supplierUrl; });
   const items = (d.materials || []).map(m => ({
     supplier: mplSup[m.stockCode] || '',
     desc: m.description, unit: m.unit,
     qty: Math.round(m.qtyPerUnit * mult * 1000) / 1000,
-    price: m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit)
+    price: m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit),
+    url: mplUrl[m.stockCode] || ''
   })).filter(it => it.qty > 0);
   if (!items.length) { toast('That deliverable has no materials to add'); return; }
   spAxPush(items);
@@ -4522,7 +4530,7 @@ function spAxAddMplSel() {
   const m = mpl.find(x => x.code === code);
   if (!m) { toast('Select a material first'); return; }
   const qty = parseFloat(document.getElementById('sp-ax-mqty').value) || 1;
-  spAxPush([{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0 }]);
+  spAxPush([{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0, url: m.supplierUrl || '' }]);
   document.getElementById('sp-ax-mat').value = '';
   document.getElementById('sp-ax-msearch').value = '';
   document.getElementById('sp-ax-mqty').value = '1';
@@ -4538,9 +4546,9 @@ function spAxAddManual() {
   if (!(price > 0) && !confirm('No £ entered — "' + desc + '" will count as £0 cost in the materials check, making the margin look better than it is.\n\nAdd without a price?')) return;
   spAxPush([{ supplier: document.getElementById('sp-ax-sup').value, desc, qty,
     unit: document.getElementById('sp-ax-unit').value.trim(),
-    price }]);
+    price, url: (document.getElementById('sp-ax-url')||{value:''}).value.trim() }]);
   toast('✓ ' + qty + ' × ' + desc + ' added');
-  ['sp-ax-desc','sp-ax-unit','sp-ax-price'].forEach(id => { document.getElementById(id).value = ''; });
+  ['sp-ax-desc','sp-ax-unit','sp-ax-price','sp-ax-url'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('sp-ax-qty').value = '1';
   document.getElementById('sp-ax-desc').focus();
 }
@@ -4609,16 +4617,15 @@ function spSyncDeliveries(p) {
       if (drift) rows.forEach(r => r._drift = true);
     }
   });
-  // A supplier whose EVERY item is stocked/removed (atoms exist but are empty): scrub any
-  // leftover allocs and drop undated rows — otherwise stocking/removing the last item left
-  // an empty shell row behind. Dated rows are kept (the user set that date deliberately)
-  // and can be × deleted or reused.
+  // A supplier whose EVERY item is stocked/removed (atoms exist but are empty): drop the
+  // row — an empty delivery orders nothing. Since the row × was removed (2026-07-15) this
+  // applies to DATED rows too (previously kept), because self-dropping is now the only way
+  // an empty row can go.
   p.deliveries = p.deliveries.filter(row => {
     const a = atoms[row.supplier];
     if (!a || a.length) return true;
-    if (row.alloc.length) { row.alloc = []; spDirty = true; }
-    if (!row.date) { spDirty = true; return false; }
-    return true;
+    spDirty = true;
+    return false;
   });
   // The Unassigned row is derived bookkeeping, not planning: assigning its LAST item removes
   // the whole bucket from the rollup, so the supplier loop above never revisits the row and
@@ -4696,9 +4703,22 @@ function spAssignSupplierSel(sel) {
   }
   const p = spEnsurePlan();
   (p.supplierOverrides = p.supplierOverrides || {})[key] = sup;
+  // A SPLIT supplier's rows are hand-arranged, so sync won't place the item there —
+  // without an explicit allocation it lands in limbo: counted in the money but on no
+  // row's ☰ list or TeamGantt checklist (Neal hit this 2026-07-15). Drop it on the
+  // supplier's first row; the ⑃ split dialog can move it afterwards.
+  let rowNote = '';
+  const rows = spRowsOf(sup);
+  if (rows.length > 1) {
+    const mine = (spAtoms()[sup] || []).filter(a => a.key === key);
+    const allocated = new Set();
+    rows.forEach(r => (r.alloc || []).forEach(a => { if (a.key === key) allocated.add(a.lineId); }));
+    mine.filter(a => !allocated.has(a.lineId)).forEach(a => (rows[0].alloc = rows[0].alloc || []).push({ ...a }));
+    rowNote = ' — added to "' + (rows[0].label || sup) + '" (move it via ⑃ split if needed)';
+  }
   const meta = spItemMeta()[key];
   spMark(); renderSchedule();
-  toast('✓ ' + ((meta && meta.description) || 'material') + ' → ' + sup + ' (this schedule only)');
+  toast('✓ ' + ((meta && meta.description) || 'material') + ' → ' + sup + rowNote + ' (this schedule only)');
 }
 function spLineLabel(id) {
   if (id === -1) return '(added item)';
@@ -4920,7 +4940,7 @@ function renderSchedule() {
     if (isUn) {
       itemsHtml = items.map(it => `
         <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--i1);padding:3px 0;flex-wrap:wrap">
-          <span style="flex:1;min-width:160px"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${spEditedTagHtml(it)}</span>
+          <span style="flex:1;min-width:160px"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
           <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:170px;font-weight:600">
             <option value="">assign supplier…</option>
             ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
@@ -4947,7 +4967,7 @@ function renderSchedule() {
         <span style="font-size:12px;color:var(--i2);white-space:nowrap">${items.length} · <strong>£${Math.round(tot).toLocaleString('en-GB')}</strong></span>
         ${isUn ? '' : `<button onclick="spItemsDialog(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Open this delivery's materials — edit, mark as stock, add items">☰ items</button>`}
         ${!isUn && items.length ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Split this delivery — move a task's section or part-quantities to a new drop">⑃ split</button>` : ''}
-        <button onclick="spDelDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 8px;color:#DC2626" title="Remove this delivery row">×</button>
+        ${(!isUn && !row._drift && p.deliveries.filter(r => r.supplier === row.supplier).length > 1) ? `<button data-sup="${cwEsc(row.supplier)}" onclick="spResetSupplier(this.dataset.sup)" title="Merge this supplier's split rows back into one fresh row (their dates are lost)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 8px;color:var(--i2)">⑃ merge</button>` : ''}
       </div>
       ${row._drift ? `<div style="font-size:11px;color:#DC2626;margin-top:3px;font-weight:600">⚠ The quote changed since this supplier was split — quantities may not match the Order List. <button data-sup="${cwEsc(row.supplier)}" onclick="spResetSupplier(this.dataset.sup)" style="background:none;border:1px solid #DC2626;border-radius:3px;cursor:pointer;font-size:11px;padding:1px 6px;color:#DC2626">Reset ${cwEsc(row.supplier)} rows</button></div>` : ''}
       ${isUn ? `<div style="font-size:11px;color:#92400E;margin-top:3px;font-weight:500">Assigning here affects THIS schedule only. If pushed as-is, this becomes a dated "⚠ Unassigned" task so nothing is missed.</div>` : ''}
@@ -5090,36 +5110,10 @@ function spDelivDateFromTask(i, sel) {
   d.date = spPrevWorkday(start);
   spMark(); renderSchedule();
 }
-function spDelDeliv(i) {
-  const p = spEnsurePlan();
-  const d = p.deliveries[i];
-  if (!d) return;
-  // Sync re-creates a row for any supplier that still has live materials, so a plain
-  // splice was a silent no-op for quote-backed rows (Neal-reported 2026-07-15). Be
-  // honest per situation instead:
-  const rowsForSupplier = p.deliveries.filter(r => r.supplier === d.supplier).length;
-  const live = ((spRollup().find(s => s.name === d.supplier) || { items: [] }).items).filter(x => !x.stock && !x.removed);
-  if (rowsForSupplier === 1 && live.length) {
-    const extras = live.filter(x => x.extra);
-    if (extras.length === live.length) {
-      // row exists ONLY because of added items — deleting it deletes them too
-      if (!confirm('Remove this delivery AND its ' + extras.length + ' added item' + (extras.length > 1 ? 's' : '') + '? They are order-only items, so nothing on the quote changes.')) return;
-      const keys = new Set(extras.map(x => x.key));
-      p.extraItems = (p.extraItems || []).filter(e => !keys.has('extra:' + e.id));
-      keys.forEach(k => { if (p.matEdits) delete p.matEdits[k]; if (p.supplierOverrides) delete p.supplierOverrides[k]; });
-      (p.deliveries || []).forEach(r => { r.alloc = (r.alloc || []).filter(a => !keys.has(a.key)); });
-      p.deliveries.splice(i, 1);
-      spMark(); renderSchedule();
-      return;
-    }
-    // quote-backed: the row would bounce straight back — explain instead of pretending
-    alert('This delivery has ' + live.length + ' material' + (live.length > 1 ? 's' : '') + ' from the quote, so the row would just come back — every quote material needs a delivery to live on.\n\nTo take materials off the order, open ☰ items and use 📦 stock or 🗑 remove — the row disappears by itself once it has nothing left to order.');
-    return;
-  }
-  if (!confirm('Remove the delivery "' + (d.label || d.supplier) + '"?')) return;
-  p.deliveries.splice(i, 1);
-  spMark(); renderSchedule();
-}
+// Row × REMOVED (Neal 2026-07-15): rows are DERIVED from where materials live, so the one
+// mental model is "manage items via ☰ (📦 stock / 🗑 remove / delete extras); an empty row
+// disappears by itself" — sync now drops empty rows even when dated. Split rows merge back
+// via the ⑃ merge button (spResetSupplier), which now shows on all split rows, not just drift.
 function spToggleRowItems(i) { const el = document.getElementById('sp-row-items-' + i); if (el) el.style.display = el.style.display === 'none' ? 'block' : 'none'; }
 function spRegenDeliveries() {
   if ((spEnsurePlan().deliveries||[]).length && !confirm('Rebuild the delivery rows from the current Order List?\n\nThis replaces the rows (and their dates/splits) with one fresh row per supplier.')) return;
@@ -5171,9 +5165,18 @@ function spSplitDeliv(i) {
           </div>`).join('')}
       `).join('')}
       </div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
-        <button class="btn btn-outline" onclick="document.getElementById('sp-split-dialog').remove()">Cancel</button>
-        <button class="btn btn-primary" onclick="spConfirmSplit(${i})">Split → new delivery</button>
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('sp-split-dialog').remove()" style="margin-right:auto">Cancel</button>
+        ${(() => {
+          // Destination picker (2026-07-15, Neal): when the supplier already has other rows,
+          // moved items can go INTO one of them instead of always creating a new delivery.
+          const others = p.deliveries.filter(d => d.supplier === row.supplier && d !== row);
+          if (!others.length) return `<button class="btn btn-primary" onclick="spConfirmSplit(${i})">Split → new delivery</button>`;
+          return `<span style="font-size:12px;color:var(--i3)">to</span><select id="sp-split-dest" style="padding:7px 8px;border:1px solid var(--bd);border-radius:5px;font-size:13px;max-width:230px">
+            <option value="new">a NEW delivery</option>
+            ${others.map(r => `<option value="${r.id}">${cwEsc(r.label || r.supplier)}${r.date ? ' (' + spNice(r.date) + ')' : ''}</option>`).join('')}
+          </select><button class="btn btn-primary" onclick="spConfirmSplit(${i})">Move →</button>`;
+        })()}
       </div>
     </div>`;
   document.body.appendChild(panel);
@@ -5206,6 +5209,24 @@ function spConfirmSplit(i) {
   });
   row.alloc = row.alloc.filter(a => a.qty > 0.0005);
   if (!newAlloc.length) { toast('Nothing moved'); return; }
+  // Destination = an EXISTING row of this supplier (picker shows only when others exist):
+  // merge the moved atoms into it; if that empties the source row, it goes — an empty
+  // delivery orders nothing (same rule as the sync shell-drop).
+  const destSel = document.getElementById('sp-split-dest');
+  if (destSel && destSel.value !== 'new') {
+    const dest = p.deliveries.find(d => String(d.id) === destSel.value);
+    if (dest) {
+      newAlloc.forEach(a => {
+        const ex = (dest.alloc = dest.alloc || []).find(x => x.lineId === a.lineId && x.key === a.key);
+        if (ex) ex.qty = Math.round((ex.qty + a.qty) * 1000) / 1000; else dest.alloc.push(a);
+      });
+      if (!row.alloc.length) p.deliveries.splice(i, 1);
+      document.getElementById('sp-split-dialog').remove();
+      spMark(); renderSchedule();
+      toast('✓ moved to "' + (dest.label || dest.supplier) + '"');
+      return;
+    }
+  }
   // Name the new drop after its TASK when the move is one task's section; else after a
   // cleanly-moved single deliverable; else numbered.
   const taskOf2 = {};
