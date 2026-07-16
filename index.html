@@ -5037,6 +5037,7 @@ function renderSchedule() {
           <option value="">📅 before…</option>
           ${p.tasks.map((t,ti) => { const d = dates[ti]; return d ? `<option value="${d.start}">${ti+1}. ${cwEsc((t.name||'').slice(0,18))} (${spNice(d.start)})</option>` : ''; }).join('')}
         </select>` : ''}
+        ${isUn ? '' : `<button onclick="spToggleCollect(${i})" title="${row.collect ? 'WE collect this — pushed to TeamGantt as “Collect — …”. Click for delivered.' : 'Delivered by the supplier. Click if we COLLECT it instead.'}" style="background:${row.collect ? '#FFFBEB' : 'none'};border:1px solid ${row.collect ? '#F59E0B' : 'var(--bd)'};border-radius:4px;cursor:pointer;font-size:12px;padding:3px 8px;color:${row.collect ? '#92400E' : 'var(--i3)'};font-weight:${row.collect ? '600' : '400'}">${row.collect ? '🚗 collect' : '🚚'}</button>`}
         <span style="font-size:12px;color:var(--i2);white-space:nowrap">${items.length} · <strong>£${Math.round(tot).toLocaleString('en-GB')}</strong></span>
         ${isUn ? '' : `<button onclick="spItemsDialog(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Open this delivery's materials — edit, mark as stock, add items">☰ items</button>`}
         ${!isUn && items.length ? `<button onclick="spSplitDeliv(${i})" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)" title="Split this delivery — move a task's section or part-quantities to a new drop">⑃ split</button>` : ''}
@@ -5171,6 +5172,10 @@ function spMoveTask(i, dir) {
 function spDelTask(i) { spEnsurePlan().tasks.splice(i, 1); spMark(); renderSchedule(); }
 function spDelivLabel(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.label = v.trim() || d.supplier; spMark(); } }
 function spDelivDate(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.date = v; spMark(); renderSchedule(); } }
+// Collection vs delivery (2026-07-16, Neal): same planning object — one supplier, one date,
+// one checklist, one TeamGantt task — the flag only changes who drives. The pushed task
+// name carries it (spExportForPush), so the crew see it without opening anything.
+function spToggleCollect(i) { const d = spEnsurePlan().deliveries[i]; if (d) { d.collect = !d.collect; spMark(); renderSchedule(); } }
 function spPrevWorkday(iso) { const d = new Date(iso + 'T00:00:00'); do { d.setDate(d.getDate() - 1); } while (!spIsWorkday(d)); return spISO(d); }
 // 📅 before… quick-pick: sets the delivery date to the working day before the chosen
 // task starts. A one-off COPY the user chose — nothing auto-fills or follows tasks.
@@ -5345,7 +5350,8 @@ function spExportForPush() {
     deliveries: p.deliveries.map(row => {
       const items = spRowItems(row, meta);
       return {
-        name: row.label || row.supplier,
+        name: (row.collect ? '🚗 Collect — ' : '') + (row.label || row.supplier),
+        collect: !!row.collect,
         supplier: row.supplier,
         date: row.date || '',
         unassigned: row.supplier === SUP_UNASSIGNED,
