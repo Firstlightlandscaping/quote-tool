@@ -4058,18 +4058,66 @@ function spISO(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padSta
 function spNice(iso) { if (!iso) return ''; const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' }); }
 function spIsWorkday(d) { return d.getDay() !== 0 && d.getDay() !== 6; }
 function spNextWorkday(d) { const x = new Date(d); while (!spIsWorkday(x)) x.setDate(x.getDate()+1); return x; }
-// Sequential cascade: each task starts the first working day after the previous ends.
+// Sequential cascade at HALF-DAY resolution (2026-07-15): each task starts the first
+// free half-day after the previous ends — so 1.5d + 0.5d fits in two days, the 0.5d
+// task sharing the second date. A task with a manual `startISO` (typed on its row)
+// starts THERE instead, and the cascade continues from ITS end — same date as another
+// task = parallel working, deliberately allowed (capacity gauge keeps the maths honest).
 function spCascade(startISO, tasks) {
   if (!startISO) return tasks.map(() => null);
-  let cur = spNextWorkday(new Date(startISO + 'T00:00:00'));
+  const halfStep = pos => pos.half === 0
+    ? { d: new Date(pos.d), half: 1 }
+    : (() => { const nd = new Date(pos.d); nd.setDate(nd.getDate() + 1); return { d: spNextWorkday(nd), half: 0 }; })();
+  let cur = { d: spNextWorkday(new Date(startISO + 'T00:00:00')), half: 0 };
   return tasks.map(t => {
-    const days = Math.max(1, Math.round(t.days || 1));
-    const start = new Date(cur);
-    let end = new Date(start), used = 1;
-    while (used < days) { end.setDate(end.getDate()+1); if (spIsWorkday(end)) used++; }
-    cur = spNextWorkday(new Date(end.getTime() + 86400000));
+    const halves = Math.max(1, Math.round((t.days || 1) * 2));
+    let pos = t.startISO
+      ? { d: spNextWorkday(new Date(t.startISO + 'T00:00:00')), half: 0 }
+      : { d: new Date(cur.d), half: cur.half };
+    const start = new Date(pos.d);
+    for (let k = 1; k < halves; k++) pos = halfStep(pos);
+    const end = new Date(pos.d);
+    // Cursor = the LATEST end seen so far, so an auto task after a parallel/manual one
+    // follows the longest-running work (paving 2d ∥ edging 1d → pointing starts after
+    // the PAVING), not whatever line happens to sit directly above it.
+    const next = halfStep(pos);
+    if (next.d > cur.d || (next.d.getTime() === cur.d.getTime() && next.half > cur.half)) cur = next;
     return { start: spISO(start), end: spISO(end) };
   });
+}
+// Manual task start date (empty = back to automatic cascade).
+function spTaskDate(i, v) {
+  const t = spEnsurePlan().tasks[i];
+  if (!t) return;
+  if (v) t.startISO = v; else delete t.startISO;
+  spMark(); renderSchedule();
+}
+// Changing the JOB START DATE slides the whole plan: cascaded tasks move by definition,
+// and manually-typed task dates shift by the same number of working days — so a plan
+// made months out stays coherent when the real start firms up.
+function spSetStartDate(v) {
+  const p = spEnsurePlan();
+  const old = p.startDate;
+  if (old && v && old !== v) {
+    const delta = spWorkdayDiff(old, v);
+    if (delta) (p.tasks || []).forEach(t => { if (t.startISO) t.startISO = spAddWorkdays(t.startISO, delta); });
+  }
+  p.startDate = v; spMark(); renderSchedule();
+}
+function spWorkdayDiff(aISO, bISO) {
+  const a = new Date(aISO + 'T00:00:00'), b = new Date(bISO + 'T00:00:00');
+  const sign = b >= a ? 1 : -1;
+  const from = sign === 1 ? a : b, to = sign === 1 ? b : a;
+  let n = 0; const d = new Date(from);
+  while (d < to) { d.setDate(d.getDate() + 1); if (spIsWorkday(d)) n++; }
+  return n * sign;
+}
+function spAddWorkdays(iso, n) {
+  const d = new Date(iso + 'T00:00:00');
+  const step = n >= 0 ? 1 : -1;
+  let left = Math.abs(n);
+  while (left > 0) { d.setDate(d.getDate() + step); if (spIsWorkday(d)) left--; }
+  return spISO(d);
 }
 function spQuoteLabour() {
   const cost = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labTotal||0), 0);
@@ -4758,7 +4806,7 @@ function spLabDaysFor(ids) { return (ids||[]).reduce((s,id) => s + spManDaysOf(l
 // Tasks LINK to the quote lines they cover (task.srcLineIds). Grey-out in the quote
 // column is DERIVED from those links, so deleting a task un-greys its lines.
 function spNewTask(name, days, srcLineIds) {
-  spEnsurePlan().tasks.push({ id: Date.now() + Math.floor(Math.random()*1000), name: name || '', days: Math.max(1, Math.round(days||1)), srcLineIds: srcLineIds || [] });
+  spEnsurePlan().tasks.push({ id: Date.now() + Math.floor(Math.random()*1000), name: name || '', days: Math.max(0.5, Math.round((days||1)*2)/2), srcLineIds: srcLineIds || [] });
 }
 // + on one line: task named from it, days from its labour ÷ crew, linked (moves it
 // out of any other task — one task per deliverable).
@@ -4767,7 +4815,7 @@ function spSeedTask(lineId) {
   if (!l) return;
   const p = spEnsurePlan();
   const crew = Math.max(1, p.crewSize || 1);
-  spNewTask(l.name, Math.ceil(spManDaysOf(l) / crew), []);
+  spNewTask(l.name, Math.max(0.5, Math.round(spManDaysOf(l) / crew * 2) / 2), []);
   spAssignToTask(p.tasks.length - 1, [lineId]);
 }
 // ⊕ ticked lines → ONE combined task (their labour summed ÷ crew).
@@ -4776,7 +4824,7 @@ function spSeedSelected() {
   if (!picked.length) { toast('Tick some quote lines first'); return; }
   const p = spEnsurePlan();
   const crew = Math.max(1, p.crewSize || 1);
-  spNewTask(picked[0].name, Math.ceil(picked.reduce((s,l) => s + spManDaysOf(l), 0) / crew), []);
+  spNewTask(picked[0].name, Math.max(0.5, Math.round(picked.reduce((s,l) => s + spManDaysOf(l), 0) / crew * 2) / 2), []);
   spAssignToTask(p.tasks.length - 1, picked.map(l => l.id));
 }
 // ➕ ticked lines → one task EACH, in quote order.
@@ -4786,7 +4834,7 @@ function spSeedSeparate() {
   const p = spEnsurePlan();
   const crew = Math.max(1, p.crewSize || 1);
   picked.forEach(l => {
-    spNewTask(l.name, Math.ceil(spManDaysOf(l) / crew), []);
+    spNewTask(l.name, Math.max(0.5, Math.round(spManDaysOf(l) / crew * 2) / 2), []);
     spAssignToTask(p.tasks.length - 1, [l.id]);
   });
 }
@@ -4846,7 +4894,7 @@ function spDropNewTask(ev, el) {
   if (!ids.length) return;
   const first = lines.find(l => l.id === ids[0]);
   const crew = Math.max(1, spEnsurePlan().crewSize || 1);
-  spNewTask(first ? first.name : 'New task', Math.ceil(spLabDaysFor(ids) / crew), []);
+  spNewTask(first ? first.name : 'New task', Math.max(0.5, Math.round(spLabDaysFor(ids) / crew * 2) / 2), []);
   spAssignToTask(spEnsurePlan().tasks.length - 1, ids);
 }
 function spMark() { spDirty = true; const el = document.getElementById('sp-status'); if (el) { el.textContent = '● unsaved changes'; el.style.color = '#B45309'; } }
@@ -4862,10 +4910,14 @@ function renderSchedule() {
   const ref = (document.getElementById('in-ref')||{value:''}).value.trim();
   const cust = (document.getElementById('in-cust')||{value:''}).value.trim();
   const dates = spCascade(p.startDate, p.tasks);
-  const schedDays = p.tasks.reduce((s,t) => s + Math.max(1, Math.round(t.days||1)), 0);
   const lab = spQuoteLabour();
   const crew = Math.max(1, p.crewSize || 1);
-  const lastEnd = dates.length && dates[dates.length-1] ? dates[dates.length-1].end : null;
+  // Elapsed span, not Σ days — manual dates and half-day sharing mean tasks can overlap,
+  // and a manually-dated task mid-list can end LATER than the last task.
+  const spans = dates.filter(Boolean);
+  const firstStart = spans.length ? spans.reduce((m,d) => d.start < m ? d.start : m, spans[0].start) : null;
+  const lastEnd = spans.length ? spans.reduce((m,d) => d.end > m ? d.end : m, spans[0].end) : null;
+  const schedDays = firstStart && lastEnd ? spWorkdayDiff(firstStart, lastEnd) + 1 : 0;
   const overDeadline = p.deadline && lastEnd && lastEnd > p.deadline;
   // Reconcile delivery rows with the quote's current materials (migrates legacy rows,
   // auto-tracks unsplit suppliers, drift-flags split ones, adds rows for new suppliers).
@@ -4927,9 +4979,11 @@ function renderSchedule() {
         <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
         <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" style="flex:1;min-width:130px;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
         ${attach}${quoted}
-        <input type="number" value="${Math.max(1, Math.round(t.days||1))}" min="1" step="1" onchange="spTaskDays(${i},this.value)" title="Working days" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
+        <input type="number" value="${Math.max(0.5, Math.round((t.days||1)*2)/2)}" min="0.5" step="0.5" onchange="spTaskDays(${i},this.value)" title="Working days (half days allowed)" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
         <span style="display:inline-flex;align-items:center;gap:2px;font-size:12px;color:var(--i2)" title="How many of YOUR team are on this task (default: team size). Affects the quoted ≈ comparison and capacity only — never the dates.">👤<input type="number" value="${men}" min="1" step="1" onchange="spTaskMen(${i},this.value)" style="width:38px;padding:5px 2px;border:1px solid ${t.men ? 'var(--i3)' : 'var(--bd)'};border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)"></span>
-        <span style="width:148px;font-size:12px;color:var(--i2);font-family:'DM Mono',monospace">${when}</span>
+        <input type="date" value="${t.startISO || (d ? d.start : '')}" onchange="spTaskDate(${i},this.value)" title="${t.startISO ? 'Manual start date — click auto to re-cascade from the previous task' : 'Automatic (follows the previous task) — pick a date to override; same date as another task = working in parallel'}" style="width:122px;padding:3px 4px;border:1px ${t.startISO ? 'solid #B45309' : 'dashed var(--bd)'};border-radius:4px;font-size:11px;font-family:'DM Mono',monospace;color:${t.startISO ? '#92400E' : 'var(--i2)'}">
+        ${t.startISO ? `<button onclick="spTaskDate(${i},'')" title="Back to automatic — cascade from the previous task" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 4px;color:var(--i3)">auto</button>` : ''}
+        <span style="min-width:62px;font-size:11px;color:var(--i3);font-family:'DM Mono',monospace">${d && d.end !== d.start ? '→ ' + spNice(d.end) : ''}</span>
         <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▲</button>
         <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▼</button>
         <button onclick="spDelTask(${i})" title="Remove the task (what it covered goes back to unassigned)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 6px;color:#DC2626">×</button>
@@ -5000,13 +5054,13 @@ function renderSchedule() {
     <div class="cb">
       <p style="font-size:11px;color:var(--i3);margin:0 0 12px">This plan saves with the quote. The agent then pushes it to TeamGantt as <strong>"${cwEsc(ref||'QT-????')}${cust ? ' ' + cwEsc(cust) : ''}"</strong> built from your template — Project Breakdown tasks and dated Deliveries with material checklists. No chart here, deliberately.</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
-        <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetField('startDate',this.value)"></div>
+        <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetStartDate(this.value)" title="Changing this slides the WHOLE plan — cascaded and manually-dated tasks move by the same number of working days"></div>
         <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)"></div>
         <div class="fg" style="margin:0"><label>Team size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
         <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
           Labour: <strong style="color:var(--i1)">£${Math.round(lab.cost).toLocaleString('en-GB')}</strong> · <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(lab.manDays/crew).toFixed(1)}</strong> days with a team of ${crew}
-          &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}${p.tasks.length ? ', capacity <strong style="color:var(--i1)" title="Σ days × men across the tasks — compare against the quoted man-days once everything is placed">' + spDaysFmt(p.tasks.reduce((s,t) => s + Math.max(1, Math.round(t.days||1)) * spMenOf(t, crew), 0)) + '</strong> man-days' : ''}
+          &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}${p.tasks.length ? ', capacity <strong style="color:var(--i1)" title="Σ days × men across the tasks — compare against the quoted man-days once everything is placed">' + spDaysFmt(p.tasks.reduce((s,t) => s + Math.max(0.5, Math.round((t.days||1)*2)/2) * spMenOf(t, crew), 0)) + '</strong> man-days' : ''}
           ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
         </div>
       </div>
@@ -5025,7 +5079,7 @@ function renderSchedule() {
           <div class="sp-newtask-zone" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropNewTask(event,this)" style="border:2px dashed var(--bd);border-radius:6px;padding:9px;text-align:center;font-size:12px;color:var(--i3);margin-top:6px">⟵ drag a deliverable (or a whole group) here to start a NEW task</div>
           <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
             <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Excavations)…" onkeydown="spAddTaskKey(event)" style="flex:1;padding:9px 10px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;color:var(--i1);box-sizing:border-box">
-            <input type="number" id="sp-new-days" value="1" min="1" step="1" onkeydown="spAddTaskKey(event)" title="Working days" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
+            <input type="number" id="sp-new-days" value="1" min="0.5" step="0.5" onkeydown="spAddTaskKey(event)" title="Working days" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
             <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
           </div>
         </div>
@@ -5097,7 +5151,7 @@ function spAddTaskKey(e) {
   spAddTaskGo();
 }
 function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); renderSchedule(); } } // re-render: tray "→ task" tags + the dates rail show the name
-function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(1, Math.round(parseFloat(v)||1)); spMark(); renderSchedule(); } }
+function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(0.5, Math.round((parseFloat(v)||1)*2)/2); spMark(); renderSchedule(); } }
 // Per-task headcount — defaults to the team size (undefined = follow the team box);
 // only affects the labour comparisons, never the date cascade (2 days is 2 days).
 function spTaskMen(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { const n = Math.round(parseFloat(v)); t.men = (n >= 1 ? n : undefined); spMark(); renderSchedule(); } }
@@ -5277,7 +5331,7 @@ function spExportForPush() {
     deadline: p.deadline || '',
     tasks: p.tasks.map((t, i) => ({
       name: (t.name || '').trim() || ('Task ' + (i + 1)),
-      days: Math.max(1, Math.round(t.days || 1)),
+      days: Math.max(0.5, Math.round((t.days || 1) * 2) / 2),
       men: spMenOf(t, crew),
       start: dates[i] ? dates[i].start : '',
       end: dates[i] ? dates[i].end : ''
