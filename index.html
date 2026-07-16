@@ -4701,6 +4701,12 @@ function spSyncDeliveries(p) {
   // auto-track above; anything left holding atoms for a vanished supplier is stale → flag it
   // (deliberately a flag, not a rewrite — it may be a dated/split row the user built).
   p.deliveries.forEach(row => { if (!atoms[row.supplier] && row.alloc.length) row._drift = true; });
+  // Order (2026-07-16, Neal): DATED rows first sorted by date, undated after in their
+  // existing order, Unassigned pinned last. Sorted in the PLAN (not just the display)
+  // so the TeamGantt push order matches the screen. Array.sort is stable, so undated
+  // rows and same-date ties keep their relative order.
+  const rowRank = r => r.supplier === SUP_UNASSIGNED ? 2 : (r.date ? 0 : 1);
+  p.deliveries.sort((a, b) => (rowRank(a) - rowRank(b)) || ((rowRank(a) === 0 && a.date !== b.date) ? (a.date < b.date ? -1 : 1) : 0));
 }
 // Collapse a split supplier back to one fresh row (dates/labels of the splits are lost).
 function spResetSupplier(sup) {
@@ -5026,7 +5032,7 @@ function renderSchedule() {
     return `<div style="background:${isUn ? '#FFFBEB' : 'white'};border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:6px;padding:7px 9px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1 1 120px;min-width:110px;padding:4px 7px;border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:4px;font-size:14px;font-weight:600;${isUn ? 'color:#92400E;background:white;' : 'color:var(--i1);'}">
-        <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
+        <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" onfocus="if(!this.value&&spEnsurePlan().startDate)this.value=spEnsurePlan().startDate" onblur="const r=spEnsurePlan().deliveries[${i}];if(r&&!r.date)this.value=''" title="Delivery date — the calendar opens at the job start date" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
         ${p.tasks.some((t,ti) => dates[ti]) ? `<select onchange="spDelivDateFromTask(${i},this)" title="Set the date to the working day before a task starts — a one-off shortcut, nothing auto-fills" style="font-size:11px;padding:3px 4px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);background:white;max-width:118px;cursor:pointer">
           <option value="">📅 before…</option>
           ${p.tasks.map((t,ti) => { const d = dates[ti]; return d ? `<option value="${d.start}">${ti+1}. ${cwEsc((t.name||'').slice(0,18))} (${spNice(d.start)})</option>` : ''; }).join('')}
@@ -5055,7 +5061,7 @@ function renderSchedule() {
       <p style="font-size:11px;color:var(--i3);margin:0 0 12px">This plan saves with the quote. The agent then pushes it to TeamGantt as <strong>"${cwEsc(ref||'QT-????')}${cust ? ' ' + cwEsc(cust) : ''}"</strong> built from your template — Project Breakdown tasks and dated Deliveries with material checklists. No chart here, deliberately.</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
         <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetStartDate(this.value)" title="Changing this slides the WHOLE plan — cascaded and manually-dated tasks move by the same number of working days"></div>
-        <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)"></div>
+        <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)" onfocus="if(!this.value&&spEnsurePlan().startDate)this.value=spEnsurePlan().startDate" onblur="if(!spEnsurePlan().deadline)this.value=''" title="The calendar opens at the job start date"></div>
         <div class="fg" style="margin:0"><label>Team size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
         <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
@@ -5164,7 +5170,7 @@ function spMoveTask(i, dir) {
 }
 function spDelTask(i) { spEnsurePlan().tasks.splice(i, 1); spMark(); renderSchedule(); }
 function spDelivLabel(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.label = v.trim() || d.supplier; spMark(); } }
-function spDelivDate(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.date = v; spMark(); } }
+function spDelivDate(i, v) { const d = spEnsurePlan().deliveries[i]; if (d) { d.date = v; spMark(); renderSchedule(); } }
 function spPrevWorkday(iso) { const d = new Date(iso + 'T00:00:00'); do { d.setDate(d.getDate() - 1); } while (!spIsWorkday(d)); return spISO(d); }
 // 📅 before… quick-pick: sets the delivery date to the working day before the chosen
 // task starts. A one-off COPY the user chose — nothing auto-fills or follows tasks.
