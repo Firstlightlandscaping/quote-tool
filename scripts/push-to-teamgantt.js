@@ -171,6 +171,12 @@ async function main() {
   }
 
   // ── 5. Deliveries: reuse a same-named placeholder (e.g. "GH Brooks") else create ──
+  // Created delivery tasks inherit the COLOUR of the template's delivery placeholder
+  // (red1 = the crew's "not ordered yet"; they turn tasks green once ordered). Without
+  // this, created tasks defaulted to TeamGantt blue2 and broke the convention
+  // (Neal, 2026-07-16). Presentation constant, so it lives here, not in plan.tg.
+  const templateDeliv = existing.find(x => x.parent_group_id === dl.id && x.color);
+  const deliveryColor = (templateDeliv && templateDeliv.color) || 'red1';
   let noteWarnings = 0;
   for (const d of t.deliveries) {
     const name = (d.unassigned && !/⚠/.test(d.name) ? '⚠ ' : '') + d.name;
@@ -181,7 +187,7 @@ async function main() {
       if (d.date) await tg('PATCH', '/tasks/' + taskId, { start_date: d.date, end_date: d.date });
       console.log(`  ~ delivery: ${name} (reused placeholder ${taskId})${d.date ? ' -> ' + d.date : ''}`);
     } else {
-      const body = { project_id: pid, parent_group_id: dl.id, name, type: 'task' };
+      const body = { project_id: pid, parent_group_id: dl.id, name, type: 'task', color: deliveryColor };
       if (d.date) { body.start_date = d.date; body.end_date = d.date; }
       const made = await tg('POST', '/tasks', body);
       taskId = made.id;
