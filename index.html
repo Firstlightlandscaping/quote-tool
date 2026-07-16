@@ -4074,6 +4074,15 @@ function spCascade(startISO, tasks) {
     let pos = t.startISO
       ? { d: spNextWorkday(new Date(t.startISO + 'T00:00:00')), half: 0 }
       : { d: new Date(cur.d), half: cur.half };
+    // Morning-start rule (2026-07-16, Neal): an auto task may start mid-day only if it
+    // FITS the rest of that day (≤ 0.5d) — anything longer waits for the next morning,
+    // so a 1-day task reads as ONE date instead of straddling midday into the next
+    // (and across weekends: "Fri → Mon" for a day's work). Costs occasional slack
+    // afternoons; typed dates already start on mornings.
+    if (!t.startISO && pos.half === 1 && halves > 1) {
+      const nd = new Date(pos.d); nd.setDate(nd.getDate() + 1);
+      pos = { d: spNextWorkday(nd), half: 0 };
+    }
     const start = new Date(pos.d);
     for (let k = 1; k < halves; k++) pos = halfStep(pos);
     const end = new Date(pos.d);
@@ -5066,9 +5075,18 @@ function renderSchedule() {
         <div class="fg" style="margin:0"><label>Team size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
         <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
-          Labour: <strong style="color:var(--i1)">£${Math.round(lab.cost).toLocaleString('en-GB')}</strong> · <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} ≈ <strong style="color:var(--i1)">${(lab.manDays/crew).toFixed(1)}</strong> days with a team of ${crew}
-          &nbsp;·&nbsp; Scheduled: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ' (ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>)' : ''}${p.tasks.length ? ', capacity <strong style="color:var(--i1)" title="Σ days × men across the tasks — compare against the quoted man-days once everything is placed">' + spDaysFmt(p.tasks.reduce((s,t) => s + Math.max(0.5, Math.round((t.days||1)*2)/2) * spMenOf(t, crew), 0)) + '</strong> man-days' : ''}
-          ${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ ends after the deadline</span>' : ''}
+          ${(() => {
+            // Labour check — same verdict-at-the-end pattern as the materials check strip.
+            const capacity = p.tasks.reduce((s,t) => s + Math.max(0.5, Math.round((t.days||1)*2)/2) * spMenOf(t, crew), 0);
+            const diff = capacity - lab.manDays;
+            let verdict;
+            if (!p.tasks.length) verdict = '<span style="color:var(--i3)">no tasks yet</span>';
+            else if (Math.abs(diff) < 0.25) verdict = '<strong style="color:#15803D">· matches the quote</strong>';
+            else if (diff < 0) verdict = `<strong style="color:#B45309">▼ ${spDaysFmt(Math.abs(diff))} man-day${Math.abs(diff)!==1?'s':''} still to place</strong>`;
+            else verdict = `<strong style="color:#DC2626">▲ ${spDaysFmt(diff)} man-day${diff!==1?'s':''} over what the quote pays for</strong>`;
+            return `<div title="The quote's labour value ÷ your £/man-day rate = the man-days the customer has paid for. 'Plan holds' = every task's days × men added up. Amber = work not yet placed in tasks; red = the plan spends more labour than the quote sold (comes out of your margin).">Labour check: quote pays for <strong style="color:var(--i1)">${spDaysFmt(lab.manDays)}</strong> man-day${lab.manDays!==1?'s':''} <span style="color:var(--i3)">(£${Math.round(lab.cost).toLocaleString('en-GB')} ≈ ${(lab.manDays/crew).toFixed(1)} days, team of ${crew})</span> → plan holds <strong style="color:var(--i1)">${spDaysFmt(capacity)}</strong> → ${verdict}</div>
+            <div style="margin-top:2px">Calendar: <strong style="color:var(--i1)">${schedDays}</strong> working day${schedDays!==1?'s':''}${lastEnd ? ', ends <strong style="color:var(--i1)">' + spNice(lastEnd) + '</strong>' : ''}${overDeadline ? ' &nbsp;<span style="color:#DC2626;font-weight:600">⚠ after the deadline</span>' : ''}</div>`;
+          })()}
         </div>
       </div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
