@@ -260,6 +260,10 @@ tr.dragging td{background:var(--brp)!important}
 /* ── Contract of Works ───────────────────────────────────────────────────────── */
 #contract-view{display:none}
 #contract-toolbar{display:none}
+#report-view{display:none}
+body.report-mode .shell{display:none!important}
+body.report-mode #sales-check-dialog{display:none!important}
+body.report-mode #report-view{display:block;background:white}
 body.contract-mode .shell{display:none!important}
 body.contract-mode #contract-view{display:block;background:#f1f5f9;min-height:100vh;padding:24px 0}
 body.contract-mode #contract-toolbar{display:flex;gap:8px;position:fixed;top:14px;right:16px;z-index:16000}
@@ -335,6 +339,9 @@ body.contract-mode #contract-view .lt td input,body.contract-mode #contract-view
 body.contract-mode #contract-view .lt th.no-print,body.contract-mode #contract-view .lt td.no-print{display:none!important;width:0!important;padding:0!important;border:none!important}
 body.contract-mode #contract-view .group-member-row{display:none!important}
 @media print{
+  body.report-mode .shell{display:none!important}
+  body.report-mode #sales-check-dialog{display:none!important}
+  body.report-mode #report-view{display:block!important;background:#fff;padding:0}
   body.contract-mode .shell{display:none!important}
   body.contract-mode #contract-view{display:block!important;background:#fff;padding:0}
   body.contract-mode .cw-doc{box-shadow:none;max-width:100%;margin:0}
@@ -6387,12 +6394,14 @@ function openSalesCheck() {
             <input type="checkbox" value="${s}" onchange="scRecalc()" ${['Sent','Accepted','Declined'].includes(s)?'checked':''} style="cursor:pointer">${s}
           </label>`).join('')}
       </div>
-      <div id="sc-results" style="border-top:1px solid var(--bd);padding-top:12px;font-size:13px"></div>
-      <div style="display:flex;justify-content:flex-end;margin-top:14px">
+      <div id="sc-results" style="border-top:1px solid var(--bd);padding-top:12px;font-size:13px;max-height:46vh;overflow-y:auto"></div>
+      <div style="display:flex;justify-content:space-between;margin-top:14px">
+        <button class="btn btn-outline" onclick="scPrint()" title="A branded PDF of exactly what the filters show — use the print dialog's Save as PDF">🖨 Print / PDF</button>
         <button class="btn btn-outline" onclick="document.getElementById('sales-check-dialog').remove()">Close</button>
       </div>
     </div>`;
   document.body.appendChild(panel);
+  scCollapsed = {};
   scPeriod('this-month');
 }
 function scPeriod(p) {
@@ -6406,9 +6415,9 @@ function scPeriod(p) {
   document.getElementById('sc-to').value = to;
   scRecalc();
 }
-function scRecalc() {
-  const out = document.getElementById('sc-results');
-  if (!out) return;
+// Shared by the dialog (scRecalc) and the printable report (scPrint): the current
+// filters resolved to per-status quote LISTS + totals. Returns null when nothing matches.
+function scGather() {
   const from = document.getElementById('sc-from').value;
   const to = document.getElementById('sc-to').value;
   const sign = document.getElementById('sc-sign').value;
@@ -6421,29 +6430,98 @@ function scRecalc() {
     if (to && qd > new Date(to + 'T23:59:59')) return false;
     return true;
   });
-  if (!statuses.length) { out.innerHTML = '<em style="color:var(--i3)">Tick at least one status.</em>'; return; }
-  if (!inPeriod.length) { out.innerHTML = '<em style="color:var(--i3)">No quotes match this period + status selection.</em>'; return; }
   let totEx = 0, totInc = 0;
   const byStatus = {};
   inPeriod.forEach(sq => {
     const t = sqTotals(sq);
     totEx += t.ex; totInc += t.inc;
     const st = sq.status || 'Draft';
-    if (!byStatus[st]) byStatus[st] = { n:0, ex:0 };
+    if (!byStatus[st]) byStatus[st] = { n:0, ex:0, quotes:[] };
     byStatus[st].n++; byStatus[st].ex += t.ex;
+    byStatus[st].quotes.push({ ref: sq.ref, customer: sq.customer || '—', when: sq.saved || sq.date || '', ex: t.ex });
   });
-  const money = v => '£' + v.toLocaleString('en-GB', { minimumFractionDigits:2, maximumFractionDigits:2 });
+  Object.values(byStatus).forEach(b => b.quotes.sort((a,b2) => (b2.when > a.when ? 1 : -1)));
+  return { from, to, sign, statuses, inPeriod, byStatus, totEx, totInc };
+}
+const scMoney = v => '£' + v.toLocaleString('en-GB', { minimumFractionDigits:2, maximumFractionDigits:2 });
+const scDate = w => w ? new Date(w).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'2-digit' }) : '';
+let scCollapsed = {};   // per-status fold state, reset each time the dialog opens
+function scToggleStatus(s) { scCollapsed[s] = !scCollapsed[s]; scRecalc(); }
+function scRecalc() {
+  const out = document.getElementById('sc-results');
+  if (!out) return;
+  const g = scGather();
+  if (!g.statuses.length) { out.innerHTML = '<em style="color:var(--i3)">Tick at least one status.</em>'; return; }
+  if (!g.inPeriod.length) { out.innerHTML = '<em style="color:var(--i3)">No quotes match this period + status selection.</em>'; return; }
   out.innerHTML = `
     <div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:10px">
-      <div><div style="font-size:11px;color:var(--i3)">Quotes</div><div style="font-size:20px;font-weight:700">${inPeriod.length}</div></div>
-      <div><div style="font-size:11px;color:var(--i3)">Ex VAT</div><div style="font-size:20px;font-weight:700">${money(totEx)}</div></div>
-      <div><div style="font-size:11px;color:var(--i3)">Inc VAT</div><div style="font-size:20px;font-weight:700">${money(totInc)}</div></div>
+      <div><div style="font-size:11px;color:var(--i3)">Quotes</div><div style="font-size:20px;font-weight:700">${g.inPeriod.length}</div></div>
+      <div><div style="font-size:11px;color:var(--i3)">Ex VAT</div><div style="font-size:20px;font-weight:700">${scMoney(g.totEx)}</div></div>
+      <div><div style="font-size:11px;color:var(--i3)">Inc VAT</div><div style="font-size:20px;font-weight:700">${scMoney(g.totInc)}</div></div>
     </div>
-    ${QUOTE_STATUSES.filter(s => byStatus[s]).map(s =>
-      `<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px dashed var(--bd)">
-         <span style="color:${STATUS_COLORS[s]};font-weight:600">${s}</span>
-         <span>${byStatus[s].n} · ${money(byStatus[s].ex)} ex VAT</span>
-       </div>`).join('')}`;
+    ${QUOTE_STATUSES.filter(s => g.byStatus[s]).map(s => `
+      <div onclick="scToggleStatus('${s}')" title="Click to ${scCollapsed[s] ? 'show' : 'hide'} the quotes" style="display:flex;justify-content:space-between;align-items:center;padding:5px 0;border-bottom:1px dashed var(--bd);cursor:pointer">
+        <span style="color:${STATUS_COLORS[s]};font-weight:600"><span style="display:inline-block;width:14px;color:var(--i3)">${scCollapsed[s] ? '▸' : '▾'}</span>${s}</span>
+        <span>${g.byStatus[s].n} · ${scMoney(g.byStatus[s].ex)} ex VAT</span>
+      </div>
+      ${scCollapsed[s] ? '' : g.byStatus[s].quotes.map(q => `
+        <div style="display:flex;gap:10px;align-items:baseline;padding:2px 0 2px 14px;font-size:12px;border-bottom:1px solid #F4F4F2">
+          <span style="font-family:'DM Mono',monospace;color:var(--i3);flex-shrink:0">${cwEsc(q.ref||'')}</span>
+          <span style="flex:1;color:var(--i1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${cwEsc(q.customer)}</span>
+          <span style="color:var(--i3);flex-shrink:0">${scDate(q.when)}</span>
+          <span style="font-family:'DM Mono',monospace;flex-shrink:0;min-width:88px;text-align:right">${scMoney(q.ex)}</span>
+        </div>`).join('')}
+    `).join('')}`;
+}
+// Printable report — same gathered data rendered as a branded document (banner repeats
+// per page via the same qwrap <thead> trick as the quote), then the browser's Save as
+// PDF does the exporting. A snapshot of whatever the dialog's filters say right now.
+function scPrint() {
+  const g = scGather();
+  if (!g || !g.statuses.length || !g.inPeriod.length) { toast('Nothing to print — adjust the filters first'); return; }
+  const brand = (document.querySelector('#tab-quote .q-brand-header') || {}).outerHTML || '';
+  const periodTxt = (g.from || g.to) ? `${g.from ? scDate(g.from) : '…'} to ${g.to ? scDate(g.to) : '…'}` : 'All time';
+  const genTxt = new Date().toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' });
+  let view = document.getElementById('report-view');
+  if (!view) { view = document.createElement('div'); view.id = 'report-view'; document.body.appendChild(view); }
+  view.innerHTML = `<table class="qwrap"><thead><tr><td>${brand}</td></tr></thead><tbody><tr><td>
+    <div style="padding:18px 8px 0">
+      <div style="font-size:24px;font-weight:300;letter-spacing:-0.5px;color:#1a1a1a">Sales report</div>
+      <div style="font-size:12px;color:#666;margin:6px 0 14px">${cwEsc(periodTxt)} · ${g.sign ? cwEsc(g.sign) : 'All staff'} · ${g.statuses.join(', ')} · generated ${genTxt}</div>
+      <div style="display:flex;gap:36px;margin-bottom:18px">
+        <div><div style="font-size:11px;color:#888">Quotes</div><div style="font-size:22px;font-weight:700">${g.inPeriod.length}</div></div>
+        <div><div style="font-size:11px;color:#888">Ex VAT</div><div style="font-size:22px;font-weight:700">${scMoney(g.totEx)}</div></div>
+        <div><div style="font-size:11px;color:#888">Inc VAT</div><div style="font-size:22px;font-weight:700">${scMoney(g.totInc)}</div></div>
+      </div>
+      ${QUOTE_STATUSES.filter(s => g.byStatus[s]).map(s => `
+        <div style="font-size:14px;font-weight:700;color:${STATUS_COLORS[s]};margin:14px 0 4px;padding-bottom:3px;border-bottom:2px solid ${STATUS_COLORS[s]}">${s} — ${g.byStatus[s].n} quote${g.byStatus[s].n!==1?'s':''} · ${scMoney(g.byStatus[s].ex)} ex VAT</div>
+        <table style="width:100%;border-collapse:collapse;font-size:12px">
+          ${g.byStatus[s].quotes.map(q => `<tr style="border-bottom:1px solid #eee">
+            <td style="padding:4px 8px 4px 0;font-family:'DM Mono',monospace;color:#666;width:78px">${cwEsc(q.ref||'')}</td>
+            <td style="padding:4px 8px 4px 0">${cwEsc(q.customer)}</td>
+            <td style="padding:4px 8px 4px 0;color:#666;width:80px">${scDate(q.when)}</td>
+            <td style="padding:4px 0;text-align:right;font-family:'DM Mono',monospace;width:110px">${scMoney(q.ex)}</td>
+          </tr>`).join('')}
+        </table>`).join('')}
+    </div>
+  </td></tr></tbody></table>`;
+  document.body.classList.add('report-mode');
+  // The banner's (base64) images must be loaded AND painted before the print snapshot,
+  // or the logos come out blank — printing synchronously after innerHTML was too early.
+  // Plain timers, deliberately: img.decode() and rAF both stall in hidden documents,
+  // and a ~150ms breather after the images report complete is ample for a visible tab
+  // to rasterise them before the print dialog snapshots the page.
+  const imgs = Array.from(view.querySelectorAll('img'));
+  const ready = () => imgs.every(im => im.complete && im.naturalWidth > 0);
+  const go = () => setTimeout(() => {
+    window.print();
+    document.body.classList.remove('report-mode');
+  }, 150);
+  if (ready()) { go(); return; }
+  let tries = 0;
+  const timer = setInterval(() => {
+    if (ready() || ++tries > 100) { clearInterval(timer); go(); }
+  }, 50);
 }
 
 function renderSaved() {
