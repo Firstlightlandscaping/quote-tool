@@ -5071,6 +5071,7 @@ function renderSchedule() {
       <span class="ct">🗓 Schedule setup — ${ref ? cwEsc(ref) : 'unsaved quote'}${cust ? ' · ' + cwEsc(cust) : ''}</span>
       <div style="display:flex;align-items:center;gap:10px">
         <span id="sp-status" style="font-size:11px;color:var(--i3)">${spDirty ? '● unsaved changes' : ''}</span>
+        <button class="btn btn-outline btn-sm" onclick="spPushDialog()" title="Create the TeamGantt project from this saved plan">▶ Push to TeamGantt</button>
         <button class="btn btn-primary btn-sm" onclick="saveSchedulePlan()">💾 Save schedule</button>
       </div>
     </div>
@@ -5408,6 +5409,80 @@ async function saveSchedulePlan() {
   const el = document.getElementById('sp-status');
   if (el) { el.textContent = '✓ saved ' + new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); el.style.color = '#16A34A'; }
   toast('✓ Schedule saved for ' + ref);
+}
+
+// ── PUSH TO TEAMGANTT (in-app) ──────────────────────────────────────────────
+// Calls the push-teamgantt Edge Function, which reads the SAVED plan.tg and creates
+// the TeamGantt project server-side (the TeamGantt token lives only in the function's
+// secret, never in this page). verify_jwt gates it to logged-in staff. The local
+// scripts/push-to-teamgantt.js stays as the debug fallback + the only way to DELETE.
+function spPushLogHtml(log) {
+  if (!log || !log.length) return '';
+  return `<pre style="margin:10px 0 0;max-height:220px;overflow:auto;background:#0F172A;color:#E2E8F0;font-size:11px;line-height:1.5;padding:10px;border-radius:6px;white-space:pre-wrap">${cwEsc(log.join('\n'))}</pre>`;
+}
+function spPushDialog() {
+  const ref = (document.getElementById('in-ref')||{value:''}).value.trim();
+  if (!ref) { toast('Save the quote first — it needs a QT number before it can go to TeamGantt'); return; }
+  if (!schedulePlan || !schedulePlan.tg) { toast('Build and save a schedule first — there is nothing to push yet'); return; }
+  const t = schedulePlan.tg;
+  const cust = (document.getElementById('in-cust')||{value:''}).value.trim();
+  const dirty = spDirty;
+  const existing = document.getElementById('sp-push-dialog'); if (existing) existing.remove();
+  const panel = document.createElement('div');
+  panel.id = 'sp-push-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:560px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:17px">▶ Push to TeamGantt</h3>
+      <p style="font-size:12px;color:var(--i3);margin:0 0 12px">Creates a <strong>new</strong> TeamGantt project from your template — it never changes an existing one.</p>
+      <div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:12px">
+        <div style="font-size:14px;color:var(--i1);font-weight:600">${cwEsc(ref)}${cust ? ' · ' + cwEsc(cust) : ''}</div>
+        <div style="font-size:12px;color:var(--i2);margin-top:2px">${t.tasks.length} task${t.tasks.length!==1?'s':''} · ${t.deliveries.length} deliver${t.deliveries.length!==1?'ies':'y'}${t.deadline ? ' · deadline ' + cwEsc(spNice(t.deadline)) : ''}</div>
+      </div>
+      ${dirty ? `<div style="font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #F59E0B;border-radius:6px;padding:8px 10px;margin-bottom:12px">● You have unsaved schedule changes. The push sends the <strong>last saved</strong> version — save first so it's up to date.</div>` : ''}
+      <div id="sp-push-result" style="display:none;margin-bottom:12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
+        <button class="btn btn-outline btn-sm" onclick="document.getElementById('sp-push-dialog').remove()" style="margin-right:auto">Cancel</button>
+        ${dirty
+          ? `<button class="btn btn-primary btn-sm" onclick="saveSchedulePlan().then(()=>spPushDialog())">💾 Save first</button>`
+          : `<button class="btn btn-primary btn-sm" onclick="spDoPush('push')">▶ Push to TeamGantt</button>`}
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+}
+async function spDoPush(mode) {
+  const ref = (document.getElementById('in-ref')||{value:''}).value.trim();
+  const dlg = document.getElementById('sp-push-dialog');
+  if (!dlg) return;
+  const result = document.getElementById('sp-push-result');
+  dlg.querySelectorAll('button').forEach(b => b.disabled = true);
+  if (result) { result.style.display = 'block'; result.innerHTML = '<div style="font-size:13px;color:var(--i2)">⏳ Pushing to TeamGantt… this takes a few seconds.</div>'; }
+  try {
+    if (typeof ensureFreshToken === 'function') await ensureFreshToken();
+    const res = await fetch(SUPABASE_URL + '/functions/v1/push-teamgantt', {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref, mode })
+    });
+    let data; try { data = await res.json(); } catch(e) { data = { ok:false, error:'Unexpected response (HTTP ' + res.status + ').' }; }
+    dlg.querySelectorAll('button').forEach(b => b.disabled = false);
+    if (!res.ok || !data.ok) {
+      const msg = res.status === 401 ? 'Your login has expired — refresh the page, log in, and try again.' : (data.error || ('HTTP ' + res.status));
+      result.innerHTML = `<div style="font-size:13px;color:#DC2626;font-weight:600">⚠ Push failed</div><div style="font-size:12px;color:var(--i2);margin-top:4px">${cwEsc(msg)}</div>${spPushLogHtml(data.log)}`;
+      return;
+    }
+    const testTag = data.test ? ' <span style="font-size:10px;color:#92400E;background:#FEF3C7;border-radius:8px;padding:1px 6px">ZZZ TEST</span>' : '';
+    result.innerHTML =
+      `<div style="font-size:14px;color:#15803D;font-weight:600">✓ Created "${cwEsc(data.projectName||'')}"${testTag}</div>
+       <div style="font-size:12px;color:var(--i2);margin-top:4px">Project id ${data.projectId} — open TeamGantt to review it.</div>
+       ${data.warnings ? `<div style="font-size:12px;color:#B45309;margin-top:2px">⚠ ${data.warnings} note(s) failed — add those links by hand.</div>` : ''}
+       ${data.test ? `<div style="font-size:12px;color:#B45309;margin-top:4px">This is a <strong>test copy</strong> — review it in TeamGantt, then delete it before the real push.</div>` : ''}
+       ${spPushLogHtml(data.log)}
+       <div style="margin-top:10px"><a href="https://app.teamgantt.com" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="text-decoration:none">Open TeamGantt ↗</a></div>`;
+  } catch (e) {
+    dlg.querySelectorAll('button').forEach(b => b.disabled = false);
+    if (result) result.innerHTML = `<div style="font-size:13px;color:#DC2626">⚠ Couldn't reach the push service: ${cwEsc(e.message)}</div>`;
+  }
 }
 
 function renderOrderList() {
