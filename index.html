@@ -672,7 +672,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
                 <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
                   <div class="fg" style="margin:0"><label style="font-size:11px">Supplier cost (£)</label><input type="number" id="mcc-cost" value="0" min="0" step="0.01" oninput="updateMccCharged()"></div>
                   <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="mcc-charged" value="0.00" min="0" step="0.01" readonly title="Auto-calculated as supplier cost + 10%" style="background:#F0FDF4;color:#15803D;font-weight:600;opacity:.7;cursor:default"></div>
-                  <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><input type="text" id="mcc-supplier" placeholder="e.g. Hillier"></div>
+                  <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><select id="mcc-supplier" onchange="supplierSelResolve(this)"></select></div>
                   <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="mcc-url" placeholder="https://..."></div>
                 </div>
                 <div style="margin-bottom:8px">
@@ -888,7 +888,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div style="display:grid;grid-template-columns:1fr 1fr 2fr;gap:12px">
         <div class="fg"><label>Unit</label><input type="text" id="nm-unit" placeholder="e.g. m²"></div>
         <div class="fg"><label>Supplier price (£)</label><input type="number" id="nm-price" placeholder="0.00" min="0" step="0.01"></div>
-        <div class="fg"><label>Supplier</label><input type="text" id="nm-supplier" placeholder="e.g. Marshalls, Travis Perkins"></div>
+        <div class="fg"><label>Supplier</label><select id="nm-supplier" onchange="supplierSelResolve(this)"></select></div>
       </div>
       <!-- Row 4: Updated by, Supplier link -->
       <div style="display:grid;grid-template-columns:1fr 3fr;gap:12px">
@@ -2440,7 +2440,7 @@ function showLineCompDialog(lineId, compIdx) {
         </div>
         <div class="fg" style="margin:0">
           <label>Supplier name</label>
-          <input type="text" id="lcd-supplier" value="${(c.supplier||'').replace(/"/g,'&quot;')}" placeholder="e.g. Palmers">
+          <select id="lcd-supplier" onchange="supplierSelResolve(this)" data-prev="${(c.supplier||'').replace(/"/g,'&quot;')}">${supplierOptionsHtml(c.supplier)}</select>
         </div>
       </div>
       <div class="fg" style="margin-bottom:10px">
@@ -2614,7 +2614,7 @@ function addComponentToLine(lineId) {
         <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:8px;margin-bottom:8px">
           <div class="fg" style="margin:0"><label style="font-size:11px">Supplier cost (£)</label><input type="number" id="aclc-cost" value="0" min="0" step="0.01" oninput="aclcUpdateCharged()"></div>
           <div class="fg" style="margin:0"><label style="font-size:11px">Charged (£) <span style="color:#16A34A;font-weight:700">+10%</span></label><input type="number" id="aclc-charged" value="0.00" min="0" step="0.01" readonly title="Auto-calculated as supplier cost + 10%" style="background:#F0FDF4;color:#15803D;font-weight:600;opacity:.7;cursor:default"></div>
-          <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><input type="text" id="aclc-supplier" placeholder="e.g. Hillier"></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Supplier</label><select id="aclc-supplier" onchange="supplierSelResolve(this)">${supplierOptionsHtml('')}</select></div>
           <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="aclc-url" placeholder="https://..."></div>
         </div>
         <div style="margin-bottom:8px">
@@ -4632,7 +4632,7 @@ function spAddExtraDialog(rowIdx) {
           <div class="fg" style="flex:2;min-width:170px;margin:0"><label>Description</label><input type="text" id="sp-ax-desc" placeholder="e.g. Postcrete 20kg" style="width:100%"></div>
           <div class="fg" style="margin:0"><label>Qty</label><input type="number" id="sp-ax-qty" value="1" min="0" step="any" style="width:64px"></div>
           <div class="fg" style="margin:0"><label>Unit</label><input type="text" id="sp-ax-unit" placeholder="bag" style="width:70px"></div>
-          <div class="fg" style="flex:1;min-width:130px;margin:0"><label>Supplier</label><input type="text" id="sp-ax-sup" list="sp-ax-known" value="${isUnRow ? '' : cwEsc(row.supplier)}" placeholder="blank = unassigned" style="width:100%"><datalist id="sp-ax-known">${spKnownSuppliers().map(s => `<option value="${cwEsc(s)}">`).join('')}</datalist></div>
+          <div class="fg" style="flex:1;min-width:130px;margin:0"><label>Supplier</label><select id="sp-ax-sup" onchange="supplierSelResolve(this)" data-prev="${isUnRow ? '' : cwEsc(row.supplier)}" style="width:100%">${supplierOptionsHtml(isUnRow ? '' : row.supplier, spKnownSuppliers(), '— unassigned —')}</select></div>
           <div class="fg" style="margin:0"><label>£ each <span style="font-weight:400;color:var(--i3)">(opt.)</span></label><input type="number" id="sp-ax-price" min="0" step="0.01" placeholder="0" style="width:76px"></div>
         </div>
         <div class="fg" style="margin:8px 0 0"><label>Link (URL) <span style="font-weight:400;color:var(--i3)">(opt. — shown on the item, pushed to the TeamGantt note)</span></label><input type="text" id="sp-ax-url" placeholder="https://..." style="width:100%"></div>
@@ -4880,6 +4880,10 @@ function spAssignSupplierSel(sel) {
   if (sup === '__new__') {
     sup = (prompt('New supplier name:')||'').trim();
     if (!sup || sup === SUP_UNASSIGNED) { sel.value = ''; return; }
+    // snap onto an existing name case-insensitively — a typo like "GH brooks" must
+    // not mint a second supplier (the 2026-07-21 duplicate-supplier cleanup's guard)
+    const match = spKnownSuppliers().find(n => n.toLowerCase() === sup.toLowerCase());
+    if (match) sup = match;
   }
   const p = spEnsurePlan();
   (p.supplierOverrides = p.supplierOverrides || {})[key] = sup;
@@ -7540,7 +7544,7 @@ function renderMPL() {
       <td style="font-family:'DM Mono',monospace;font-size:11px">${m.code}</td>
       <td><input type="text" value="${(m.description||'').replace(/"/g,'&quot;')}" onchange="updateMPL('${m.code}','description',this.value)"></td>
       <td><input type="text" value="${m.unit||''}" onchange="updateMPL('${m.code}','unit',this.value)" style="width:65px"></td>
-      <td><input type="text" value="${(m.supplier||'').replace(/"/g,'&quot;')}" placeholder="Supplier name..." onchange="updateMPL('${m.code}','supplier',this.value)" style="width:110px"></td>
+      <td><select onchange="mplSupplierSelChanged('${m.code}',this)" data-prev="${(m.supplier||'').replace(/"/g,'&quot;')}" style="width:120px">${supplierOptionsHtml(m.supplier)}</select></td>
       <td class="no-print" style="text-align:center">${m.supplierUrl ? `<a href="${(m.supplierUrl||'').replace(/"/g,'&quot;')}" target="_blank" rel="noopener" title="${(m.supplierUrl||'').replace(/"/g,'&quot;')}" style="text-decoration:none;font-size:14px">🔗</a> <button onclick="editMplUrl('${m.code}')" title="Edit link" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--i3);padding:0">✎</button>` : `<button onclick="editMplUrl('${m.code}')" title="Add supplier link" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 5px;color:var(--i4)">+ link</button>`}</td>
       <td class="r"><input type="number" value="${(m.pricePerUnit||0).toFixed(4)}" min="0" step="0.0001" onchange="updateMPLPrice('${m.code}',parseFloat(this.value))" style="width:90px;text-align:right"></td>
       <td class="r" style="background:#F0FDF4;font-weight:600;color:#15803D;font-family:'DM Mono',monospace;font-size:12px">£${charged.toFixed(4)}</td>
@@ -7549,6 +7553,7 @@ function renderMPL() {
       <td class="no-print"><button class="btn btn-red btn-sm" onclick="deleteMPL('${m.code}')">Delete</button></td>
     </tr>`;
   }).join('');
+  paintSupplierSelects();
 }
 async function updateMPLPrice(code, val) {
   const m = mpl.find(x => x.code === code); if (!m) return;
@@ -7594,6 +7599,53 @@ function normSupplierUrl(input) {
   let v = (input || '').trim();
   if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v; // ensure protocol (also neutralises javascript: etc.)
   return v;
+}
+// ── Supplier-name hygiene (2026-07-21, after the "GH brooks"/"GH Brooks " cleanup) ──
+// Supplier is picked from a dropdown of KNOWN names everywhere it used to be typed;
+// "+ new supplier…" prompts, trims, and snaps case-insensitively onto an existing
+// name — so spelling/space variants can't split one supplier into two again.
+function mplSupplierNames() {
+  return [...new Set(mpl.map(m => (m.supplier||'').trim()).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+}
+// Options for a supplier <select>: blank + known names (+ the current value even if
+// it's not in the list — legacy data must stay selectable) + "+ new supplier…".
+function supplierOptionsHtml(current, names, blankLabel) {
+  const cur = (current||'').trim();
+  const list = [...new Set([...(names || mplSupplierNames()), ...(cur ? [cur] : [])])].sort((a,b) => a.localeCompare(b));
+  return `<option value="">${blankLabel || '— none —'}</option>`
+    + list.map(n => `<option value="${cwEsc(n)}"${n === cur ? ' selected' : ''}>${cwEsc(n)}</option>`).join('')
+    + `<option value="__new__">+ new supplier…</option>`;
+}
+// onchange handler for every supplier select. Resolves "+ new supplier…" via prompt;
+// returns the final name ('' = none) or null when cancelled (value reverted to prev).
+function supplierSelResolve(sel) {
+  if (sel.value !== '__new__') { sel.dataset.prev = sel.value; return sel.value; }
+  const typed = (prompt('New supplier name:')||'').trim();
+  if (!typed) { sel.value = sel.dataset.prev || ''; return null; }
+  const existing = mplSupplierNames().find(n => n.toLowerCase() === typed.toLowerCase());
+  if (existing && existing !== typed) toast('Matched existing supplier "' + existing + '"');
+  const name = existing || typed;
+  if (![...sel.options].some(o => o.value === name)) {
+    const o = document.createElement('option'); o.value = o.textContent = name;
+    sel.insertBefore(o, sel.querySelector('option[value="__new__"]'));
+  }
+  sel.value = name; sel.dataset.prev = name;
+  return name;
+}
+// Repaint the STATIC supplier selects (builder forms live in the page permanently);
+// dialogs build their own options at open. Runs from renderMPL so any data change
+// that touches the price list refreshes the choices everywhere.
+function paintSupplierSelects() {
+  ['nm-supplier','mcc-supplier','aclc-supplier'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.tagName === 'SELECT') { const v = el.value; el.innerHTML = supplierOptionsHtml(v); }
+  });
+}
+function mplSupplierSelChanged(code, sel) {
+  const name = supplierSelResolve(sel);
+  if (name === null) return; // cancelled the "+ new" prompt — value already reverted
+  updateMPL(code, 'supplier', name);
+  renderMPL(); // repaint so every row's dropdown learns a newly created name
 }
 function editMplUrl(code) {
   const m = mpl.find(x => x.code === code); if (!m) return;
