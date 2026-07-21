@@ -4213,8 +4213,12 @@ function spRollup() {
     // job at a substitute without touching the price list); empty = keep the mpl link
     if (e.url) { it.rawUrl = it.url; it.url = e.url; }
     if (e.qty != null && it.totalQty > 0 && e.qty !== it.totalQty) {
+      // Distribute the new total across the sources GREEDILY (largest first), not
+      // proportionally — an edit of 3.5→3 over sources 2.5+1 becomes 2+1, never
+      // 2.143+0.857 (Neal's grab case, 2026-07-17). The cost scales with the total.
       const f = e.qty / it.totalQty;
-      it.sources.forEach(src => { src.qty = Math.round(src.qty * f * 1000) / 1000; });
+      const after = spGreedyQtys(it.sources.map(src => src.qty), e.qty);
+      it.sources.forEach((src, i) => { src.qty = after[i]; });
       it.totalQty = e.qty;
       it.totalCost = it.totalQty * (it.unitPrice || 0);
       it.supCost = (it.supCost || 0) * f;
@@ -4238,6 +4242,27 @@ function spRollup() {
   });
   return rollup.filter(s => !(s.unassigned && !s.items.length));
 }
+// Distribute a TARGET total across source quantities by taking from (or adding to)
+// the LARGEST first, leaving the others untouched — the way a human would knock
+// half a grab off a 2.5+1 pair (→ 2+1). Used by the ✎ edit's qty change; splits
+// draw the same way (spConfirmSplit), so fractions only exist when typed.
+function spGreedyQtys(srcQtys, target) {
+  const out = srcQtys.slice();
+  const order = srcQtys.map((q, i) => ({ q, i })).sort((a, b) => b.q - a.q || a.i - b.i);
+  let delta = Math.round((target - srcQtys.reduce((s, q) => s + q, 0)) * 1000) / 1000;
+  if (delta > 0 && order.length) {           // increase: all of it onto the largest
+    out[order[0].i] = Math.round((out[order[0].i] + delta) * 1000) / 1000;
+    return out;
+  }
+  for (const { i } of order) {               // decrease: drain largest first
+    if (delta >= 0) break;
+    const take = Math.min(out[i], -delta);
+    out[i] = Math.round((out[i] - take) * 1000) / 1000;
+    delta = Math.round((delta + take) * 1000) / 1000;
+  }
+  return out;
+}
+
 // ATOMS: the finest grain of the rollup — (deliverable line × material × qty).
 // Delivery rows own explicit atom allocations, which is what lets one split dialog
 // serve both phase splits (move a whole deliverable's section) and site-space
@@ -4437,10 +4462,30 @@ function spSaveMatEdit() {
   } else {
     (p.matEdits = p.matEdits || {})[key] = { qty, desc, unit, url };
   }
-  // keep split drops in ratio (single-row suppliers re-derive via sync anyway)
+  // SPLIT suppliers: reconcile the rows' allocations to the NEW per-source truth
+  // (single-row suppliers re-derive via sync anyway). Per source line: scale that
+  // line's fragments across the rows to the new atom qty — ratios WITHIN a source
+  // survive, and the row sums exactly match the greedy atoms, so no drift flag.
   if (cur > 0 && qty !== cur && supName) {
     const rows = spRowsOf(supName);
-    if (rows.length > 1) { const f = qty / cur; rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key) a.qty = Math.round(a.qty*f*1000)/1000; })); }
+    if (rows.length > 1) {
+      const truth = {};
+      (spAtoms()[supName] || []).filter(a => a.key === key).forEach(a => { truth[a.lineId] = a.qty; });
+      const lineIds = new Set(Object.keys(truth).map(Number));
+      rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key) lineIds.add(a.lineId); }));
+      lineIds.forEach(lid => {
+        const target = truth[lid] || 0;
+        const held = rows.reduce((s, r) => s + (r.alloc||[]).filter(a => a.key === key && a.lineId === lid).reduce((x, a) => x + a.qty, 0), 0);
+        if (Math.abs(held - target) < 0.0005) return;
+        if (held > 0) {
+          const f = target / held;
+          rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key && a.lineId === lid) a.qty = Math.round(a.qty * f * 1000) / 1000; }));
+        } else if (target > 0) {
+          (rows[0].alloc = rows[0].alloc || []).push({ lineId: lid, key, qty: target });
+        }
+      });
+      rows.forEach(r => { r.alloc = (r.alloc||[]).filter(a => !(a.key === key && a.qty <= 0.0005)); });
+    }
   }
   panel.remove(); spMark(); renderSchedule();
 }
@@ -5238,11 +5283,23 @@ function spSplitDeliv(i) {
   const taskOf = {};
   (p.tasks||[]).forEach((t, ti) => (t.srcLineIds||[]).forEach(id => { taskOf[id] = ti; }));
   const lineName = id => { const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
+  // Same-material fragments within a section MERGE into one combined line (Neal
+  // 2026-07-17: two grab-wagon quote lines edited 3.5→3 showed as 2.143 + 0.857 —
+  // nobody orders in fragments). The line carries every underlying alloc idx; the
+  // confirm draws the typed amount from the largest fragment first.
   const secs = {};
   (row.alloc||[]).forEach((a, idx) => {
     if (a.qty <= 0) return;
     const ti = taskOf[a.lineId] !== undefined ? taskOf[a.lineId] : -1;
-    (secs[ti] = secs[ti] || []).push({ ...a, idx, meta: meta[a.key] || {} });
+    const sec = (secs[ti] = secs[ti] || []);
+    const hit = sec.find(x => x.key === a.key);
+    if (hit) {
+      hit.qty = Math.round((hit.qty + a.qty) * 1000) / 1000;
+      hit.idxs.push(idx);
+      if (!hit.lineIds.includes(a.lineId)) hit.lineIds.push(a.lineId);
+    } else {
+      sec.push({ key: a.key, qty: a.qty, idxs: [idx], lineIds: [a.lineId], meta: meta[a.key] || {} });
+    }
   });
   const order = Object.keys(secs).map(Number).sort((x, y) => (x === -1 ? 1e9 : x) - (y === -1 ? 1e9 : y));
   const secTitle = ti => ti === -1 ? 'Not in a task yet' : 'for ' + (ti+1) + '. ' + cwEsc((p.tasks[ti]||{}).name || 'task');
@@ -5257,13 +5314,13 @@ function spSplitDeliv(i) {
       ${order.map(ti => `
         <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-bottom:3px;border-bottom:1px solid var(--bd)">
           <span style="font-size:14px;font-weight:700;color:${ti === -1 ? 'var(--i3)' : 'var(--i1)'};flex:1">${secTitle(ti)}</span>
-          <button type="button" data-idxs="${secs[ti].map(a => a.idx).join(',')}" onclick="spSplitSection(this)" style="background:var(--bg2);border:1px solid var(--i3);border-radius:5px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--i1);font-weight:700">Move all</button>
+          <button type="button" onclick="spSplitSection(this)" style="background:var(--bg2);border:1px solid var(--i3);border-radius:5px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--i1);font-weight:700">Move all</button>
         </div>
         ${secs[ti].map(a => `
           <div style="display:flex;align-items:center;gap:8px;padding:4px 0 4px 12px;font-size:13px;color:var(--i1)">
-            <span style="flex:1;min-width:140px;line-height:1.3"><strong>${Math.round(a.qty*1000)/1000}</strong> × ${cwEsc(a.meta.description||'')}${a.meta.unit ? ' <span style="color:var(--i3)">(' + cwEsc(a.meta.unit) + ')</span>' : ''}${ti === -1 ? ' <span style="color:var(--i3);font-size:11px">— ' + cwEsc(lineName(a.lineId)) + '</span>' : ''}</span>
+            <span style="flex:1;min-width:140px;line-height:1.3"><strong>${Math.round(a.qty*1000)/1000}</strong> × ${cwEsc(a.meta.description||'')}${a.meta.unit ? ' <span style="color:var(--i3)">(' + cwEsc(a.meta.unit) + ')</span>' : ''}${ti === -1 ? ' <span style="color:var(--i3);font-size:11px">— ' + [...new Set(a.lineIds.map(lineName))].map(cwEsc).join(' + ') + '</span>' : ''}</span>
             <span style="font-size:12px;color:var(--i3)">move</span>
-            <input type="number" class="sp-mv" data-idx="${a.idx}" min="0" max="${a.qty}" step="any" value="0" style="width:92px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;font-size:14px;text-align:right;color:var(--i1)">
+            <input type="number" class="sp-mv" data-idxs="${a.idxs.join(',')}" min="0" max="${a.qty}" step="any" value="0" style="width:92px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;font-size:14px;text-align:right;color:var(--i1)">
             <button type="button" onclick="spSplitFrac(this,.5)" title="Move half of this item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:4px 9px;color:var(--i1)">Half</button>
             <button type="button" onclick="spSplitFrac(this,1)" title="Move all of this item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:4px 9px;color:var(--i1)">All</button>
           </div>`).join('')}
@@ -5290,16 +5347,30 @@ function spSplitFrac(btn, f) {
   if (inp) inp.value = Math.round(parseFloat(inp.max) * f * 1000) / 1000;
 }
 function spSplitSection(btn) {
-  const idxs = new Set(btn.dataset.idxs.split(','));
-  document.querySelectorAll('#sp-split-dialog .sp-mv').forEach(inp => { if (idxs.has(inp.dataset.idx)) inp.value = inp.max; });
+  // set every item input in THIS section (the sibling rows until the next header) to max
+  let el = btn.closest('div').nextElementSibling;
+  while (el && !el.querySelector('button[onclick*="spSplitSection"]')) {
+    const inp = el.querySelector('input.sp-mv');
+    if (inp) inp.value = inp.max;
+    el = el.nextElementSibling;
+  }
 }
 function spConfirmSplit(i) {
   const p = spEnsurePlan();
   const row = p.deliveries[i];
   const moves = [];
   document.querySelectorAll('#sp-split-dialog .sp-mv').forEach(inp => {
-    const v = parseFloat(inp.value) || 0;
-    if (v > 0) moves.push({ idx: parseInt(inp.dataset.idx), qty: Math.min(v, parseFloat(inp.max)) });
+    let v = Math.min(parseFloat(inp.value) || 0, parseFloat(inp.max) || 0);
+    if (v <= 0) return;
+    // a combined line spans several underlying fragments — draw LARGEST first, so a
+    // typed whole number stays whole wherever the fragments allow it
+    const idxs = (inp.dataset.idxs || '').split(',').map(Number)
+      .sort((x, y) => ((row.alloc[y] || {}).qty || 0) - ((row.alloc[x] || {}).qty || 0));
+    for (const idx of idxs) {
+      if (v <= 0) break;
+      const q = Math.min(v, (row.alloc[idx] || {}).qty || 0);
+      if (q > 0) { moves.push({ idx, qty: q }); v = Math.round((v - q) * 1000) / 1000; }
+    }
   });
   if (!moves.length) { toast('Enter amounts to move (or "move all" on a deliverable) first'); return; }
   const newAlloc = [];
