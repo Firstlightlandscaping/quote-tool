@@ -504,6 +504,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
         <button id="group-btn" class="btn btn-outline btn-sm" onclick="groupSelected()" style="display:none">🔗 Group selected into one item</button>
         <button id="ungroup-btn" class="btn btn-outline btn-sm" onclick="ungroupAll()" style="display:none">↩ Ungroup all</button>
         <button class="btn btn-outline btn-sm" onclick="addTextNote()" title="Add a text-only note line (no price, not counted in totals)">📝 Add text note</button>
+        <button class="btn btn-outline btn-sm" onclick="openQuoteImportDialog()" title="Copy selected lines from another saved quote into this one — prices, descriptions and materials carried exactly as quoted; the source quote is never changed">⇪ Copy lines from saved quote</button>
       </div>
     </div>
 
@@ -6321,6 +6322,109 @@ async function saveQuoteAsCopy() {
   await saveQuote();
   // Keep the new ref (don't revert) — user is now working on the copy
   toast('Saved as new copy: ' + newRef + ' (original ' + oldRef + ' preserved)');
+}
+
+// ⇪ Copy lines from another saved quote into the CURRENT quote (phased builds:
+// "back garden minus five items, plus two fences from the front-garden quote").
+// Purely client-side until Save — the source quote is NEVER written. Lines are
+// DEEP-cloned (duplicateQuote's shallow spread aliases materials/miscComponents
+// with the in-memory saved quote — don't copy that pattern) with fresh line ids
+// (++uid) and fresh group ids (a duplicate of the source could share grp_ ids
+// with it, so imported members would otherwise attach to the wrong group).
+// Prices/materials snapshots carry VERBATIM — the quoted figure is what the
+// client agreed, not today's price list. Discount lines never copy (one per
+// quote); a group header comes along only when ≥1 of its members is ticked.
+function openQuoteImportDialog() {
+  if (!savedQuotes.length) { toast('No saved quotes to copy from'); return; }
+  const existing = document.getElementById('qi-dialog');
+  if (existing) existing.remove();
+  const opts = savedQuotes.map(q =>
+    `<option value="${cwEsc(q.ref)}">${cwEsc(q.ref)} — ${cwEsc(q.customer||'')} (${cwEsc(q.date||'')})${q.status && q.status !== 'Draft' ? ' · ' + cwEsc(q.status) : ''}</option>`).join('');
+  const panel = document.createElement('div');
+  panel.id = 'qi-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:640px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:17px">⇪ Copy lines from a saved quote</h3>
+      <p style="font-size:13px;color:var(--i2);margin:0 0 10px">Tick the lines to copy into this quote. Prices and descriptions come across exactly as quoted; the source quote is not changed.</p>
+      <div class="fg" style="margin-bottom:10px"><label>Copy from</label>
+        <select id="qi-source" onchange="qiRenderLines()" style="width:100%"><option value="">— choose a quote —</option>${opts}</select>
+      </div>
+      <div id="qi-lines" style="max-height:52vh;overflow-y:auto;padding-right:4px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('qi-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="qiImport()">⇪ Copy selected</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+}
+function qiRenderLines() {
+  const box = document.getElementById('qi-lines');
+  const sq = savedQuotes.find(q => q.ref === document.getElementById('qi-source').value);
+  if (!sq) { box.innerHTML = ''; return; }
+  const money = n => '£' + (Math.round(n*100)/100).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2});
+  const rows = [];
+  sq.lines.forEach(l => {
+    if (l.discount || l.groupMember) return;
+    if (l.groupId) {
+      const members = sq.lines.filter(m => m.groupMember === l.groupId);
+      rows.push(`<div style="display:flex;align-items:center;gap:8px;padding:6px 0 2px;border-top:1px solid var(--bd);font-size:13px;font-weight:700;color:var(--i1)">
+        <input type="checkbox" class="qi-grp" data-gid="${cwEsc(l.groupId)}" onchange="qiToggleGroup(this)">
+        <span style="flex:1">🔗 ${cwEsc(l.name||'')}</span><span>${money(sqAmt(l, sq.lines))}</span></div>`);
+      members.forEach(m => rows.push(`<div style="display:flex;align-items:center;gap:8px;padding:3px 0 3px 26px;font-size:13px;color:var(--i1)">
+        <input type="checkbox" class="qi-line" data-id="${m.id}" data-gid="${cwEsc(l.groupId)}" onchange="qiMemberChanged(this)">
+        <span style="flex:1">${m.misc ? '📦 ' : ''}${cwEsc(m.name||'')}</span><span>${money(amt(m))}</span></div>`));
+    } else {
+      const label = l.note ? '📝 ' + cwEsc(l.name || (l.xdesc||'').slice(0, 60)) : (l.misc ? '📦 ' : '') + cwEsc(l.name||'');
+      rows.push(`<div style="display:flex;align-items:center;gap:8px;padding:3px 0;font-size:13px;color:var(--i1)">
+        <input type="checkbox" class="qi-line" data-id="${l.id}">
+        <span style="flex:1">${label}${l.optional ? ' <span style="font-size:10px;color:var(--i3)">(optional)</span>' : ''}</span><span>${l.note ? '' : money(amt(l))}</span></div>`);
+    }
+  });
+  const hasDiscount = sq.lines.some(l => l.discount);
+  box.innerHTML = `<div style="font-size:12px;margin-bottom:4px"><a href="#" onclick="document.querySelectorAll('#qi-lines input[type=checkbox]').forEach(c=>c.checked=true);return false" style="color:var(--br)">Tick all</a>
+    &nbsp;·&nbsp; <a href="#" onclick="document.querySelectorAll('#qi-lines input[type=checkbox]').forEach(c=>{c.checked=false;c.indeterminate=false});return false" style="color:var(--br)">Untick all</a></div>`
+    + (rows.join('') || '<div style="font-size:13px;color:var(--i3)">This quote has no lines.</div>')
+    + (hasDiscount ? '<div style="font-size:12px;color:#B45309;margin-top:6px">The source quote’s discount is not copied — add a fresh discount on this quote if needed.</div>' : '');
+}
+function qiToggleGroup(cb) {
+  document.querySelectorAll('#qi-lines .qi-line[data-gid="' + CSS.escape(cb.dataset.gid) + '"]').forEach(c => { c.checked = cb.checked; });
+}
+function qiMemberChanged(cb) {
+  const sibs = [...document.querySelectorAll('#qi-lines .qi-line[data-gid="' + CSS.escape(cb.dataset.gid) + '"]')];
+  const head = document.querySelector('#qi-lines .qi-grp[data-gid="' + CSS.escape(cb.dataset.gid) + '"]');
+  const on = sibs.filter(c => c.checked).length;
+  if (head) { head.checked = on === sibs.length; head.indeterminate = on > 0 && on < sibs.length; }
+}
+function qiImport() {
+  const sq = savedQuotes.find(q => q.ref === document.getElementById('qi-source').value);
+  if (!sq) { toast('Choose a quote to copy from'); return; }
+  const want = new Set([...document.querySelectorAll('#qi-lines .qi-line')].filter(c => c.checked).map(c => parseFloat(c.dataset.id)));
+  if (!want.size) { toast('Tick at least one line'); return; }
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const newLines = [];
+  let count = 0, sum = 0;
+  sq.lines.forEach(l => {
+    if (l.discount || l.groupMember) return;
+    if (l.groupId) {
+      const members = sq.lines.filter(m => m.groupMember === l.groupId && want.has(m.id));
+      if (!members.length) return;
+      const h = clone(l); h.id = ++uid; h.groupExpanded = true;
+      const gid = 'grp_qi' + h.id; // keyed off the fresh line id — unique across imports, distinct from confirmGroup's grp_<timestamp> namespace
+      h.groupId = gid;
+      h.unitPrice = Math.round(members.reduce((s, m) => s + amt(m), 0) * 100) / 100; // re-derive for the ticked subset
+      newLines.push(h);
+      members.forEach(m => { const c = clone(m); c.id = ++uid; c.groupMember = gid; newLines.push(c); sum += amt(c); count++; });
+    } else if (want.has(l.id)) {
+      const c = clone(l); c.id = ++uid; newLines.push(c); sum += l.note ? 0 : amt(c); count++;
+    }
+  });
+  if (!newLines.length) { toast('Tick at least one line'); return; }
+  lines = lines.concat(newLines);
+  isDirty = true;
+  document.getElementById('qi-dialog').remove();
+  renderLines(); recalc();
+  toast('✓ ' + count + ' line' + (count !== 1 ? 's' : '') + ' copied from ' + sq.ref + ' (£' + (Math.round(sum*100)/100).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' ex VAT) — not saved yet');
 }
 
 async function duplicateQuote(ref) {
