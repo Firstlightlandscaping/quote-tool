@@ -2561,6 +2561,20 @@ function pushComponentToLine(lineId, comp) {
 // "+ Add" on an existing misc item — offers BOTH Option 1 (price list) and Option 2 (manual),
 // matching the initial misc-item creation UI. Each option adds to the line immediately and the
 // dialog stays open so several components can be added in one go; "Done" closes it.
+// Done guard for the Add Component modal — same convention as spAxDone (schedule
+// add-item dialog): anything typed/selected but never "+ Add"-ed must not be
+// silently discarded (the trap that once lost a £1,271 material — a95ed31 class).
+// Cancel returns to the dialog so the add button can be pressed; OK discards.
+function aclDone() {
+  const g = id => ((document.getElementById(id)||{value:''}).value || '').trim();
+  const manualTouched = g('aclc-desc') || (parseFloat(g('aclc-cost'))||0) > 0 || g('aclc-unit') || g('aclc-supplier') || g('aclc-url') || g('aclc-notes');
+  if (manualTouched || g('acld-select') || g('aclm-select')) {
+    const what = g('aclc-desc') ? '"' + g('aclc-desc') + '"' : 'a selected item';
+    if (!confirm('You have ' + what + ' entered but NOT added to the component list — press its "+ Add" button first if you want it.\n\nClose anyway and discard it?')) return;
+  }
+  const d = document.getElementById('line-comp-dialog');
+  if (d) d.remove();
+}
 function addComponentToLine(lineId) {
   const l = lines.find(x => x.id === lineId);
   if (!l) return;
@@ -2621,10 +2635,10 @@ function addComponentToLine(lineId) {
         <div style="margin-bottom:8px">
           <div class="fg" style="margin:0"><label style="font-size:11px">Notes</label><input type="text" id="aclc-notes" placeholder="e.g. check availability, order 2 weeks ahead..."></div>
         </div>
-        <button class="btn btn-primary btn-sm" onclick="aclcAddManual(${lineId})">+ Add component</button>
+        <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="aclcAddManual(${lineId})">+ Add component</button></div>
       </div>
       <div style="display:flex;justify-content:flex-end">
-        <button class="btn btn-outline" onclick="document.getElementById('line-comp-dialog').remove()">Done</button>
+        <button class="btn btn-outline" onclick="aclDone()">Done</button>
       </div>
     </div>`;
   document.body.appendChild(panel);
