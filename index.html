@@ -6446,7 +6446,10 @@ async function duplicateQuote(ref) {
   document.getElementById('in-post').value = sq.post||'';
   document.getElementById('in-sign').value = sq.sign||'';
   document.getElementById('in-vno').value = sq.vno||'';
-  document.getElementById('in-date').value = sq.date||'';
+  // Date = TODAY, not the source's issue date (Neal 2026-07-22: a duplicate kept
+  // printing the original's date) — a duplicate is a new quote issued now, same
+  // convention as newQuote. Still editable for the rare deliberate back-date.
+  document.getElementById('in-date').value = new Date().toISOString().split('T')[0];
   document.getElementById('in-sum').value = sq.sum||'';
   document.getElementById('in-ref').value = ''; // blank — assigned at save time
   document.getElementById('in-estimate').checked = (sq.status === 'Estimate'); // a copied estimate stays an estimate
