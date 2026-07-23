@@ -199,7 +199,11 @@ async function main() {
     }
     console.log(`      ${d.checklist.length} checklist items`);
     if (d.links.length) {
-      const note = d.links.map(l => `${l.desc}: ${l.url}`).join('\n');
+      // HTML note = CLICKABLE links (proven 2026-07-23: the comments API stores HTML
+      // verbatim and the notes editor renders it; markdown stays literal text).
+      // Presentation formatting, so it lives here — same rule as the delivery colour.
+      const esc = s => String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+      const note = d.links.map(l => `<p><a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.desc || l.url)}</a></p>`).join('');
       try {
         await tg('POST', `/tasks/${taskId}/comments`, { type: 'note', message: note });
         console.log('      note with ' + d.links.length + ' link(s)');
