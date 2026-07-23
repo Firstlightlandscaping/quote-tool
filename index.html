@@ -8349,6 +8349,51 @@ function toast(m) {
   clearTimeout(t._t); t._t=setTimeout(()=>t.style.opacity='0',2600);
 }
 
+// ── Stale-app warning (2026-07-23, built after the Liam stale-cache incident) ─
+// The whole app is ONE cached html file, so a stale browser cache = the whole old
+// app, old bugs included (Liam's tab ran the pre-paging truncation code weeks after
+// the fix and wrote a seed-priced line). document.lastModified = the stamp of the
+// COPY WE'RE RUNNING; a HEAD request (headers only, ~no bandwidth) fetches the
+// server's current stamp. Server newer by >60s -> amber banner with a cache-busted
+// reload. Checks: ~15s after boot, every 10 min, and on tab refocus (throttled 30s).
+// Fails silent (offline, file://, no Last-Modified header). Banner z-index 30000 —
+// above the login gate (20001) so it shows even logged out.
+const VERCHK = { own: Date.parse(document.lastModified) || 0, etag: null, last: 0, warned: false };
+function checkAppVersion() {
+  if (!/^https?:$/.test(location.protocol) || VERCHK.warned) return;
+  const now = Date.now();
+  if (now - VERCHK.last < 30000) return;
+  VERCHK.last = now;
+  fetch(location.pathname || '/', { method: 'HEAD', cache: 'no-store' }).then(r => {
+    // Strong check (GitHub Pages sends Last-Modified): server stamp vs the stamp of
+    // the copy we're RUNNING — catches a tab that loaded stale from cache at boot.
+    const lm = Date.parse(r.headers.get('last-modified') || '');
+    if (lm && VERCHK.own && lm - VERCHK.own > 60000) { VERCHK.warned = true; showStaleAppBanner(); return; }
+    // Fallback (servers without Last-Modified, e.g. npx serve): the first check
+    // records the content fingerprint, later checks flag any change — catches a
+    // deploy that lands while the tab is open.
+    const et = r.headers.get('etag');
+    if (et) {
+      if (VERCHK.etag === null) VERCHK.etag = et;
+      else if (VERCHK.etag !== et) { VERCHK.warned = true; showStaleAppBanner(); }
+    }
+  }).catch(() => {});
+}
+function showStaleAppBanner() {
+  if (document.getElementById('stale-app-banner')) return;
+  const d = document.createElement('div');
+  d.id = 'stale-app-banner';
+  d.className = 'no-print';
+  d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:#FFFBEB;border-bottom:2px solid #F59E0B;color:#92400E;font-size:13px;font-weight:600;padding:9px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
+  d.innerHTML = `<span>⚠ A newer version of the app has been released — you're running an old copy.</span>
+    <button onclick="location.href=location.pathname+'?v='+Date.now()" style="background:#F59E0B;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">↻ Refresh now</button>
+    <button onclick="this.parentElement.remove()" title="Hide until the page is next reloaded" style="background:none;border:1px solid #F59E0B;border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:#92400E">later</button>`;
+  document.body.appendChild(d);
+}
+setTimeout(checkAppVersion, 15000);
+setInterval(checkAppVersion, 10 * 60 * 1000);
+window.addEventListener('focus', checkAppVersion);
+
 recalc();
 
 
