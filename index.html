@@ -5652,7 +5652,7 @@ function spPushDialog() {
       </div>
       ${dirty ? `<div style="font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #F59E0B;border-radius:6px;padding:8px 10px;margin-bottom:12px">● You have unsaved schedule changes. The push sends the <strong>last saved</strong> version — save first so it's up to date.</div>` : ''}
       <div id="sp-push-result" style="display:none;margin-bottom:12px"></div>
-      <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
+      <div id="sp-push-footer" style="display:flex;gap:8px;justify-content:flex-end;align-items:center">
         <button class="btn btn-outline btn-sm" onclick="document.getElementById('sp-push-dialog').remove()" style="margin-right:auto">Cancel</button>
         ${dirty
           ? `<button class="btn btn-primary btn-sm" onclick="saveSchedulePlan().then(()=>spPushDialog())">💾 Save first</button>`
@@ -5688,8 +5688,16 @@ async function spDoPush(mode) {
        <div style="font-size:12px;color:var(--i2);margin-top:4px">Project id ${data.projectId} — open TeamGantt to review it.</div>
        ${data.warnings ? `<div style="font-size:12px;color:#B45309;margin-top:2px">⚠ ${data.warnings} note(s) failed — add those links by hand.</div>` : ''}
        ${data.test ? `<div style="font-size:12px;color:#B45309;margin-top:4px">This is a <strong>test copy</strong> — review it in TeamGantt, then delete it before the real push.</div>` : ''}
-       ${spPushLogHtml(data.log)}
-       <div style="margin-top:10px"><a href="https://app.teamgantt.com" target="_blank" rel="noopener noreferrer" class="btn btn-outline btn-sm" style="text-decoration:none">Open TeamGantt ↗</a></div>`;
+       ${spPushLogHtml(data.log)}`;
+    // Success = a DONE dialog (Neal 2026-07-23): the push button must go — every push
+    // creates a NEW TeamGantt project, so a second click would duplicate it — and
+    // "Cancel" read as "not pushed". Footer becomes Open TeamGantt + Close.
+    const h3 = dlg.querySelector('h3'); if (h3) h3.textContent = '✓ Pushed to TeamGantt';
+    const sub = dlg.querySelector('p'); if (sub) sub.style.display = 'none';
+    const foot = document.getElementById('sp-push-footer');
+    if (foot) foot.innerHTML =
+      `<a href="https://app.teamgantt.com" target="_blank" rel="noopener noreferrer" class="btn btn-primary btn-sm" style="text-decoration:none">Open TeamGantt ↗</a>
+       <button class="btn btn-outline btn-sm" onclick="document.getElementById('sp-push-dialog').remove()">Close</button>`;
   } catch (e) {
     dlg.querySelectorAll('button').forEach(b => b.disabled = false);
     if (result) result.innerHTML = `<div style="font-size:13px;color:#DC2626">⚠ Couldn't reach the push service: ${cwEsc(e.message)}</div>`;
