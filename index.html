@@ -4150,6 +4150,19 @@ function spAddWorkdays(iso, n) {
   while (left > 0) { d.setDate(d.getDate() + step); if (spIsWorkday(d)) left--; }
   return spISO(d);
 }
+// Calendar-open anchor for EMPTY date fields: a min attribute makes Chrome/Edge open the
+// picker at the min month, so the calendar lands on the job's month without prefilling a
+// value. A value prefill broke picking the prefilled date itself — a same-value pick fires
+// no change event, so the blur revert wiped what the user chose. `back` days of slack keep
+// run-up dates (e.g. delivery the week before start) pickable; min is only rendered while
+// the field is empty, so editing an existing date is never constrained.
+function spPickerMin(back) {
+  const p = spEnsurePlan();
+  if (!p.startDate) return '';
+  const d = new Date(p.startDate + 'T00:00:00');
+  d.setDate(d.getDate() - (back || 0));
+  return spISO(d);
+}
 function spQuoteLabour() {
   const cost = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labTotal||0), 0);
   return { cost, manDays: cost / spRate() };
@@ -5165,7 +5178,7 @@ function renderSchedule() {
     return `<div style="background:${isUn ? '#FFFBEB' : 'white'};border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:6px;padding:7px 9px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1 1 120px;min-width:110px;padding:4px 7px;border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:4px;font-size:14px;font-weight:600;${isUn ? 'color:#92400E;background:white;' : 'color:var(--i1);'}">
-        <input type="date" value="${row.date||''}" onchange="spDelivDate(${i},this.value)" onfocus="if(!this.value&&spEnsurePlan().startDate)this.value=spEnsurePlan().startDate" onblur="const r=spEnsurePlan().deliveries[${i}];if(r&&!r.date)this.value=''" title="Delivery date — the calendar opens at the job start date" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
+        <input type="date" value="${row.date||''}" ${!row.date && spPickerMin(7) ? `min="${spPickerMin(7)}"` : ''} onchange="spDelivDate(${i},this.value)" title="Delivery date — the calendar opens at the job start month" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
         ${p.tasks.some((t,ti) => dates[ti]) ? `<select onchange="spDelivDateFromTask(${i},this)" title="Set the date to the working day before a task starts — a one-off shortcut, nothing auto-fills" style="font-size:11px;padding:3px 4px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);background:white;max-width:118px;cursor:pointer">
           <option value="">📅 before…</option>
           ${p.tasks.map((t,ti) => { const d = dates[ti]; return d ? `<option value="${d.start}">${ti+1}. ${cwEsc((t.name||'').slice(0,18))} (${spNice(d.start)})</option>` : ''; }).join('')}
@@ -5196,7 +5209,7 @@ function renderSchedule() {
       <p style="font-size:11px;color:var(--i3);margin:0 0 12px">This plan saves with the quote. The agent then pushes it to TeamGantt as <strong>"${cwEsc(ref||'QT-????')}${cust ? ' ' + cwEsc(cust) : ''}"</strong> built from your template — Project Breakdown tasks and dated Deliveries with material checklists. No chart here, deliberately.</p>
       <div style="display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;margin-bottom:6px">
         <div class="fg" style="margin:0"><label>Job start date</label><input type="date" value="${p.startDate||''}" onchange="spSetStartDate(this.value)" title="Changing this slides the WHOLE plan — cascaded and manually-dated tasks move by the same number of working days"></div>
-        <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" onchange="spSetField('deadline',this.value)" onfocus="if(!this.value&&spEnsurePlan().startDate)this.value=spEnsurePlan().startDate" onblur="if(!spEnsurePlan().deadline)this.value=''" title="The calendar opens at the job start date"></div>
+        <div class="fg" style="margin:0"><label>Deadline</label><input type="date" value="${p.deadline||''}" ${!p.deadline && spPickerMin(0) ? `min="${spPickerMin(0)}"` : ''} onchange="spSetField('deadline',this.value)" title="The calendar opens at the job start month"></div>
         <div class="fg" style="margin:0"><label>Team size</label><input type="number" value="${crew}" min="1" step="1" onchange="spSetField('crewSize',parseInt(this.value)||1)" style="width:64px"></div>
         <div class="fg" style="margin:0"><label>£ / man-day</label><input type="number" value="${spRate()}" min="1" step="1" onchange="spSetField('manDayRate',parseFloat(this.value)||350)" title="Your per-man day rate — man-days = labour £ ÷ this" style="width:78px"></div>
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
@@ -5341,10 +5354,14 @@ function spRegenDeliveries() {
   spEnsurePlan().deliveries = spDefaultDeliveries();
   spMark(); renderSchedule();
 }
-// Split a delivery: the dialog shows the row's materials GROUPED BY TASK (with a
-// "Not in a task yet" section for the rest) — the question a phase split answers is
-// "what does this task need?". "Move all" on a section = phase drop; typed amounts /
-// Half = site-space split (e.g. ballast in thirds). One mechanism for both.
+// Split a delivery — TWO groupings of the same materials, one mechanism (2026-07-23, Neal):
+// "by phase" (the original view) groups by TASK — "Move all" on a section = that phase's
+// drop. "by item" shows ONE combined line per material with the whole-order total (the
+// same figures as the ☰ items dialog — Neal edits quantities there, then splits), with
+// the phase breakdown as grey provenance. The toggle remembers the last-used view
+// (localStorage fl_split_view). Both views emit the same .sp-mv inputs carrying every
+// underlying alloc idx, so spConfirmSplit (greedy largest-fragment-first) is untouched.
+// NB toggling rebuilds the dialog, so typed amounts reset — pick the view first.
 function spSplitDeliv(i) {
   const p = spEnsurePlan();
   const row = p.deliveries[i];
@@ -5355,48 +5372,80 @@ function spSplitDeliv(i) {
   const taskOf = {};
   (p.tasks||[]).forEach((t, ti) => (t.srcLineIds||[]).forEach(id => { taskOf[id] = ti; }));
   const lineName = id => { const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
-  // Same-material fragments within a section MERGE into one combined line (Neal
-  // 2026-07-17: two grab-wagon quote lines edited 3.5→3 showed as 2.143 + 0.857 —
-  // nobody orders in fragments). The line carries every underlying alloc idx; the
-  // confirm draws the typed amount from the largest fragment first.
-  const secs = {};
-  (row.alloc||[]).forEach((a, idx) => {
-    if (a.qty <= 0) return;
-    const ti = taskOf[a.lineId] !== undefined ? taskOf[a.lineId] : -1;
-    const sec = (secs[ti] = secs[ti] || []);
-    const hit = sec.find(x => x.key === a.key);
-    if (hit) {
-      hit.qty = Math.round((hit.qty + a.qty) * 1000) / 1000;
-      hit.idxs.push(idx);
-      if (!hit.lineIds.includes(a.lineId)) hit.lineIds.push(a.lineId);
-    } else {
-      sec.push({ key: a.key, qty: a.qty, idxs: [idx], lineIds: [a.lineId], meta: meta[a.key] || {} });
-    }
-  });
-  const order = Object.keys(secs).map(Number).sort((x, y) => (x === -1 ? 1e9 : x) - (y === -1 ? 1e9 : y));
-  const secTitle = ti => ti === -1 ? 'Not in a task yet' : 'for ' + (ti+1) + '. ' + cwEsc((p.tasks[ti]||{}).name || 'task');
+  let view = 'phase';
+  try { if (localStorage.getItem('fl_split_view') === 'item') view = 'item'; } catch (e) {}
+  const itemRow = (a, extraHtml, indent) => `
+        <div style="display:flex;align-items:center;gap:8px;padding:4px 0 4px ${indent}px;font-size:13px;color:var(--i1)">
+          <span style="flex:1;min-width:140px;line-height:1.3"><strong>${Math.round(a.qty*1000)/1000}</strong> × ${cwEsc(a.meta.description||'')}${a.meta.unit ? ' <span style="color:var(--i3)">(' + cwEsc(a.meta.unit) + ')</span>' : ''}${extraHtml}</span>
+          <span style="font-size:12px;color:var(--i3)">move</span>
+          <input type="number" class="sp-mv" data-idxs="${a.idxs.join(',')}" min="0" max="${Math.round(a.qty*1000)/1000}" step="any" value="0" style="width:92px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;font-size:14px;text-align:right;color:var(--i1)">
+          <button type="button" onclick="spSplitFrac(this,.5)" title="Move half of this item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:4px 9px;color:var(--i1)">Half</button>
+          <button type="button" onclick="spSplitFrac(this,1)" title="Move all of this item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:4px 9px;color:var(--i1)">All</button>
+        </div>`;
+  let bodyHtml;
+  if (view === 'item') {
+    // ONE line per material across the whole row — totals match the ☰ items dialog.
+    const items = [];
+    (row.alloc||[]).forEach((a, idx) => {
+      if (a.qty <= 0) return;
+      const hit = items.find(x => x.key === a.key);
+      if (hit) { hit.qty = Math.round((hit.qty + a.qty) * 1000) / 1000; hit.idxs.push(idx); hit.frags.push({ qty: a.qty, lineId: a.lineId }); }
+      else items.push({ key: a.key, qty: a.qty, idxs: [idx], frags: [{ qty: a.qty, lineId: a.lineId }], meta: meta[a.key] || {} });
+    });
+    items.sort((x, y) => (x.meta.description || '').localeCompare(y.meta.description || ''));
+    const fragLabel = f => {
+      const ti = taskOf[f.lineId];
+      return (ti !== undefined ? (ti+1) + '. ' + cwEsc((p.tasks[ti]||{}).name || 'task') : cwEsc(lineName(f.lineId))) + ' (' + Math.round(f.qty*1000)/1000 + ')';
+    };
+    bodyHtml = items.map(a => itemRow(a, '', 0) + (a.frags.length > 1
+      ? `<div style="font-size:11px;color:var(--i3);padding:0 0 4px 14px;margin-top:-3px;line-height:1.4">for ${a.frags.map(fragLabel).join(' · ')}</div>` : '')).join('');
+  } else {
+    // Same-material fragments within a section MERGE into one combined line (Neal
+    // 2026-07-17: two grab-wagon quote lines edited 3.5→3 showed as 2.143 + 0.857 —
+    // nobody orders in fragments). The line carries every underlying alloc idx; the
+    // confirm draws the typed amount from the largest fragment first.
+    const secs = {};
+    (row.alloc||[]).forEach((a, idx) => {
+      if (a.qty <= 0) return;
+      const ti = taskOf[a.lineId] !== undefined ? taskOf[a.lineId] : -1;
+      const sec = (secs[ti] = secs[ti] || []);
+      const hit = sec.find(x => x.key === a.key);
+      if (hit) {
+        hit.qty = Math.round((hit.qty + a.qty) * 1000) / 1000;
+        hit.idxs.push(idx);
+        if (!hit.lineIds.includes(a.lineId)) hit.lineIds.push(a.lineId);
+      } else {
+        sec.push({ key: a.key, qty: a.qty, idxs: [idx], lineIds: [a.lineId], meta: meta[a.key] || {} });
+      }
+    });
+    const order = Object.keys(secs).map(Number).sort((x, y) => (x === -1 ? 1e9 : x) - (y === -1 ? 1e9 : y));
+    const secTitle = ti => ti === -1 ? 'Not in a task yet' : 'for ' + (ti+1) + '. ' + cwEsc((p.tasks[ti]||{}).name || 'task');
+    bodyHtml = order.map(ti => `
+        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-bottom:3px;border-bottom:1px solid var(--bd)">
+          <span style="font-size:14px;font-weight:700;color:${ti === -1 ? 'var(--i3)' : 'var(--i1)'};flex:1">${secTitle(ti)}</span>
+          <button type="button" onclick="spSplitSection(this)" style="background:var(--bg2);border:1px solid var(--i3);border-radius:5px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--i1);font-weight:700">Move all</button>
+        </div>
+        ${secs[ti].map(a => itemRow(a, ti === -1 ? ' <span style="color:var(--i3);font-size:11px">— ' + [...new Set(a.lineIds.map(lineName))].map(cwEsc).join(' + ') + '</span>' : '', 12)).join('')}
+      `).join('');
+  }
+  const segBtn = (v, lbl) => `<button type="button" onclick="spSplitSetView(${i},'${v}')" style="border:none;cursor:pointer;font-size:12px;padding:5px 12px;font-weight:600;${view === v ? 'background:var(--i1);color:white' : 'background:white;color:var(--i2)'}">${lbl}</button>`;
   const panel = document.createElement('div');
   panel.id = 'sp-split-dialog';
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:640px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-      <h3 style="margin:0 0 4px;font-size:17px">⑃ Split "${cwEsc(row.label||row.supplier)}"</h3>
-      <p style="font-size:13px;color:var(--i2);margin:0 0 10px"><strong>Move all</strong> on a task's section makes that phase's drop. Or type amounts (or <strong>Half</strong>) for a part-load. What's left stays in this delivery.</p>
+      <div style="display:flex;align-items:center;gap:10px;margin:0 0 4px">
+        <h3 style="margin:0;font-size:17px;flex:1">⑃ Split "${cwEsc(row.label||row.supplier)}"</h3>
+        <span style="display:inline-flex;border:1px solid var(--bd);border-radius:6px;overflow:hidden">${segBtn('phase','by phase')}${segBtn('item','by item')}</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;margin:0 0 10px">
+        <p style="font-size:13px;color:var(--i2);margin:0;flex:1">${view === 'item'
+          ? 'One line per material — whole-order totals, matching the ☰ items view. Type amounts (or <strong>Half</strong>/<strong>All</strong>) to move. What’s left stays in this delivery.'
+          : '<strong>Move all</strong> on a task’s section makes that phase’s drop. Or type amounts (or <strong>Half</strong>) for a part-load. What’s left stays in this delivery.'}</p>
+        ${view === 'item' ? '<button type="button" onclick="spSplitHalfAll()" title="Set every material to half — a quick two-even-drops split" style="background:var(--bg2);border:1px solid var(--i3);border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:var(--i1);font-weight:700;white-space:nowrap">½ Half of everything</button>' : ''}
+      </div>
       <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
-      ${order.map(ti => `
-        <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-bottom:3px;border-bottom:1px solid var(--bd)">
-          <span style="font-size:14px;font-weight:700;color:${ti === -1 ? 'var(--i3)' : 'var(--i1)'};flex:1">${secTitle(ti)}</span>
-          <button type="button" onclick="spSplitSection(this)" style="background:var(--bg2);border:1px solid var(--i3);border-radius:5px;cursor:pointer;font-size:13px;padding:4px 12px;color:var(--i1);font-weight:700">Move all</button>
-        </div>
-        ${secs[ti].map(a => `
-          <div style="display:flex;align-items:center;gap:8px;padding:4px 0 4px 12px;font-size:13px;color:var(--i1)">
-            <span style="flex:1;min-width:140px;line-height:1.3"><strong>${Math.round(a.qty*1000)/1000}</strong> × ${cwEsc(a.meta.description||'')}${a.meta.unit ? ' <span style="color:var(--i3)">(' + cwEsc(a.meta.unit) + ')</span>' : ''}${ti === -1 ? ' <span style="color:var(--i3);font-size:11px">— ' + [...new Set(a.lineIds.map(lineName))].map(cwEsc).join(' + ') + '</span>' : ''}</span>
-            <span style="font-size:12px;color:var(--i3)">move</span>
-            <input type="number" class="sp-mv" data-idxs="${a.idxs.join(',')}" min="0" max="${a.qty}" step="any" value="0" style="width:92px;padding:5px 7px;border:1px solid var(--bd);border-radius:5px;font-size:14px;text-align:right;color:var(--i1)">
-            <button type="button" onclick="spSplitFrac(this,.5)" title="Move half of this item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:4px 9px;color:var(--i1)">Half</button>
-            <button type="button" onclick="spSplitFrac(this,1)" title="Move all of this item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:4px 9px;color:var(--i1)">All</button>
-          </div>`).join('')}
-      `).join('')}
+      ${bodyHtml}
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;margin-top:14px">
         <button class="btn btn-outline" onclick="document.getElementById('sp-split-dialog').remove()" style="margin-right:auto">Cancel</button>
@@ -5417,6 +5466,19 @@ function spSplitDeliv(i) {
 function spSplitFrac(btn, f) {
   const inp = btn.parentElement.querySelector('input.sp-mv');
   if (inp) inp.value = Math.round(parseFloat(inp.max) * f * 1000) / 1000;
+}
+// Toggle the split dialog's grouping (by phase / by item) — rebuilds the dialog, so any
+// typed amounts reset; the choice is remembered for next time.
+function spSplitSetView(i, v) {
+  try { localStorage.setItem('fl_split_view', v); } catch (e) {}
+  spSplitDeliv(i);
+}
+// "½ Half of everything" (by-item view): every material to half its total — the quick
+// path to two roughly even drops. Amounts stay editable before confirming.
+function spSplitHalfAll() {
+  document.querySelectorAll('#sp-split-dialog .sp-mv').forEach(inp => {
+    inp.value = Math.round(parseFloat(inp.max) * .5 * 1000) / 1000;
+  });
 }
 function spSplitSection(btn) {
   // set every item input in THIS section (the sibling rows until the next header) to max
