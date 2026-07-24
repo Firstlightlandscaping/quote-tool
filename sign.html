@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<!-- CSP: this page holds NO credentials and talks ONLY to the signing edge function.
+     Both project hosts are listed so the same page works on live and in sandbox testing
+     (which host is used is decided by the same localStorage override the app uses). -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; connect-src https://zqowzcmyvaudgyfncfrz.supabase.co https://erbrflbialsyxbjawopy.supabase.co; frame-src about: data:; base-uri 'none'; form-action 'none'">
+<title>Sign your contract — First Light Landscaping</title>
+<style>
+  :root { --green:#2F5233; --amber:#B45309; --ink:#1e293b; --i2:#475569; --i3:#64748b; --bd:#e2e8f0; }
+  * { box-sizing: border-box; margin: 0; }
+  body { font-family: -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: #F1F5F9; color: var(--ink); }
+  header { background: var(--green); color: #fff; padding: 14px 18px; font-size: 15px; font-weight: 600; letter-spacing: .3px; }
+  header .sub { font-weight: 400; font-size: 12px; opacity: .85; margin-top: 2px; }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 14px; }
+  .card { background: #fff; border: 1px solid var(--bd); border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
+  .card h2 { font-size: 16px; margin-bottom: 6px; }
+  .muted { color: var(--i3); font-size: 12px; }
+  .notice { font-size: 13px; color: var(--i2); }
+  .err { border-color: #FECACA; background: #FEF2F2; color: #991B1B; font-size: 14px; }
+  .ok-banner { border-color: #BBF7D0; background: #F0FDF4; color: #14532D; font-size: 14px; }
+  .amber-banner { border-color: #FDE68A; background: #FFFBEB; color: #92400E; font-size: 13px; }
+  #doc-wrap { display: none; background: #fff; border: 1px solid var(--bd); border-radius: 12px; overflow: hidden; margin-bottom: 14px; }
+  #doc-scroll { overflow-x: auto; }
+  #doc { width: 100%; min-width: 640px; border: 0; display: block; }
+  label { font-size: 12px; font-weight: 600; color: var(--i2); display: block; margin-bottom: 4px; }
+  input[type=text] { width: 100%; padding: 10px; border: 1px solid var(--bd); border-radius: 8px; font-size: 15px; }
+  .agree { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; margin: 12px 0; cursor: pointer; }
+  .agree input { width: 18px; height: 18px; margin-top: 1px; flex: none; }
+  canvas#pad { width: 100%; height: 170px; border: 1px dashed #94a3b8; border-radius: 10px; background: #FDFDFB; touch-action: none; cursor: crosshair; display: block; }
+  .btn { border: 0; border-radius: 9px; padding: 12px 18px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  .btn-primary { background: var(--green); color: #fff; width: 100%; }
+  .btn-primary:disabled { opacity: .5; cursor: default; }
+  .btn-ghost { background: none; border: 1px solid var(--bd); color: var(--i2); padding: 8px 12px; font-size: 13px; font-weight: 500; }
+  .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #cbd5e1; border-top-color: var(--green); border-radius: 50%; animation: sp 1s linear infinite; vertical-align: -2px; }
+  @keyframes sp { to { transform: rotate(360deg); } }
+  @media print { header, .card, #sign-panel { display: none !important; } #doc-wrap { border: 0; } }
+</style>
+</head>
+<body>
+<header>First Light Landscaping<div class="sub">Contract of Works — electronic signing</div></header>
+<div class="wrap">
+
+  <div class="card" id="status-card">
+    <div class="notice"><span class="spin"></span> Loading your contract…</div>
+  </div>
+
+  <div id="doc-wrap"><div id="doc-scroll"><iframe id="doc" title="Your contract"></iframe></div></div>
+
+  <div class="card" id="sign-panel" style="display:none">
+    <h2>Sign this contract</h2>
+    <div class="notice" style="margin-bottom:12px">Please read the whole contract above before signing.</div>
+    <div style="margin-bottom:12px">
+      <label for="typed-name">Type your full name</label>
+      <input type="text" id="typed-name" autocomplete="name" placeholder="Your full name">
+    </div>
+    <div style="margin-bottom:4px">
+      <div class="row-between">
+        <label for="pad" style="margin:0">Draw your signature (finger or mouse)</label>
+        <button class="btn btn-ghost" type="button" onclick="padClear()">Clear</button>
+      </div>
+      <canvas id="pad"></canvas>
+    </div>
+    <label class="agree"><input type="checkbox" id="agree">
+      <span>I confirm I have read this Contract of Works and I agree to its terms. I understand that signing here is legally binding, the same as signing on paper.</span></label>
+    <button class="btn btn-primary" id="sign-btn" onclick="doSign()">Sign contract</button>
+    <div class="muted" style="margin-top:10px">The date, time and device details of your signature are securely recorded.</div>
+  </div>
+
+</div>
+<script>
+'use strict';
+// The signing function is the ONLY thing this page talks to. No database access, no keys.
+// The localStorage override mirrors the app's own DB switch, so testing against the
+// sandbox uses the same mechanism; a client's browser never has it set → live.
+var FN;
+try { FN = (localStorage.getItem('fl_supabase_url') || 'https://zqowzcmyvaudgyfncfrz.supabase.co') + '/functions/v1/sign-contract'; }
+catch (e) { FN = 'https://zqowzcmyvaudgyfncfrz.supabase.co/functions/v1/sign-contract'; }
+
+var token = new URLSearchParams(location.search).get('t') || '';
+var state = null;         // last GET payload
+var padCtx = null, padDrawn = false;
+
+function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function statusCard(html, cls) {
+  var el = document.getElementById('status-card');
+  el.className = 'card' + (cls ? ' ' + cls : '');
+  el.innerHTML = html;
+}
+function fmtDate(iso) {
+  if (!iso) return '';
+  var d = new Date(iso);
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) +
+    ' at ' + d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+function contactLine() {
+  return '<div class="muted" style="margin-top:8px">Questions? Call First Light Landscaping on 0113 2580428.</div>';
+}
+
+async function sha256Hex(str) {
+  var d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(d), function (x) { return x.toString(16).padStart(2, '0'); }).join('');
+}
+
+// ── load ──────────────────────────────────────────────────────────────────────
+async function init() {
+  if (!token) { statusCard('This signing link is incomplete — please use the exact link you were sent.' + contactLine(), 'err'); return; }
+  var res, body;
+  try {
+    res = await fetch(FN + '?t=' + encodeURIComponent(token));
+    body = await res.json();
+  } catch (e) {
+    statusCard('Could not load the contract — please check your internet connection and try again.' + contactLine(), 'err');
+    return;
+  }
+  if (!res.ok || !body.ok) {
+    statusCard(esc(body && body.error || 'This signing link is not valid.') + contactLine(), 'err');
+    return;
+  }
+  state = body;
+  renderDoc(body);
+  if (body.alreadySigned || body.allSigned) {
+    showSignedState(body);
+  } else {
+    var waiting = (body.coSigners || []).filter(function (c) { return !c.signed; });
+    var done = (body.coSigners || []).filter(function (c) { return c.signed; });
+    statusCard(
+      '<h2>Hello ' + esc(body.signerName) + '</h2>' +
+      '<div class="notice">Please review this Contract of Works for <strong>' + esc(body.customer) + '</strong> (ref ' + esc(body.quoteRef) + '), then sign at the bottom of the page.</div>' +
+      (done.length ? '<div class="muted" style="margin-top:6px">✓ Already signed by ' + done.map(function (c) { return esc(c.name); }).join(' and ') + '.</div>' : '') +
+      (waiting.length ? '<div class="muted" style="margin-top:6px">' + waiting.map(function (c) { return esc(c.name); }).join(' and ') + ' will also be asked to sign.</div>' : ''));
+    document.getElementById('sign-panel').style.display = 'block';
+    document.getElementById('typed-name').value = body.signerName || '';
+    padInit();
+  }
+}
+
+function renderDoc(body) {
+  var iframe = document.getElementById('doc');
+  iframe.onload = function () {
+    injectSignatures(iframe, body);
+    sizeIframe(iframe);
+    setTimeout(function () { sizeIframe(iframe); }, 400);   // images settle
+  };
+  iframe.srcdoc = body.contractHtml;
+  document.getElementById('doc-wrap').style.display = 'block';
+}
+function sizeIframe(iframe) {
+  try { iframe.style.height = (iframe.contentDocument.documentElement.scrollHeight + 20) + 'px'; } catch (e) {}
+}
+
+// Signed signatures live as DATA, never inside the frozen document — they are painted
+// into the CLIENT signature cells (and an audit block appended) at display time only.
+function injectSignatures(iframe, body) {
+  try {
+    var doc = iframe.contentDocument;
+    var signed = (body.signatures || []).filter(function (s) { return s.signed; });
+    if (!signed.length) return;
+    var rows = doc.querySelectorAll('.cw-sign-row');
+    if (rows.length) {
+      var vals = rows[0].querySelectorAll('.cw-sign-cell .val');
+      if (vals.length >= 3) {
+        vals[0].innerHTML = signed.map(function (s) {
+          return s.image ? '<img src="' + s.image + '" alt="signature" style="max-height:40px;max-width:170px;display:block;margin:2px 0">' : '';
+        }).join('');
+        vals[1].textContent = signed.map(function (s) { return s.typedName || s.name; }).join(' · ');
+        vals[2].textContent = signed.map(function (s) {
+          return s.signedAt ? new Date(s.signedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+        }).join(' · ');
+      }
+    }
+    // audit block
+    var sign = doc.querySelector('.cw-sign');
+    if (sign && !doc.getElementById('esign-audit')) {
+      var audit = doc.createElement('div');
+      audit.id = 'esign-audit';
+      audit.style.cssText = 'margin:26px 36px 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid';
+      audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + esc(body.quoteRef) + '</div>' +
+        (body.signatures || []).map(function (s) {
+          return '<div>' + esc(s.name) + ': ' + (s.signed ? 'signed ' + esc(fmtDate(s.signedAt)) + (s.typedName ? ' (typed name: ' + esc(s.typedName) + ')' : '') : 'not yet signed') + '</div>';
+        }).join('') +
+        '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
+        '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. ' +
+        'Full evidence (date, time, network address, device) is held on record.</div>';
+      sign.parentNode.insertBefore(audit, sign.nextSibling);
+      // fingerprint computed HERE from the document actually being shown — honest by construction
+      sha256Hex(body.contractHtml).then(function (h) {
+        var el = doc.getElementById('esign-hash');
+        if (el) el.textContent = 'Document fingerprint (SHA-256): ' + h;
+      });
+    }
+  } catch (e) {}
+}
+
+function showSignedState(body) {
+  var waiting = (body.signatures || []).filter(function (s) { return !s.signed; });
+  statusCard(
+    '<h2>✓ ' + (body.allSigned ? 'Contract signed' : 'Your signature is recorded') + '</h2>' +
+    '<div class="notice">' +
+      (body.alreadySigned ? 'You signed this contract' + (body.signedAt ? ' on ' + esc(fmtDate(body.signedAt)) : '') + '. ' : '') +
+      (body.allSigned
+        ? 'All parties have signed — the agreement is complete. Keep this link to view your signed copy at any time.'
+        : 'Waiting for ' + waiting.map(function (s) { return esc(s.name); }).join(' and ') + ' to sign.') +
+    '</div>' +
+    '<div style="margin-top:12px"><button class="btn btn-ghost" onclick="printDoc()">🖨 Print / save as PDF</button></div>',
+    'ok-banner');
+  document.getElementById('sign-panel').style.display = 'none';
+}
+function printDoc() {
+  try { document.getElementById('doc').contentWindow.print(); } catch (e) { window.print(); }
+}
+
+// ── signature pad (same approach as the app's Company Signature pad) ──────────
+function padInit() {
+  var c = document.getElementById('pad');
+  if (c._init) return;
+  c._init = true;
+  var dpr = window.devicePixelRatio || 1;
+  var cssW = c.clientWidth || 460, cssH = c.clientHeight || 170;
+  c.width = cssW * dpr; c.height = cssH * dpr;
+  var ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1e2c3d';
+  padCtx = ctx;
+  var drawing = false;
+  function pos(e) { var r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+  c.addEventListener('pointerdown', function (e) { e.preventDefault(); drawing = true; c.setPointerCapture(e.pointerId); var p = pos(e); ctx.beginPath(); ctx.moveTo(p[0], p[1]); });
+  c.addEventListener('pointermove', function (e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.lineTo(p[0], p[1]); ctx.stroke(); padDrawn = true; });
+  c.addEventListener('pointerup', function () { drawing = false; });
+  c.addEventListener('pointercancel', function () { drawing = false; });
+}
+function padClear() {
+  var c = document.getElementById('pad');
+  if (!padCtx) return;
+  padCtx.save(); padCtx.setTransform(1, 0, 0, 1, 0, 0);
+  padCtx.clearRect(0, 0, c.width, c.height);
+  padCtx.restore();
+  padDrawn = false;
+}
+function padImage() {
+  if (!padDrawn) return null;
+  var c = document.getElementById('pad');
+  var ctx = c.getContext('2d');
+  var w = c.width, h = c.height;
+  var d = ctx.getImageData(0, 0, w, h).data;
+  var minX = w, minY = h, maxX = -1, maxY = -1, x, y;
+  for (y = 0; y < h; y++) for (x = 0; x < w; x++) {
+    if (d[(y * w + x) * 4 + 3] > 10) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return null;
+  var pad = 8, sx = Math.max(0, minX - pad), sy = Math.max(0, minY - pad);
+  var sw = Math.min(w, maxX + pad) - sx, sh = Math.min(h, maxY + pad) - sy;
+  var out = document.createElement('canvas');
+  out.width = sw; out.height = sh;
+  out.getContext('2d').drawImage(c, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out.toDataURL('image/png');
+}
+
+// ── sign ──────────────────────────────────────────────────────────────────────
+async function doSign() {
+  var name = document.getElementById('typed-name').value.trim();
+  var agreed = document.getElementById('agree').checked;
+  var img = padImage();
+  if (!name) { alert('Please type your full name.'); return; }
+  if (!img) { alert('Please draw your signature in the box.'); return; }
+  if (!agreed) { alert('Please tick the box to confirm you agree to the contract terms.'); return; }
+  var btn = document.getElementById('sign-btn');
+  btn.disabled = true; btn.textContent = 'Signing…';
+  var res, body;
+  try {
+    res = await fetch(FN, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: token, typedName: name, signatureImage: img, agreed: true })
+    });
+    body = await res.json();
+  } catch (e) {
+    alert('Could not reach the server — please check your connection and try again.');
+    btn.disabled = false; btn.textContent = 'Sign contract';
+    return;
+  }
+  if (!res.ok || !body.ok) {
+    alert((body && body.error) || 'Signing failed — please try again.');
+    btn.disabled = false; btn.textContent = 'Sign contract';
+    return;
+  }
+  // reload the state so the signed copy (signature cells + audit block) renders
+  try {
+    var r2 = await fetch(FN + '?t=' + encodeURIComponent(token));
+    var b2 = await r2.json();
+    if (r2.ok && b2.ok) { state = b2; renderDoc(b2); showSignedState(b2); window.scrollTo(0, 0); return; }
+  } catch (e) {}
+  showSignedState({ allSigned: body.allSigned, alreadySigned: true, signedAt: body.signedAt, signatures: [] });
+  window.scrollTo(0, 0);
+}
+
+init();
+</script>
+</body>
+</html>
