@@ -44,6 +44,12 @@ drop policy if exists fl_authenticated_all on contract_signing;
 create policy fl_authenticated_all on contract_signing
   for all to authenticated using (true) with check (true);
 
+-- §2 (Phase 2): company countersignature — {name, role, image (data URL), updatedAt, updatedBy}
+-- Same storage pattern as contract_terms/note_templates: jsonb on company_settings,
+-- existing RLS covers it. Captured once in the Price Manager "Company Signature" card;
+-- stamped into every contract frozen for e-signature at send time.
+alter table company_settings add column if not exists company_signature jsonb;
+
 -- PostgREST schema-cache gotcha: without this, the API 400s (PGRST204) on the new table
 NOTIFY pgrst, 'reload schema';
 

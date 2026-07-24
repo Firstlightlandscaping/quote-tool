@@ -915,6 +915,31 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       </div>
     </div>
   </div>
+  <div class="card no-print" id="company-sign-card">
+    <div class="ch"><span class="ct">Company Signature</span><span id="csig-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--i2)">Used to <strong>countersign e-signed contracts</strong> — every contract sent for signature goes out already signed with this. Stored in the database behind the login, never in this page's code.</div>
+      <div id="csig-current" style="font-size:12px;color:var(--i3)">Not set up yet.</div>
+      <div id="csig-editor" style="display:none;flex-direction:column;gap:10px;border-top:1px solid var(--bd);padding-top:10px">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <div class="fg"><label>Name</label><input type="text" id="csig-name" placeholder="e.g. Neal Baker" style="width:100%"></div>
+          <div class="fg"><label>Role</label><input type="text" id="csig-role" placeholder="e.g. Director" style="width:100%"></div>
+        </div>
+        <div class="fg">
+          <label>Draw your signature below (mouse or finger)</label>
+          <canvas id="csig-canvas" style="width:100%;max-width:460px;height:160px;border:1px dashed var(--bd);border-radius:8px;background:#FDFDFB;touch-action:none;cursor:crosshair"></canvas>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-primary btn-sm" onclick="csigSave()">Save signature</button>
+          <button class="btn btn-outline btn-sm" onclick="csigClear()">Clear</button>
+          <button class="btn btn-outline btn-sm" onclick="document.getElementById('csig-file').click()">⬆ Upload image instead</button>
+          <input type="file" id="csig-file" accept="image/*" style="display:none" onchange="csigUpload(this)">
+          <button class="btn btn-outline btn-sm" onclick="csigCancelEdit()">Cancel</button>
+        </div>
+      </div>
+      <div><button class="btn btn-outline btn-sm" id="csig-edit-btn" onclick="csigOpenEditor()">✍ Set up signature</button></div>
+    </div>
+  </div>
   <div class="card no-print">
     <div class="ch"><span class="ct">Data Backup</span><span id="backup-status" style="font-size:11px;color:var(--i3)"></span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:8px">
@@ -1414,6 +1439,8 @@ async function loadFromSupabase() {
   if (document.getElementById('ct-editor')) initContractTermsEditor();
   noteTemplates = normalizeNoteTemplates(companySettings && companySettings.note_templates);
   renderNoteTemplates();
+  companySign = normalizeCompanySign(companySettings && companySettings.company_signature);
+  renderCompanySign();
   // Load group templates
   if (templateRows && templateRows.length > 0) {
     groupTemplates = templateRows.map(t => ({ id: t.id, name: t.name, description: t.description||'' }));
@@ -7618,6 +7645,157 @@ async function deleteNoteTemplate(id) {
   catch(e) { toast('Delete failed: ' + e.message); }
   renderNoteTemplates();
   toast('Note template deleted');
+}
+
+// ── COMPANY SIGNATURE (e-signing countersignature) ─────────────────────────────
+// Stored as jsonb in company_settings.company_signature — {name, role, image, updatedAt,
+// updatedBy}. Same storage pattern as contract_terms/note_templates (no new table, RLS
+// covers it; run supabase/contract-signing.sql §2). Captured once here; the send-for-
+// signature flow stamps it into the frozen contract HTML.
+let companySign = null, csigCtx = null, csigDrawn = false;
+
+function normalizeCompanySign(v) {
+  if (!v || typeof v !== 'object') return null;
+  const img = String(v.image || '');
+  if (!img.startsWith('data:image/')) return null;   // also blocks any non-image src injection
+  const name = String(v.name || '').trim();
+  if (!name) return null;
+  return { name, role: String(v.role || '').trim(), image: img, updatedAt: v.updatedAt || null, updatedBy: v.updatedBy || null };
+}
+
+function renderCompanySign() {
+  const cur = document.getElementById('csig-current'), btn = document.getElementById('csig-edit-btn'), st = document.getElementById('csig-status');
+  if (!cur) return;
+  if (companySign) {
+    cur.innerHTML = `<div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
+      <img src="${companySign.image}" alt="signature" style="max-height:56px;max-width:220px">
+      <div style="font-size:12px"><div style="font-weight:600">${cwEsc(companySign.name)}</div>${companySign.role ? `<div style="color:var(--i3)">${cwEsc(companySign.role)}</div>` : ''}</div>
+    </div>`;
+    if (btn) btn.textContent = '✎ Replace signature';
+    if (st) st.textContent = companySign.updatedAt ? ('saved ' + new Date(companySign.updatedAt).toLocaleDateString('en-GB')) : '';
+  } else {
+    cur.textContent = 'Not set up yet — needed before the first contract can be sent for e-signature.';
+    if (btn) btn.textContent = '✍ Set up signature';
+    if (st) st.textContent = '';
+  }
+}
+
+function csigInitCanvas() {
+  const c = document.getElementById('csig-canvas');
+  if (c._init) return;
+  c._init = true;
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = c.clientWidth || 460, cssH = c.clientHeight || 160;
+  c.width = cssW * dpr; c.height = cssH * dpr;
+  const ctx = c.getContext('2d');
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1e2c3d';
+  csigCtx = ctx;
+  let drawing = false;
+  const pos = e => { const r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  c.addEventListener('pointerdown', e => { e.preventDefault(); drawing = true; c.setPointerCapture(e.pointerId); const [x, y] = pos(e); ctx.beginPath(); ctx.moveTo(x, y); });
+  c.addEventListener('pointermove', e => { if (!drawing) return; e.preventDefault(); const [x, y] = pos(e); ctx.lineTo(x, y); ctx.stroke(); csigDrawn = true; });
+  c.addEventListener('pointerup', () => { drawing = false; });
+  c.addEventListener('pointercancel', () => { drawing = false; });
+}
+
+function csigClear() {
+  const c = document.getElementById('csig-canvas');
+  if (!csigCtx) return;
+  csigCtx.save(); csigCtx.setTransform(1, 0, 0, 1, 0, 0);
+  csigCtx.clearRect(0, 0, c.width, c.height);
+  csigCtx.restore();
+  csigDrawn = false;
+}
+
+function csigOpenEditor() {
+  const ed = document.getElementById('csig-editor');
+  ed.style.display = 'flex';
+  document.getElementById('csig-name').value = companySign ? companySign.name : '';
+  document.getElementById('csig-role').value = companySign ? companySign.role : '';
+  csigInitCanvas();   // needs the canvas visible for clientWidth
+  csigClear();
+}
+function csigCancelEdit() { document.getElementById('csig-editor').style.display = 'none'; }
+
+function csigUpload(input) {
+  const f = input.files && input.files[0];
+  input.value = '';
+  if (!f) return;
+  if (!f.type.startsWith('image/')) { toast('Choose an image file'); return; }
+  const rd = new FileReader();
+  rd.onload = () => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.getElementById('csig-canvas');
+      csigClear();
+      const cw = c.clientWidth, ch = c.clientHeight;
+      const s = Math.min(cw / img.width, ch / img.height, 1);
+      const w = img.width * s, h = img.height * s;
+      csigCtx.drawImage(img, (cw - w) / 2, (ch - h) / 2, w, h);
+      csigDrawn = true;
+      toast('Image loaded — Save signature to keep it');
+    };
+    img.onerror = () => toast('Could not read that image');
+    img.src = rd.result;
+  };
+  rd.readAsDataURL(f);
+}
+
+// Export the canvas cropped to the ink's bounding box (+8px pad) so the stamped
+// signature has no dead space around it. Alpha threshold keeps drawn strokes AND
+// uploaded opaque images (those trim to their full frame, which is correct).
+function csigTrimmed() {
+  if (!csigDrawn) return null;
+  const c = document.getElementById('csig-canvas');
+  const ctx = c.getContext('2d');
+  const w = c.width, h = c.height;
+  const d = ctx.getImageData(0, 0, w, h).data;
+  let minX = w, minY = h, maxX = -1, maxY = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    if (d[(y * w + x) * 4 + 3] > 10) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  if (maxX < 0) return null;
+  const pad = 8, sx = Math.max(0, minX - pad), sy = Math.max(0, minY - pad);
+  const sw = Math.min(w, maxX + pad) - sx, sh = Math.min(h, maxY + pad) - sy;
+  const out = document.createElement('canvas');
+  out.width = sw; out.height = sh;
+  out.getContext('2d').drawImage(c, sx, sy, sw, sh, 0, 0, sw, sh);
+  return out.toDataURL('image/png');
+}
+
+async function persistCompanySign(payload) {
+  if (!USE_SUPABASE) throw new Error('not connected to Supabase');
+  if (companySettings && companySettings.id != null) {
+    await sb('PATCH', 'company_settings', { company_signature: payload, updated_at: new Date().toISOString() }, '?id=eq.' + encodeURIComponent(companySettings.id));
+  } else {
+    const ins = await sb('POST', 'company_settings', [{ company_signature: payload }], '', true);
+    if (Array.isArray(ins) && ins[0]) companySettings = ins[0];
+  }
+  if (companySettings) companySettings.company_signature = payload;
+}
+
+async function csigSave() {
+  const name = document.getElementById('csig-name').value.trim();
+  const role = document.getElementById('csig-role').value.trim();
+  if (!name) { toast('Enter the name that appears with the signature'); return; }
+  const image = csigTrimmed();
+  if (!image) { toast('Draw or upload a signature first'); return; }
+  if (image.length > 400000) { toast('Signature image too large — try a simpler one'); return; }
+  const payload = {
+    name, role, image,
+    updatedAt: new Date().toISOString(),
+    updatedBy: (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || ''
+  };
+  try { await persistCompanySign(payload); }
+  catch (e) { toast('Save failed: ' + e.message); return; }
+  companySign = payload;
+  document.getElementById('csig-editor').style.display = 'none';
+  renderCompanySign();
+  toast('✓ Company signature saved');
 }
 
 function renderNDMats() {
