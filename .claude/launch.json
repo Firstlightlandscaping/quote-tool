@@ -8,9 +8,9 @@
       "port": 5050
     },
     {
-      "name": "quote-tool-preview",
+      "name": "main-live",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", ".", "-l", "5051"],
+      "runtimeArgs": ["serve", "C:\\Projects\\firstlight-quote-tool-main", "-l", "5051"],
       "port": 5051
     }
   ]
