@@ -930,24 +930,6 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
     <div class="cb" style="display:flex;flex-direction:column;gap:10px">
       <div style="font-size:12px;color:var(--i2)">Used to <strong>countersign e-signed contracts</strong> — every contract sent for signature goes out already signed. Store one signature per partner; when more than one is saved, the send dialog asks which one signs. Stored in the database behind the login, never in this page's code.</div>
       <div id="csig-list" style="font-size:12px;color:var(--i3)">Not set up yet.</div>
-      <div id="csig-editor" style="display:none;flex-direction:column;gap:10px;border-top:1px solid var(--bd);padding-top:10px">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
-          <div class="fg"><label>Name</label><input type="text" id="csig-name" placeholder="e.g. Neal Baker" style="width:100%"></div>
-          <div class="fg"><label>Role</label><input type="text" id="csig-role" placeholder="e.g. Director" style="width:100%"></div>
-        </div>
-        <div class="fg">
-          <label>Draw your signature below (mouse or finger)</label>
-          <canvas id="csig-canvas" style="width:100%;max-width:460px;height:160px;border:1px dashed var(--bd);border-radius:8px;background:#FDFDFB;touch-action:none;cursor:crosshair"></canvas>
-          <div id="csig-keep-hint" style="display:none;font-size:11px;color:var(--i3);margin-top:4px">Leave the box empty to keep the current signature — only the name/role will change.</div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-primary btn-sm" onclick="csigSave()">Save signature</button>
-          <button class="btn btn-outline btn-sm" onclick="csigClear()">Clear</button>
-          <button class="btn btn-outline btn-sm" onclick="document.getElementById('csig-file').click()">⬆ Upload image instead</button>
-          <input type="file" id="csig-file" accept="image/*" style="display:none" onchange="csigUpload(this)">
-          <button class="btn btn-outline btn-sm" onclick="csigCancelEdit()">Cancel</button>
-        </div>
-      </div>
       <div><button class="btn btn-outline btn-sm" id="csig-edit-btn" onclick="csigOpenEditor()">＋ Add signature</button></div>
     </div>
   </div>
@@ -8039,7 +8021,7 @@ function renderCompanySigns() {
         <img src="${s.image}" alt="signature" style="max-height:48px;max-width:200px">
         <div style="flex:1;min-width:140px;font-size:12px"><div style="font-weight:600">${cwEsc(s.name)}</div>${s.role ? `<div style="color:var(--i3)">${cwEsc(s.role)}</div>` : ''}</div>
         <button class="btn btn-outline btn-sm" onclick="csigOpenEditor(${JSON.stringify(s.id)})">✎ Edit</button>
-        <button class="btn btn-red btn-sm" onclick="csigDelete(${JSON.stringify(s.id)})">×</button>
+        <button class="btn btn-red btn-sm" style="margin-left:10px" onclick="csigDelete(${JSON.stringify(s.id)})" title="Remove this signature">×</button>
       </div>`).join('');
     if (st) st.textContent = companySigns.length + ' signature' + (companySigns.length > 1 ? 's' : '');
   } else {
@@ -8085,21 +8067,71 @@ function csigClear() {
   csigDrawn = false;
 }
 
+// Edit/add in a MODAL (matching the Note Templates card, the closest cousin) so it is
+// always clear WHICH signature is being edited. The drawing pad is hidden behind an
+// explicit "Replace signature" step when editing: changing the name/role can't disturb
+// the signature, and there's no "leave the box empty" rule to explain.
+// No close-on-backdrop-click — a drawing stroke released outside the modal would fire one.
 function csigOpenEditor(id) {
-  const ed = document.getElementById('csig-editor');
-  ed.style.display = 'flex';
-  csigEditingId = (id != null) ? id : null;
-  const s = csigEditingId != null ? companySigns.find(x => x.id === csigEditingId) : null;
-  document.getElementById('csig-name').value = s ? s.name : '';
-  document.getElementById('csig-role').value = s ? s.role : '';
-  // Editing an existing signature: an untouched drawing box means KEEP the current
-  // signature — so name/role can be corrected without redrawing.
-  const hint = document.getElementById('csig-keep-hint');
-  if (hint) hint.style.display = s ? 'block' : 'none';
-  csigInitCanvas();   // needs the canvas visible for clientWidth
+  const s = (id != null) ? companySigns.find(x => x.id === id) : null;
+  csigEditingId = s ? s.id : null;
+  csigDrawn = false; csigCtx = null;
+  const old = document.getElementById('csig-dialog');
+  if (old) old.remove();
+  const panel = document.createElement('div');
+  panel.id = 'csig-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  panel.innerHTML =
+    '<div style="background:white;border-radius:12px;padding:24px;width:620px;max-width:95vw;max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">' +
+      '<h3 style="margin:0 0 16px;font-size:16px">' + (s ? 'Edit signature — ' + cwEsc(s.name) : 'Add a signature') + '</h3>' +
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px">' +
+        '<div class="fg" style="margin:0"><label>Name</label><input type="text" id="csig-name" value="' + (s ? cwEsc(s.name) : '') + '" placeholder="e.g. Neal Baker" style="width:100%"></div>' +
+        '<div class="fg" style="margin:0"><label>Role</label><input type="text" id="csig-role" value="' + (s ? cwEsc(s.role) : '') + '" placeholder="e.g. Director" style="width:100%"></div>' +
+      '</div>' +
+      '<div class="fg" style="margin:0"><label>Signature</label>' +
+        (s ? '<div id="csig-current-wrap" style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px;border:1px solid var(--bd);border-radius:8px;background:#FDFDFB">' +
+               '<img src="' + s.image + '" alt="current signature" style="max-height:56px;max-width:220px">' +
+               '<button class="btn btn-outline btn-sm" onclick="csigShowPad()">✎ Replace signature</button>' +
+             '</div>' : '') +
+        '<div id="csig-pad-wrap"' + (s ? ' style="display:none"' : '') + '>' +
+          '<canvas id="csig-canvas" style="width:100%;max-width:520px;height:160px;border:1px dashed var(--bd);border-radius:8px;background:#FDFDFB;touch-action:none;cursor:crosshair;display:block"></canvas>' +
+          '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">' +
+            '<span style="font-size:11px;color:var(--i3);margin-right:auto">Draw with your mouse or finger</span>' +
+            '<button class="btn btn-outline btn-sm" onclick="csigClear()">Clear</button>' +
+            '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'csig-file\').click()">⬆ Upload image</button>' +
+            '<input type="file" id="csig-file" accept="image/*" style="display:none" onchange="csigUpload(this)">' +
+            (s ? '<button class="btn btn-outline btn-sm" onclick="csigKeepCurrent()">↩ Keep current</button>' : '') +
+          '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:20px">' +
+        '<button class="btn btn-outline" onclick="csigCancelEdit()">Cancel</button>' +
+        '<button class="btn btn-primary" onclick="csigSave()">' + (s ? 'Save changes' : 'Add signature') + '</button>' +
+      '</div>' +
+    '</div>';
+  document.body.appendChild(panel);
+  if (!s) { csigInitCanvas(); csigClear(); }   // new entry: pad is open, nothing to keep
+  document.getElementById('csig-name').focus();
+}
+// Editing: reveal the drawing pad (canvas must be visible before init — it measures itself).
+function csigShowPad() {
+  const cur = document.getElementById('csig-current-wrap');
+  if (cur) cur.style.display = 'none';
+  document.getElementById('csig-pad-wrap').style.display = 'block';
+  csigInitCanvas();
   csigClear();
 }
-function csigCancelEdit() { document.getElementById('csig-editor').style.display = 'none'; csigEditingId = null; }
+function csigKeepCurrent() {
+  csigClear();
+  document.getElementById('csig-pad-wrap').style.display = 'none';
+  const cur = document.getElementById('csig-current-wrap');
+  if (cur) cur.style.display = 'flex';
+}
+function csigCancelEdit() {
+  const m = document.getElementById('csig-dialog');
+  if (m) m.remove();
+  csigEditingId = null; csigDrawn = false; csigCtx = null;
+}
 
 function csigUpload(input) {
   const f = input.files && input.files[0];
@@ -8182,10 +8214,9 @@ async function csigSave() {
   else companySigns = companySigns.concat([entry]);
   try { await persistCompanySigns(); }
   catch (e) { companySigns = prev; toast('Save failed: ' + e.message); return; }
-  csigEditingId = null;
-  document.getElementById('csig-editor').style.display = 'none';
+  csigCancelEdit();          // closes the modal + clears editor state
   renderCompanySigns();
-  toast('✓ Signature saved');
+  toast(existing ? '✓ Signature updated' : '✓ Signature added');
 }
 
 function renderNDMats() {
