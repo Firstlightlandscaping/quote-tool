@@ -6256,6 +6256,7 @@ function openContractDialog(){
         (cm ? '<div style="font-size:11px;color:var(--i2);background:#F8FAFC;border:1px solid var(--bd);border-radius:7px;padding:7px 9px;margin-bottom:12px">Last generated ' +
               new Date(cm.generatedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) +
               ' · <a href="#" onclick="removeContractDialog();viewSavedContract(\'' + ref + '\');return false;"><strong>View last generated</strong></a>' +
+              ' · <a href="#" onclick="removeContractDialog();sigOpenSendDialog();return false;"><strong>✍ E-signature</strong></a>' +
               ' · Status <select onchange="updateContractStatus(\'' + ref + '\',this.value)" style="padding:2px 6px;border-radius:6px;border:1px solid var(--bd);font-size:11px">' +
               ['Generated','Sent','Signed'].map(s => '<option ' + (s===cmStatus?'selected':'') + '>' + s + '</option>').join('') +
               '</select></div>' : '') +
@@ -6279,6 +6280,20 @@ function openContractDialog(){
   cdRefresh();
 }
 async function doGenerateContract(){
+  // Never-mutate rule (e-signing): a regenerated contract is a DIFFERENT document, so any
+  // outstanding signing links must die with the old one. Best-effort — if the signing table
+  // isn't reachable (pre-cutover live), generation proceeds as before.
+  try {
+    const sref = g('in-ref');
+    const act = sref && USE_SUPABASE ? (await sigFetchRows(sref)).find(sigIsActive) : null;
+    if (act) {
+      if (!confirm('An e-signature request is outstanding for this contract (sent ' +
+        new Date(act.sent_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) +
+        ').\n\nRegenerating REVOKES those signing links. Continue?')) return;
+      await sigRevokeRow(act.id);
+      toast('Old signing links revoked');
+    }
+  } catch (e) { /* signing table absent — nothing to revoke */ }
   const isCustom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
   if (isCustom) {
     const txt = ((document.getElementById('cw-freetext')||{}).value || '').trim();
@@ -6338,6 +6353,201 @@ async function saveContractSnapshot(opts){
     console.warn('Contract snapshot not saved (run supabase/contract-feature.sql):', e.message);
     toast('Contract generated — snapshot not saved (' + e.message + ')');
   }
+}
+
+// ══ E-SIGNATURE SEND FLOW (signing build Phase 3) ════════════════════════════════
+// One contract_signing row per send: the contract FROZEN as a self-contained HTML
+// document (all app styles + base64 banner, countersignature stamped in), SHA-256
+// hashed, with per-signer secret link tokens. The stored HTML is the legal record —
+// the client's signature is kept as DATA in the signers array (added by the edge
+// function), never written into the frozen document, so the hash stays provable.
+// The client never touches the DB: links go to sign.html → the sign-contract edge
+// function (Phase 4/5). Sending is manual for now: copy the link into an email.
+
+function sigToken() {
+  const b = new Uint8Array(24);
+  crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+}
+async function sigSha256(str) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(d), x => x.toString(16).padStart(2, '0')).join('');
+}
+function sigLinkFor(token) {
+  // Same-origin sign.html — resolves to the Pages URL on live, localhost when testing.
+  return location.origin + location.pathname.replace(/[^/]*$/, '') + 'sign.html?t=' + token;
+}
+// Stamp the company countersignature into the CONTRACTOR signature row of a contract
+// DOM (a clone — never the live #contract-view, which normal print contracts need blank).
+function sigStampCounter(rootEl, dateStr) {
+  const rows = rootEl.querySelectorAll('.cw-sign-row');
+  if (rows.length < 2 || !companySign) return false;
+  const vals = rows[1].querySelectorAll('.cw-sign-cell .val');
+  if (vals.length < 3) return false;
+  vals[0].innerHTML = '<img src="' + companySign.image + '" alt="signature" style="max-height:44px;max-width:180px">';
+  vals[1].textContent = companySign.name + (companySign.role ? ' — ' + companySign.role : '');
+  vals[2].textContent = dateStr;
+  return true;
+}
+// Render the saved contract snapshot, capture it as a standalone HTML document with the
+// countersignature stamped in, and restore the screen. The document carries ALL the app's
+// CSS so it renders identically in sign.html / a bare browser tab, print styles included.
+function sigBuildFrozenDoc(ref) {
+  viewSavedContract(ref);                                     // exact snapshot render
+  const clone = document.getElementById('contract-view').cloneNode(true);
+  closeContract();
+  const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  if (!sigStampCounter(clone, today)) return null;
+  const styles = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
+  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>Contract of Works — ' + cwEsc(ref) + '</title><style>' + styles + '</style></head>' +
+    '<body class="contract-mode"><div id="contract-view">' + clone.innerHTML + '</div></body></html>';
+}
+async function sigFetchRows(ref) {
+  if (!USE_SUPABASE) return [];
+  return await sb('GET', 'contract_signing', null,
+    '?quote_ref=eq.' + encodeURIComponent(ref) + '&select=id,quote_ref,status,signers,sent_at,expires_at,signed_at,revoked_at&order=id.desc');
+}
+function sigIsActive(r) {
+  if (!r || r.status === 'revoked' || r.status === 'signed') return false;
+  if (r.expires_at && new Date(r.expires_at) < new Date()) return false;   // expired = derived
+  return true;
+}
+async function sigRevokeRow(id) {
+  await sb('PATCH', 'contract_signing', { status: 'revoked', revoked_at: new Date().toISOString() }, '?id=eq.' + id);
+}
+function removeSigDialog() { const m = document.getElementById('sig-dialog'); if (m) m.remove(); }
+
+async function sigOpenSendDialog() {
+  const ref = g('in-ref');
+  if (!ref) { toast('Save the quote first'); return; }
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (!sq || !sq.contractMeta) { toast('Generate the contract first'); return; }
+  if (!companySign) { toast('Set up the Company Signature first (Price Manager tab)'); return; }
+  removeSigDialog();
+  let rows = [];
+  try { rows = await sigFetchRows(ref); }
+  catch (e) { toast('Could not check signing status: ' + e.message + ' (run supabase/contract-signing.sql?)'); return; }
+  sigRenderDialog(ref, sq, rows);
+}
+
+function sigRenderDialog(ref, sq, rows) {
+  removeSigDialog();
+  const cm = sq.contractMeta;
+  const active = rows.find(sigIsActive) || null;
+  const signed = rows.find(r => r.status === 'signed') || null;
+  const genDate = new Date(cm.generatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+  const drift = Math.abs((cm.total || 0) - contractGrandTotal()) > 0.005;
+
+  let body;
+  if (signed && !active) {
+    body = '<div style="font-size:13px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px">✓ <strong>Signed</strong> ' +
+      (signed.signed_at ? 'on ' + new Date(signed.signed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '') +
+      ' by ' + (signed.signers || []).map(s => cwEsc(s.name)).join(' and ') + '.</div>' +
+      '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="removeSigDialog()">Close</button></div>';
+  } else if (active) {
+    const st = (active.signers || []);
+    body =
+      '<div style="font-size:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:10px 12px;margin-bottom:12px">' +
+        'A signing request is <strong>outstanding</strong> (sent ' + new Date(active.sent_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) +
+        ', link' + (st.length > 1 ? 's' : '') + ' valid until ' + (active.expires_at ? new Date(active.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—') + ').' +
+      '</div>' +
+      st.map((s, i) =>
+        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">' +
+          '<div style="flex:1;min-width:0"><strong>' + cwEsc(s.name) + '</strong>' + (s.email ? ' · ' + cwEsc(s.email) : '') +
+            ' — ' + (s.signed_at ? '✓ signed' : (s.viewed_at ? '👁 viewed' : 'not opened yet')) + '</div>' +
+          (s.signed_at ? '' : '<button class="btn btn-outline btn-sm" onclick="sigCopyLink(' + JSON.stringify(s.token) + ',this)">📋 Copy link</button>') +
+        '</div>').join('') +
+      '<div style="font-size:11px;color:var(--i3);margin-top:4px">Paste each link into your own email to that person. A link only works for the contract it belongs to.</div>' +
+      '<div class="cw-modal-btns">' +
+        '<button class="btn btn-red" onclick="sigRevoke(' + active.id + ',\'' + ref + '\')">Revoke links</button>' +
+        '<button class="btn btn-outline" onclick="removeSigDialog()">Close</button>' +
+      '</div>';
+  } else {
+    body =
+      '<div style="font-size:12px;color:var(--i2);margin-bottom:12px">This freezes the contract <strong>exactly as generated on ' + genDate + '</strong>, countersigned by ' + cwEsc(companySign.name) + ', and creates a private signing link for each person. Links expire after 30 days; you can revoke them any time.</div>' +
+      (drift ? '<div style="font-size:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;margin-bottom:12px">⚠ The quote has changed since the contract was generated (' + money(cm.total || 0) + ' → ' + money(contractGrandTotal()) + '). If the new figures should apply, Cancel and <strong>Regenerate</strong> the contract first.</div>' : '') +
+      '<div class="cw-row2"><div class="cw-fg"><label>Signer name</label><input type="text" id="sig-name-1" placeholder="e.g. Jane Smith"></div>' +
+      '<div class="cw-fg"><label>Email (for your records)</label><input type="text" id="sig-email-1" placeholder="optional"></div></div>' +
+      '<div id="sig-second" style="display:none"><div class="cw-row2"><div class="cw-fg"><label>Second signer name</label><input type="text" id="sig-name-2" placeholder="e.g. John Smith"></div>' +
+      '<div class="cw-fg"><label>Email (for your records)</label><input type="text" id="sig-email-2" placeholder="optional"></div></div></div>' +
+      '<a href="#" id="sig-add-2" onclick="document.getElementById(\'sig-second\').style.display=\'block\';this.style.display=\'none\';return false;" style="font-size:12px">+ Add a second signer (joint homeowners)</a>' +
+      '<div class="cw-modal-btns"><button class="btn btn-primary" id="sig-send-btn" onclick="sigDoSend(\'' + ref + '\')">✍ Freeze contract &amp; create link</button>' +
+      '<button class="btn btn-outline" onclick="removeSigDialog()">Cancel</button></div>';
+  }
+
+  const wrap = document.createElement('div');
+  wrap.id = 'sig-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeSigDialog()">' +
+      '<div class="cw-modal"><h3>E-signature — ' + cwEsc(ref) + '</h3>' +
+      '<div class="cw-modal-sub">' + cwEsc(g('in-cust') || '') + '</div>' + body + '</div></div>';
+  document.body.appendChild(wrap);
+  const n1 = document.getElementById('sig-name-1');
+  if (n1) { n1.value = n1.value || (g('in-cust') || ''); n1.focus(); }
+}
+
+async function sigDoSend(ref) {
+  const name1 = (document.getElementById('sig-name-1') || {}).value || '';
+  const name2 = (document.getElementById('sig-name-2') || {}).value || '';
+  const email1 = (document.getElementById('sig-email-1') || {}).value || '';
+  const email2 = (document.getElementById('sig-email-2') || {}).value || '';
+  const signerDefs = [];
+  if (name1.trim()) signerDefs.push({ name: name1.trim(), email: email1.trim() });
+  if (name2.trim()) signerDefs.push({ name: name2.trim(), email: email2.trim() });
+  if (!signerDefs.length) { toast('Enter the signer\'s name'); return; }
+  const btn = document.getElementById('sig-send-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Freezing…'; }
+  try {
+    const doc = sigBuildFrozenDoc(ref);
+    if (!doc) throw new Error('countersignature could not be stamped');
+    const hash = await sigSha256(doc);
+    const sq = savedQuotes.find(q => q.ref === ref);
+    const now = new Date();
+    const row = {
+      quote_ref: ref,
+      customer: g('in-cust') || '',
+      status: 'sent',
+      contract_html: doc,
+      contract_hash: hash,
+      terms_version: (sq.contractMeta && sq.contractMeta.termsVersion) || null,
+      signers: signerDefs.map(s => ({ token: sigToken(), name: s.name, email: s.email })),
+      sent_at: now.toISOString(),
+      expires_at: new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString(),
+      created_by: (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || ''
+    };
+    const ins = await sb('POST', 'contract_signing', [row], '', true);
+    const saved = Array.isArray(ins) && ins[0];
+    if (!saved) throw new Error('insert returned nothing');
+    // Contract lifecycle follows along (Generated → Sent). Quote status is untouched.
+    if (sq.contractMeta && sq.contractMeta.status !== 'Signed') {
+      sq.contractMeta.status = 'Sent';
+      try { await sb('PATCH', 'quotes', { contract_meta: sq.contractMeta }, '?ref=eq.' + encodeURIComponent(ref)); } catch (e) {}
+      renderSaved();
+    }
+    toast('✓ Contract frozen — ' + saved.signers.length + ' signing link' + (saved.signers.length > 1 ? 's' : '') + ' created');
+    sigRenderDialog(ref, sq, [saved]);   // re-open in "outstanding" state with the Copy buttons
+  } catch (e) {
+    toast('Send failed: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = '✍ Freeze contract & create link'; }
+  }
+}
+
+async function sigRevoke(id, ref) {
+  if (!confirm('Revoke the signing link' + '(s)? The client\'s link will stop working immediately.\n\nYou can send fresh links afterwards.')) return;
+  try { await sigRevokeRow(id); }
+  catch (e) { toast('Revoke failed: ' + e.message); return; }
+  toast('Links revoked');
+  const sq = savedQuotes.find(q => q.ref === ref);
+  let rows = [];
+  try { rows = await sigFetchRows(ref); } catch (e) {}
+  sigRenderDialog(ref, sq, rows);
+}
+
+function sigCopyLink(token, btn) {
+  navigator.clipboard.writeText(sigLinkFor(token)).then(() => {
+    if (btn) { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '📋 Copy link'; }, 1600); }
+  }, () => toast('Copy failed — clipboard blocked'));
 }
 
 // ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
