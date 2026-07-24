@@ -2724,12 +2724,21 @@ function aclmFilterMpl() {
       (m.category||'').toLowerCase().includes(q)
     ).map(m => `<option value="${m.code}"${m.code===prev?' selected':''}>${m.code} — ${m.description} (${m.unit}, £${(m.pricePerUnit||0).toFixed(2)})</option>`).join('');
 }
+// Rate display for the material pickers: show each price at its NATURAL precision —
+// at least 2 decimals, up to 4, with padded trailing zeros stripped (so a 3-decimal
+// supplier price reads £0.045, not £0.0450, next to its 4-decimal +10% charge £0.0495).
+// Display only — the stored rates and all totals are untouched.
+function fmtRate(v) {
+  let s = (+v || 0).toFixed(4);
+  s = s.replace(/(\.\d\d)(\d*?)0+$/, '$1$2');   // strip trailing zeros, never below 2dp
+  return s;
+}
 function aclmSelected() {
   const sel = document.getElementById('aclm-select'), item = mpl.find(m => m.code === sel.value);
   const prev = document.getElementById('aclm-prev');
   if (item) {
     const charged = Math.round((item.pricePerUnit||0)*1.1*10000)/10000;
-    prev.innerHTML = `<strong>${item.description}</strong> — ${item.unit} — supplier: £${(item.pricePerUnit||0).toFixed(4)} | <span style="color:#15803D;font-weight:600">charged: £${charged.toFixed(4)}</span>`;
+    prev.innerHTML = `<strong>${item.description}</strong> — ${item.unit} — supplier: £${fmtRate(item.pricePerUnit)} | <span style="color:#15803D;font-weight:600">charged: £${fmtRate(charged)}</span>`;
     document.getElementById('aclm-qty').focus();
   } else prev.innerHTML = '';
 }
@@ -2910,7 +2919,7 @@ function mcmSelected() {
   const prev = document.getElementById('mcm-prev');
   if (item) {
     const charged = Math.round((item.pricePerUnit||0)*1.1*10000)/10000;
-    prev.innerHTML = `<strong>${item.description}</strong> — ${item.unit} — supplier: £${(item.pricePerUnit||0).toFixed(4)} | <span style="color:#15803D;font-weight:600">charged: £${charged.toFixed(4)}</span>`;
+    prev.innerHTML = `<strong>${item.description}</strong> — ${item.unit} — supplier: £${fmtRate(item.pricePerUnit)} | <span style="color:#15803D;font-weight:600">charged: £${fmtRate(charged)}</span>`;
     document.getElementById('mcm-qty').focus();
   } else prev.innerHTML = '';
 }
@@ -7184,7 +7193,7 @@ function emFilterMpl(delCode) {
 function emMatSelected(delCode) {
   const sel=document.getElementById('em-sel-'+delCode), item=mpl.find(m=>m.code===sel.value);
   const prev=document.getElementById('em-prev-'+delCode);
-  if(item){ prev.innerHTML=`<strong>${item.description}</strong> — ${item.unit} — supplier: £${(item.pricePerUnit||0).toFixed(4)} | <span style="color:#15803D;font-weight:600">charged: £${(Math.round((item.pricePerUnit||0)*1.1*10000)/10000).toFixed(4)}</span>`; document.getElementById('em-qty-'+delCode).focus(); }
+  if(item){ prev.innerHTML=`<strong>${item.description}</strong> — ${item.unit} — supplier: £${fmtRate(item.pricePerUnit)} | <span style="color:#15803D;font-weight:600">charged: £${fmtRate(Math.round((item.pricePerUnit||0)*1.1*10000)/10000)}</span>`; document.getElementById('em-qty-'+delCode).focus(); }
   else prev.innerHTML='';
 }
 
