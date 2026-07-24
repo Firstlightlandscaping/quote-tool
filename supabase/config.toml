@@ -412,3 +412,8 @@ enabled = true
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+# sign-contract is PUBLIC by design: the per-signer link token is the auth (the client
+# signing at home has no Supabase login). Everything else stays JWT-gated.
+[functions.sign-contract]
+verify_jwt = false
