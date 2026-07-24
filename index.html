@@ -716,7 +716,17 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 
 <!-- ═══ TAB 3: PRICE MANAGER ═══ -->
 <div id="tab-prices" class="tab-panel">
-  <div class="card">
+  <!-- Jump bar: the PM tab is long — these scroll to each section. Sticky so it stays reachable. -->
+  <nav id="pm-jump-nav" class="no-print" aria-label="Jump to a section" style="position:sticky;top:0;z-index:50;background:#F8F7F4;padding:8px 0;margin:-4px 0 10px;border-bottom:1px solid var(--bd);overflow-x:auto;white-space:nowrap">
+    <button class="btn btn-outline btn-sm" onclick="pmJump('pm-dels-card')">Deliverables</button>
+    <button class="btn btn-outline btn-sm" onclick="pmJump('pm-mpl-card')">Price List</button>
+    <button class="btn btn-outline btn-sm" onclick="pmJump('group-templates-card')">Group Templates</button>
+    <button class="btn btn-outline btn-sm" onclick="pmJump('note-templates-card')">Note Templates</button>
+    <button class="btn btn-outline btn-sm" onclick="pmJump('contract-terms-card')">Contract Terms</button>
+    <button class="btn btn-outline btn-sm" onclick="pmJump('company-sign-card')">Signatures</button>
+    <button class="btn btn-outline btn-sm" onclick="pmJump('backup-card')">Backup &amp; Restore</button>
+  </nav>
+  <div class="card" id="pm-dels-card">
     <div class="ch"><span class="ct">Deliverables — Add / Edit</span><div style="display:flex;align-items:center;gap:10px"><span id="pm-save-status" style="font-size:11px;color:var(--i3)"></span><button class="btn btn-primary btn-sm" onclick="showAddDelForm()">+ New Deliverable</button><button class="btn btn-outline btn-sm" onclick="showAddMatForm()" title="Jump to the add-material form below">+ New Material</button></div></div>
     <div class="cb" style="display:flex;gap:8px;margin-bottom:12px">
       <input type="text" id="pm-search" placeholder="Search deliverables..." oninput="renderPM()" style="max-width:280px">
@@ -788,7 +798,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
     </div>
   </div>
 
-  <div class="card" style="margin-top:20px">
+  <div class="card" id="pm-mpl-card" style="margin-top:20px">
     <div class="ch"><span class="ct">Master Price List — Individual Materials</span><button class="btn btn-primary btn-sm" onclick="showAddMatForm()">+ New Material</button></div>
     <div class="cb" style="display:flex;gap:8px;margin-bottom:12px">
       <input type="text" id="mpl-search" placeholder="Search materials..." oninput="renderMPL()" style="max-width:280px">
@@ -941,7 +951,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div><button class="btn btn-outline btn-sm" id="csig-edit-btn" onclick="csigOpenEditor()">＋ Add signature</button></div>
     </div>
   </div>
-  <div class="card no-print">
+  <div class="card no-print" id="backup-card">
     <div class="ch"><span class="ct">Data Backup</span><span id="backup-status" style="font-size:11px;color:var(--i3)"></span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:8px">
       <div style="font-size:12px;color:var(--i2)">Downloads a complete copy of <strong>all</strong> data — quotes, deliverables, materials, price list, staff and group templates — as a single JSON file on your computer. Read-only: it never changes anything in the database. Keep one before any bulk change or security work.</div>
@@ -7392,6 +7402,20 @@ async function newQuote() {
 }
 
 // ── PRICE MANAGER ──────────────────────────────────────────────────────────────
+// Jump bar (top of the tab): scroll a card into view, allowing for the sticky bar's
+// own height so the card heading isn't hidden underneath it.
+function pmJump(cardId) {
+  const el = document.getElementById(cardId);
+  if (!el) return;
+  const nav = document.getElementById('pm-jump-nav');
+  const offset = (nav ? nav.offsetHeight : 0) + 10;
+  const top = Math.max(0, el.getBoundingClientRect().top + window.scrollY - offset);
+  // This tab runs to ~40,000px with the full catalogue loaded. Chrome animates a smooth
+  // scroll at a near-fixed rate, so over that distance it crawls (or never arrives) —
+  // jump instantly for long hops, keep the nicer glide for short ones.
+  const far = Math.abs(top - window.scrollY) > 3000;
+  window.scrollTo({ top, behavior: far ? 'auto' : 'smooth' });
+}
 function buildPMCatFilter() {
   const cats=[...new Set(dels.map(d=>d.category).filter(Boolean))].sort();
   const sel=document.getElementById('pm-cat-filter');

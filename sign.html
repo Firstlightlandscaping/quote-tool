@@ -38,10 +38,7 @@
   .row-between { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 6px; }
   .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #cbd5e1; border-top-color: var(--green); border-radius: 50%; animation: sp 1s linear infinite; vertical-align: -2px; }
   @keyframes sp { to { transform: rotate(360deg); } }
-  #jump-nav { display: none; position: sticky; top: 0; z-index: 50; background: #F1F5F9; padding: 8px 0; margin: -4px 0 10px; border-bottom: 1px solid var(--bd); overflow-x: auto; white-space: nowrap; }
-  #jump-nav button { border: 1px solid var(--bd); background: #fff; color: var(--i2); border-radius: 20px; padding: 7px 14px; font-size: 13px; font-weight: 600; cursor: pointer; margin-right: 6px; }
-  #jump-nav button.go-sign { border-color: var(--green); color: var(--green); }
-  @media print { header, .card, #sign-panel, #jump-nav { display: none !important; } #doc-wrap { border: 0; } }
+  @media print { header, .card, #sign-panel { display: none !important; } #doc-wrap { border: 0; } }
 </style>
 </head>
 <body>
@@ -51,8 +48,6 @@
   <div class="card" id="status-card">
     <div class="notice"><span class="spin"></span> Loading your contract…</div>
   </div>
-
-  <nav id="jump-nav" aria-label="Jump to a section"></nav>
 
   <div id="doc-wrap"><div id="doc-scroll"><iframe id="doc" title="Your contract"></iframe></div></div>
 
@@ -149,53 +144,12 @@ function renderDoc(body) {
   iframe.onload = function () {
     injectSignatures(iframe, body);
     sizeIframe(iframe);
-    setTimeout(function () { sizeIframe(iframe); buildJumpNav(body); }, 400);   // images settle
+    setTimeout(function () { sizeIframe(iframe); }, 400);   // images settle
   };
   iframe.srcdoc = body.contractHtml;
   document.getElementById('doc-wrap').style.display = 'block';
 }
 
-// ── section jump buttons ──────────────────────────────────────────────────────
-// The contract is one long document; these scroll the page to its landmarks. Section
-// elements live INSIDE the iframe — since the iframe is full-height (never internally
-// scrolled), an element's position on the page = iframe's page offset + its offset in
-// the frame. Recomputed on every click so late image loads can't leave stale targets.
-function jumpTargets() {
-  var doc = document.getElementById('doc').contentDocument;
-  if (!doc) return [];
-  var t = [{ label: 'Top', el: doc.body }];
-  var breaks = doc.querySelectorAll('.cw-break');
-  for (var i = 0; i < breaks.length; i++) {
-    if (breaks[i].querySelector('.cw-pay')) t.push({ label: 'Payment schedule', el: breaks[i] });
-    else t.push({ label: 'Contract terms', el: breaks[i] });
-  }
-  var sign = doc.querySelector('.cw-sign');
-  if (sign) t.push({ label: 'Signatures', el: sign });
-  return t;
-}
-function jumpTo(idx) {
-  var t = jumpTargets()[idx];
-  if (!t) return;
-  var iframe = document.getElementById('doc');
-  var top = iframe.getBoundingClientRect().top + window.scrollY + t.el.getBoundingClientRect().top - 52;
-  window.scrollTo({ top: Math.max(0, top), behavior: 'smooth' });
-}
-function jumpToSignPanel() {
-  var p = document.getElementById('sign-panel');
-  if (p && p.style.display !== 'none') { p.scrollIntoView({ behavior: 'smooth', block: 'start' }); document.getElementById('typed-name').focus(); }
-  else jumpTo(jumpTargets().length - 1);   // already signed — show the signature block instead
-}
-function buildJumpNav() {
-  var nav = document.getElementById('jump-nav');
-  if (!nav) return;
-  var targets = jumpTargets();
-  if (targets.length < 2) return;
-  var canSign = document.getElementById('sign-panel').style.display !== 'none';
-  nav.innerHTML = targets.map(function (t, i) {
-    return '<button type="button" onclick="jumpTo(' + i + ')">' + esc(t.label) + '</button>';
-  }).join('') + (canSign ? '<button type="button" class="go-sign" onclick="jumpToSignPanel()">✍ Sign here</button>' : '');
-  nav.style.display = 'block';
-}
 function sizeIframe(iframe) {
   try { iframe.style.height = (iframe.contentDocument.documentElement.scrollHeight + 20) + 'px'; } catch (e) {}
 }
