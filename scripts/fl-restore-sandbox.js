@@ -22,7 +22,7 @@ if (!file) throw new Error('usage: node scripts/fl-restore-sandbox.js <backup-fi
 const backup = JSON.parse(fs.readFileSync(file, 'utf8'));
 
 // parents first (matches the app's RESTORE_ORDER + qt_counter)
-const ORDER = ['company_settings', 'deliverables', 'mpl', 'staff', 'group_templates', 'quotes', 'materials', 'quote_lines', 'qt_counter'];
+const ORDER = ['company_settings', 'deliverables', 'mpl', 'staff', 'group_templates', 'quotes', 'materials', 'quote_lines', 'qt_counter', 'contract_signing'];
 const PK = { quotes: 'ref', deliverables: 'code', mpl: 'code' }; // rest keyed on id
 
 const H = { apikey: KEY, Authorization: 'Bearer ' + KEY, 'Content-Type': 'application/json' };

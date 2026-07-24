@@ -19,7 +19,10 @@ if (!EMAIL || !PASS) throw new Error('SUPABASE_AGENT_EMAIL / _PASSWORD not in en
 const TABLES = {
   quotes: 'ref', quote_lines: 'id', deliverables: 'code', materials: 'id',
   mpl: 'code', staff: 'id', group_templates: 'id', company_settings: 'id', qt_counter: 'id',
+  contract_signing: 'id',
 };
+// May not exist yet on the target DB (schema rolls out sandbox-first) — skip, don't abort.
+const OPTIONAL = new Set(['contract_signing']);
 
 async function main() {
   const auth = await fetch(URL_ + '/auth/v1/token?grant_type=password', {
@@ -34,13 +37,16 @@ async function main() {
   const tables = {}, counts = {};
   for (const [t, ord] of Object.entries(TABLES)) {
     const rows = [];
+    let absent = false;
     for (let off = 0; ; off += 1000) {
       const r = await fetch(`${URL_}/rest/v1/${t}?select=*&order=${ord}&limit=1000&offset=${off}`, { headers: H });
+      if (r.status === 404 && OPTIONAL.has(t)) { absent = true; break; }
       if (!r.ok) throw new Error(`${t} fetch failed: ${r.status} ${(await r.text()).slice(0, 200)}`);
       const chunk = await r.json();
       rows.push(...chunk);
       if (chunk.length < 1000) break;
     }
+    if (absent) { console.log(`  ${t}: absent on this DB - skipped`); continue; }
     tables[t] = rows;
     counts[t] = rows.length;
     console.log(`  ${t}: ${rows.length} rows`);
