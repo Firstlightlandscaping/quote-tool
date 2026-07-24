@@ -1207,6 +1207,7 @@ async function doLogin(ev) {
     renderPM(); renderMPL(); renderSaved(); buildPills(); buildPMCatFilter();
     syncH(); renderLines();
     updateAuthStatus();
+    sigRefreshStatuses();   // fire-and-forget: e-signature badges + Signed sync
     toast('Logged in as ' + (SESSION && SESSION.email ? SESSION.email : email));
   } catch(e) {
     errEl.textContent = e.message || 'Login failed.';
@@ -6431,11 +6432,11 @@ async function sigOpenSendDialog() {
   sigRenderDialog(ref, sq, rows);
 }
 
-function sigRenderDialog(ref, sq, rows) {
+function sigRenderDialog(ref, sq, rows, forceNew) {
   removeSigDialog();
   const cm = sq.contractMeta;
   const active = rows.find(sigIsActive) || null;
-  const signed = rows.find(r => r.status === 'signed') || null;
+  const signed = forceNew ? null : (rows.find(r => r.status === 'signed') || null);
   const genDate = new Date(cm.generatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   const drift = Math.abs((cm.total || 0) - contractGrandTotal()) > 0.005;
 
@@ -6444,7 +6445,14 @@ function sigRenderDialog(ref, sq, rows) {
     body = '<div style="font-size:13px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px">✓ <strong>Signed</strong> ' +
       (signed.signed_at ? 'on ' + new Date(signed.signed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '') +
       ' by ' + (signed.signers || []).map(s => cwEsc(s.name)).join(' and ') + '.</div>' +
-      '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="removeSigDialog()">Close</button></div>';
+      '<div class="cw-modal-btns">' +
+        '<button class="btn btn-primary" onclick="removeSigDialog();sigViewSigned(' + signed.id + ')">📄 View signed contract</button>' +
+        '<button class="btn btn-outline" onclick="removeSigDialog()">Close</button>' +
+      '</div>' +
+      // A variation after signing = regenerate the contract, then send the NEW version.
+      // The signed row above stays forever as the record of what was agreed first.
+      '<div style="font-size:11px;color:var(--i3);margin-top:10px">Contract changed since? Regenerate it, then ' +
+      '<a href="#" onclick="(async()=>{const r=await sigFetchRows(\'' + ref + '\');sigRenderDialog(\'' + ref + '\',savedQuotes.find(q=>q.ref===\'' + ref + '\'),r,true)})();return false;">send the new version for signature</a>.</div>';
   } else if (active) {
     const st = (active.signers || []);
     body =
@@ -6526,6 +6534,7 @@ async function sigDoSend(ref) {
       renderSaved();
     }
     toast('✓ Contract frozen — ' + saved.signers.length + ' signing link' + (saved.signers.length > 1 ? 's' : '') + ' created');
+    sigRefreshStatuses();                // badge follows along
     sigRenderDialog(ref, sq, [saved]);   // re-open in "outstanding" state with the Copy buttons
   } catch (e) {
     toast('Send failed: ' + e.message);
@@ -6538,6 +6547,7 @@ async function sigRevoke(id, ref) {
   try { await sigRevokeRow(id); }
   catch (e) { toast('Revoke failed: ' + e.message); return; }
   toast('Links revoked');
+  sigRefreshStatuses();                  // badge follows along
   const sq = savedQuotes.find(q => q.ref === ref);
   let rows = [];
   try { rows = await sigFetchRows(ref); } catch (e) {}
@@ -6548,6 +6558,98 @@ function sigCopyLink(token, btn) {
   navigator.clipboard.writeText(sigLinkFor(token)).then(() => {
     if (btn) { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '📋 Copy link'; }, 1600); }
   }, () => toast('Copy failed — clipboard blocked'));
+}
+
+// ── signing status across the app (Phase 6) ──────────────────────────────────
+// Latest signing row per quote, refreshed at boot and after send/revoke. Drives the
+// badge in Saved Quotes and auto-syncs contract_meta.status → 'Signed'. Best-effort:
+// on a DB without the signing table (pre-cutover live) everything quietly no-ops.
+let sigStatusMap = {};
+function sigBadge(ref) {
+  const r = sigStatusMap[ref];
+  if (!r) return null;
+  if (r.status === 'signed') return { label: '✓ Signed', col: '#15803D' };
+  if (r.status === 'revoked') return null;                     // deliberately withdrawn — no badge noise
+  if (r.expires_at && new Date(r.expires_at) < new Date()) return { label: '⌛ Link expired', col: '#DC2626' };
+  if (r.status === 'viewed') return { label: '👁 Opened', col: '#B45309' };
+  return { label: '✍ Sent to sign', col: '#2563EB' };
+}
+async function sigRefreshStatuses() {
+  if (!USE_SUPABASE) return;
+  let rows;
+  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,status,sent_at,signed_at,expires_at&order=id'); }
+  catch (e) { return; }                                        // table absent — feature not cut over yet
+  sigStatusMap = {};
+  rows.forEach(r => { sigStatusMap[r.quote_ref] = r; });       // ascending id → latest row wins
+  // contract lifecycle follows the signature without waiting for a dialog visit
+  for (const ref in sigStatusMap) {
+    const r = sigStatusMap[ref], sq = savedQuotes.find(q => q.ref === ref);
+    if (r.status === 'signed' && sq && sq.contractMeta && sq.contractMeta.status !== 'Signed') {
+      sq.contractMeta.status = 'Signed';
+      try { await sb('PATCH', 'quotes', { contract_meta: sq.contractMeta }, '?ref=eq.' + encodeURIComponent(ref)); } catch (e) {}
+    }
+  }
+  renderSaved();
+}
+// Saved Quotes badge → load the quote and open the signing dialog (contractFromSaved pattern).
+function sigFromSaved(ref) { loadQuote(ref); sigOpenSendDialog(); }
+
+// Full-screen viewer for a SIGNED contract: the frozen document with the client
+// signature cells + audit block injected at display time (same rules as sign.html —
+// keep sigInjectIntoDoc in step with injectSignatures there).
+async function sigViewSigned(id) {
+  let row;
+  try { const rows = await sb('GET', 'contract_signing', null, '?id=eq.' + id + '&select=*'); row = rows && rows[0]; }
+  catch (e) { toast('Could not load the signed contract: ' + e.message); return; }
+  if (!row) { toast('Signed contract not found'); return; }
+  const old = document.getElementById('sig-view');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'sig-view';
+  wrap.style.cssText = 'position:fixed;inset:0;background:#334155;z-index:15000;display:flex;flex-direction:column';
+  wrap.innerHTML =
+    '<div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:10px 14px;background:#1e293b">' +
+      '<span style="color:#cbd5e1;font-size:12px;margin-right:auto">Signed contract — ' + cwEsc(row.quote_ref) + ' · ' + cwEsc(row.customer || '') + '</span>' +
+      '<button onclick="document.getElementById(\'sig-view-frame\').contentWindow.print()" style="background:#fff;border:0;border-radius:7px;padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer">🖨 Print / PDF</button>' +
+      '<button onclick="document.getElementById(\'sig-view\').remove()" style="background:none;border:1px solid #64748b;color:#e2e8f0;border-radius:7px;padding:7px 12px;font-size:12px;cursor:pointer">✕ Close</button>' +
+    '</div>' +
+    '<iframe id="sig-view-frame" title="Signed contract" style="flex:1;border:0;background:#fff"></iframe>';
+  document.body.appendChild(wrap);
+  const iframe = document.getElementById('sig-view-frame');
+  iframe.onload = () => sigInjectIntoDoc(iframe.contentDocument, row);
+  iframe.srcdoc = row.contract_html;
+}
+function sigInjectIntoDoc(doc, row) {
+  try {
+    const signed = (row.signers || []).filter(s => s.signed_at);
+    if (!signed.length) return;
+    const rows = doc.querySelectorAll('.cw-sign-row');
+    if (rows.length) {
+      const vals = rows[0].querySelectorAll('.cw-sign-cell .val');
+      if (vals.length >= 3) {
+        vals[0].innerHTML = signed.map(s => s.signature_image ? '<img src="' + s.signature_image + '" alt="signature" style="max-height:40px;max-width:170px;display:block;margin:2px 0">' : '').join('');
+        vals[1].textContent = signed.map(s => s.typed_name || s.name).join(' · ');
+        vals[2].textContent = signed.map(s => s.signed_at ? new Date(s.signed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '').join(' · ');
+      }
+    }
+    const sign = doc.querySelector('.cw-sign');
+    if (sign && !doc.getElementById('esign-audit')) {
+      const fmt = iso => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) +
+        ' at ' + new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+      const audit = doc.createElement('div');
+      audit.id = 'esign-audit';
+      audit.style.cssText = 'margin:26px 36px 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid';
+      audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + cwEsc(row.quote_ref) + '</div>' +
+        (row.signers || []).map(s => '<div>' + cwEsc(s.name) + ': ' + (s.signed_at ? 'signed ' + fmt(s.signed_at) + (s.typed_name ? ' (typed name: ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') + '</div>').join('') +
+        '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
+        '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. Full evidence (date, time, network address, device) is held on record.</div>';
+      sign.parentNode.insertBefore(audit, sign.nextSibling);
+      sigSha256(row.contract_html).then(h => {
+        const el = doc.getElementById('esign-hash');
+        if (el) el.textContent = 'Document fingerprint (SHA-256): ' + h;
+      });
+    }
+  } catch (e) {}
 }
 
 // ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
@@ -7233,6 +7335,7 @@ function renderSaved() {
     const d = sq.saved ? new Date(sq.saved).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : sq.date||'';
     const status = sq.status || 'Draft';
     const statusCol = STATUS_COLORS[status] || '#6B7280';
+    const sigSt = sigBadge(sq.ref);
     return `<div class="sq-item" style="cursor:pointer" onclick="loadQuote('${sq.ref}')">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span class="sq-ref" style="font-family:'DM Mono',monospace;font-weight:600;min-width:80px">${sq.ref}</span>
@@ -7244,6 +7347,7 @@ function renderSaved() {
           ${QUOTE_STATUSES.map(s => `<option value="${s}" ${status===s?'selected':''}>${s}</option>`).join('')}
         </select>
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract'}</button>` : ''}
+        ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
         <button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();duplicateQuote('${sq.ref}')" style="margin-left:4px" title="Duplicate this quote with a new reference number">⧉ Duplicate</button>
         <button class="btn btn-red btn-sm no-print" onclick="event.stopPropagation();deleteQuote('${sq.ref}')" style="margin-left:4px">Delete</button>
       </div>
@@ -8843,6 +8947,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderGroupTemplates();
   renderStaff();
   populateSignDropdown();
+  sigRefreshStatuses();   // fire-and-forget: e-signature badges + Signed sync
   // QT ref is assigned at save time, not on load — no ref generation here
 });
 
