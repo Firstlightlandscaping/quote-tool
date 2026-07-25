@@ -94,6 +94,7 @@ async function handleGet(req: Request, token: string): Promise<Response> {
     const patch: Record<string, unknown> = { signers };
     if (row.status === "sent") patch.status = "viewed";
     await patchRow(row.id, patch);
+    row.signers = signers;   // keep the response in step with what was just stored
   }
 
   return json(200, {
@@ -106,9 +107,12 @@ async function handleGet(req: Request, token: string): Promise<Response> {
     signedAt: signer.signed_at || null,
     coSigners: row.signers.filter((_: any, i: number) => i !== idx).map((s: any) => ({ name: s.name, signed: !!s.signed_at })),
     expiresAt: row.expires_at,
-    // signature data so the viewer can render the completed signature cells + audit block
+    sentAt: row.sent_at,          // for the audit block's full trail
+    // signature data so the viewer can render the completed signature cells + audit block.
+    // Timestamps only — IP/user-agent stay server-side, never sent to the browser.
     signatures: row.signers.map((s: any) => ({
       name: s.name, signed: !!s.signed_at, signedAt: s.signed_at || null,
+      viewedAt: s.viewed_at || null,
       typedName: s.typed_name || null, image: s.signed_at ? (s.signature_image || null) : null,
     })),
     contractHtml: row.contract_html,

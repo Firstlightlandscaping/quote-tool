@@ -180,9 +180,14 @@ function injectSignatures(iframe, body) {
       var audit = doc.createElement('div');
       audit.id = 'esign-audit';
       audit.style.cssText = 'margin:26px 36px 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid';
+      // Keep this format in step with sigInjectIntoDoc() in index.html — the client's
+      // copy and the office copy must read identically.
       audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + esc(body.quoteRef) + '</div>' +
+        (body.sentAt ? '<div>Sent for signature: ' + esc(fmtDate(body.sentAt)) + '</div>' : '') +
         (body.signatures || []).map(function (s) {
-          return '<div>' + esc(s.name) + ': ' + (s.signed ? 'signed ' + esc(fmtDate(s.signedAt)) + (s.typedName ? ' (typed name: ' + esc(s.typedName) + ')' : '') : 'not yet signed') + '</div>';
+          return '<div>' + esc(s.name) + ': ' +
+            (s.viewedAt ? 'opened ' + esc(fmtDate(s.viewedAt)) + ' · ' : '') +
+            (s.signed ? 'signed ' + esc(fmtDate(s.signedAt)) + (s.typedName ? ' (typed name: ' + esc(s.typedName) + ')' : '') : 'not yet signed') + '</div>';
         }).join('') +
         '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
         '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. ' +

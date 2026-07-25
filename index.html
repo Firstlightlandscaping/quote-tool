@@ -6376,6 +6376,21 @@ async function sigSha256(str) {
   const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(str));
   return Array.from(new Uint8Array(d), x => x.toString(16).padStart(2, '0')).join('');
 }
+// Evidence formatting, shared by the dialog timeline and the document audit block.
+function sigDateOnly(iso) {
+  return iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+}
+function sigTimeOnly(iso) {
+  return iso ? new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
+}
+// Long form for the printed audit block (formal record); the dialog uses the short
+// form via sigDateOnly + sigTimeOnly so dates don't read inconsistently in one line.
+function sigDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) +
+    ' at ' + sigTimeOnly(iso);
+}
 function sigLinkFor(token) {
   // Same-origin sign.html — resolves to the Pages URL on live, localhost when testing.
   return location.origin + location.pathname.replace(/[^/]*$/, '') + 'sign.html?t=' + token;
@@ -6444,9 +6459,21 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
 
   let body;
   if (signed && !active) {
+    // Full trail, not just the signed date — answers "when did you send it?" and
+    // "when did they open it?" months later, without digging in the database.
+    const trail =
+      '<div style="font-size:11px;color:var(--i2);background:#F8FAFC;border:1px solid var(--bd);border-radius:8px;padding:9px 11px;margin-top:10px">' +
+        '<div><strong>Sent</strong> ' + sigDateOnly(signed.sent_at) + '</div>' +
+        (signed.signers || []).map(s =>
+          '<div style="margin-top:3px">' + cwEsc(s.name) + ' — ' +
+            (s.viewed_at ? 'opened ' + sigDateOnly(s.viewed_at) + ', ' : '') +
+            (s.signed_at ? 'signed ' + sigDateOnly(s.signed_at) + ' at ' + sigTimeOnly(s.signed_at) : 'not signed') +
+          '</div>').join('') +
+      '</div>';
     body = '<div style="font-size:13px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px">✓ <strong>Signed</strong> ' +
-      (signed.signed_at ? 'on ' + new Date(signed.signed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '') +
+      (signed.signed_at ? 'on ' + sigDateOnly(signed.signed_at) : '') +
       ' by ' + (signed.signers || []).map(s => cwEsc(s.name)).join(' and ') + '.</div>' +
+      trail +
       '<div class="cw-modal-btns">' +
         '<button class="btn btn-primary" onclick="removeSigDialog();sigViewSigned(' + signed.id + ')">📄 View signed contract</button>' +
         '<button class="btn btn-outline" onclick="removeSigDialog()">Close</button>' +
@@ -6648,13 +6675,17 @@ function sigInjectIntoDoc(doc, row) {
     }
     const sign = doc.querySelector('.cw-sign');
     if (sign && !doc.getElementById('esign-audit')) {
-      const fmt = iso => new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) +
-        ' at ' + new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
       const audit = doc.createElement('div');
       audit.id = 'esign-audit';
       audit.style.cssText = 'margin:26px 36px 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid';
+      // Keep this format in step with injectSignatures() in sign.html — the client's
+      // copy and the office copy must read identically.
       audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + cwEsc(row.quote_ref) + '</div>' +
-        (row.signers || []).map(s => '<div>' + cwEsc(s.name) + ': ' + (s.signed_at ? 'signed ' + fmt(s.signed_at) + (s.typed_name ? ' (typed name: ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') + '</div>').join('') +
+        (row.sent_at ? '<div>Sent for signature: ' + sigDateTime(row.sent_at) + '</div>' : '') +
+        (row.signers || []).map(s => '<div>' + cwEsc(s.name) + ': ' +
+          (s.viewed_at ? 'opened ' + sigDateTime(s.viewed_at) + ' · ' : '') +
+          (s.signed_at ? 'signed ' + sigDateTime(s.signed_at) + (s.typed_name ? ' (typed name: ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') +
+          '</div>').join('') +
         '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
         '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. Full evidence (date, time, network address, device) is held on record.</div>';
       sign.parentNode.insertBefore(audit, sign.nextSibling);
