@@ -965,6 +965,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <span class="ct">Saved Quotes</span>
       <div style="display:flex;gap:8px">
         <button class="btn btn-outline btn-sm" onclick="openSalesCheck()" title="Quick sales report — totals by period and status">📊 Sales report</button>
+        <button class="btn btn-outline btn-sm" onclick="openContractsPanel()" title="E-signature overview — what needs chasing, what's out for signature, what's been signed">✍ Contracts</button>
         <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
       </div>
     </div>
@@ -6295,6 +6296,7 @@ async function doGenerateContract(){
         ').\n\nRegenerating REVOKES those signing links. Continue?')) return;
       await sigRevokeRow(act.id);
       toast('Old signing links revoked');
+      sigRefreshStatuses();   // badge follows along (this was the missed third revoke path)
     }
   } catch (e) { /* signing table absent — nothing to revoke */ }
   const isCustom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
@@ -6405,6 +6407,10 @@ function sigStampCounter(rootEl, dateStr, sig) {
   vals[0].innerHTML = '<img src="' + sig.image + '" alt="signature" style="max-height:44px;max-width:180px">';
   vals[1].textContent = sig.name + (sig.role ? ' — ' + sig.role : '');
   vals[2].textContent = dateStr;
+  // Plain typeface for name/date — the .val cells default to a handwriting font,
+  // which made typed text masquerade as a signature (Neal's Phase 7 finding).
+  vals[1].style.cssText += ';font-family:inherit;font-size:13px';
+  vals[2].style.cssText += ';font-family:inherit;font-size:13px';
   return true;
 }
 // Render the saved contract snapshot, capture it as a standalone HTML document with the
@@ -6417,8 +6423,14 @@ function sigBuildFrozenDoc(ref, sig) {
   const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
   if (!sigStampCounter(clone, today, sig)) return null;
   const styles = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
+  // Screen fixes for the frozen copy (print CSS already handles these when printing):
+  // group rows must not carry the builder's blue highlight, and the signature cells'
+  // handwriting font is for nothing — stamped names/dates are typed text, only the
+  // drawn signature IMAGE should look like a signature.
+  const screenFixes = '.group-header-row{background:#fff!important;border-left:none!important;border-top:1px solid #eee}' +
+    '.cw-sign-cell .val{font-family:inherit!important;font-size:13px}';
   return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<title>Contract of Works — ' + cwEsc(ref) + '</title><style>' + styles + '</style></head>' +
+    '<title>Contract of Works — ' + cwEsc(ref) + '</title><style>' + styles + '</style><style>' + screenFixes + '</style></head>' +
     '<body class="contract-mode"><div id="contract-view">' + clone.innerHTML + '</div></body></html>';
 }
 async function sigFetchRows(ref) {
@@ -6436,8 +6448,11 @@ async function sigRevokeRow(id) {
 }
 function removeSigDialog() { const m = document.getElementById('sig-dialog'); if (m) m.remove(); }
 
-async function sigOpenSendDialog() {
-  const ref = g('in-ref');
+// refArg: open for a SAVED quote without loading it into the builder (the badge path —
+// Neal's rule: only the customer name and the Contract button load the builder). Falls
+// back to the loaded quote for the contract-dialog entry point.
+async function sigOpenSendDialog(refArg) {
+  const ref = refArg || g('in-ref');
   if (!ref) { toast('Save the quote first'); return; }
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq || !sq.contractMeta) { toast('Generate the contract first'); return; }
@@ -6455,7 +6470,10 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
   const active = rows.find(sigIsActive) || null;
   const signed = forceNew ? null : (rows.find(r => r.status === 'signed') || null);
   const genDate = new Date(cm.generatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  const drift = Math.abs((cm.total || 0) - contractGrandTotal()) > 0.005;
+  // Drift check reads the SAVED quote, not the builder — the dialog can open from the
+  // Saved Quotes badge with a different (or no) quote loaded.
+  const savedTotal = sqTotals(sq).inc;
+  const drift = Math.abs((cm.total || 0) - savedTotal) > 0.005;
 
   let body;
   if (signed && !active) {
@@ -6514,11 +6532,11 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
     body =
       '<div style="font-size:12px;color:var(--i2);margin-bottom:12px">This freezes the contract <strong>exactly as generated on ' + genDate + '</strong>, countersigned by ' + (companySigns.length > 1 ? 'the partner chosen below' : cwEsc(defSig.name)) + ', and creates a private signing link for each person. Links expire after 30 days; you can revoke them any time.</div>' +
       sigPicker +
-      (drift ? '<div style="font-size:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;margin-bottom:12px">⚠ The quote has changed since the contract was generated (' + money(cm.total || 0) + ' → ' + money(contractGrandTotal()) + '). If the new figures should apply, Cancel and <strong>Regenerate</strong> the contract first.</div>' : '') +
+      (drift ? '<div style="font-size:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;margin-bottom:12px">⚠ The quote has changed since the contract was generated (' + money(cm.total || 0) + ' → ' + money(savedTotal) + '). If the new figures should apply, Cancel and <strong>Regenerate</strong> the contract first.</div>' : '') +
       '<div class="cw-row2"><div class="cw-fg"><label>Signer name</label><input type="text" id="sig-name-1" placeholder="e.g. Jane Smith"></div>' +
-      '<div class="cw-fg"><label>Email (for your records)</label><input type="text" id="sig-email-1" placeholder="optional"></div></div>' +
+      '<div class="cw-fg"><label>Client\'s email</label><input type="text" id="sig-email-1" placeholder="optional"></div></div>' +
       '<div id="sig-second" style="display:none"><div class="cw-row2"><div class="cw-fg"><label>Second signer name</label><input type="text" id="sig-name-2" placeholder="e.g. John Smith"></div>' +
-      '<div class="cw-fg"><label>Email (for your records)</label><input type="text" id="sig-email-2" placeholder="optional"></div></div></div>' +
+      '<div class="cw-fg"><label>Client\'s email</label><input type="text" id="sig-email-2" placeholder="optional"></div></div></div>' +
       '<a href="#" id="sig-add-2" onclick="document.getElementById(\'sig-second\').style.display=\'block\';this.style.display=\'none\';return false;" style="font-size:12px">+ Add a second signer (joint homeowners)</a>' +
       '<div class="cw-modal-btns"><button class="btn btn-primary" id="sig-send-btn" onclick="sigDoSend(\'' + ref + '\')">✍ Freeze contract &amp; create link</button>' +
       '<button class="btn btn-outline" onclick="removeSigDialog()">Cancel</button></div>';
@@ -6529,10 +6547,10 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
   wrap.innerHTML =
     '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeSigDialog()">' +
       '<div class="cw-modal"><h3>E-signature — ' + cwEsc(ref) + '</h3>' +
-      '<div class="cw-modal-sub">' + cwEsc(g('in-cust') || '') + '</div>' + body + '</div></div>';
+      '<div class="cw-modal-sub">' + cwEsc(sq.customer || '') + '</div>' + body + '</div></div>';
   document.body.appendChild(wrap);
   const n1 = document.getElementById('sig-name-1');
-  if (n1) { n1.value = n1.value || (g('in-cust') || ''); n1.focus(); }
+  if (n1) { n1.value = n1.value || (sq.customer || ''); n1.focus(); }
 }
 
 async function sigDoSend(ref) {
@@ -6558,7 +6576,7 @@ async function sigDoSend(ref) {
     const now = new Date();
     const row = {
       quote_ref: ref,
-      customer: g('in-cust') || '',
+      customer: sq.customer || '',
       status: 'sent',
       contract_html: doc,
       contract_hash: hash,
@@ -6587,7 +6605,18 @@ async function sigDoSend(ref) {
 }
 
 async function sigRevoke(id, ref) {
-  if (!confirm('Revoke the signing link' + '(s)? The client\'s link will stop working immediately.\n\nYou can send fresh links afterwards.')) return;
+  // If someone has ALREADY signed, say so — revoking then means the contract never
+  // completes (their signature stays on record, but there is no executed agreement).
+  let row = null;
+  try { row = (await sigFetchRows(ref)).find(r => r.id === id) || null; } catch (e) {}
+  const signedOnes = row ? (row.signers || []).filter(s => s.signed_at).map(s => s.name) : [];
+  const pending = row ? (row.signers || []).filter(s => !s.signed_at).map(s => s.name) : [];
+  const msg = signedOnes.length
+    ? signedOnes.join(' and ') + ' has already signed. Revoking stops ' +
+      (pending.length === 1 ? pending[0] + '\'s link' : 'the remaining links') +
+      ' and the contract will NOT complete.\n\nRevoke anyway?'
+    : 'Revoke the signing link(s)? The client\'s link will stop working immediately.\n\nYou can send fresh links afterwards.';
+  if (!confirm(msg)) return;
   try { await sigRevokeRow(id); }
   catch (e) { toast('Revoke failed: ' + e.message); return; }
   toast('Links revoked');
@@ -6615,8 +6644,13 @@ function sigBadge(ref) {
   if (r.status === 'signed') return { label: '✓ Signed', col: '#15803D' };
   if (r.status === 'revoked') return null;                     // deliberately withdrawn — no badge noise
   if (r.expires_at && new Date(r.expires_at) < new Date()) return { label: '⌛ Link expired', col: '#DC2626' };
-  if (r.status === 'viewed') return { label: '👁 Opened', col: '#B45309' };
-  return { label: '✍ Sent to sign', col: '#2563EB' };
+  // Ageing: the list should say who's gone quiet without opening anything. Amber at
+  // 7 days (Neal's nudge point), blue before that.
+  const dayCount = Math.floor((Date.now() - new Date(r.sent_at).getTime()) / 86400000);
+  const age = dayCount <= 0 ? 'today' : dayCount + 'd ago';
+  const col = dayCount >= 7 ? '#B45309' : '#2563EB';
+  if (r.status === 'viewed') return { label: '👁 Opened · sent ' + age, col };
+  return { label: '✍ Sent ' + age, col };
 }
 async function sigRefreshStatuses() {
   if (!USE_SUPABASE) return;
@@ -6636,7 +6670,7 @@ async function sigRefreshStatuses() {
   renderSaved();
 }
 // Saved Quotes badge → load the quote and open the signing dialog (contractFromSaved pattern).
-function sigFromSaved(ref) { loadQuote(ref); sigOpenSendDialog(); }
+function sigFromSaved(ref) { sigOpenSendDialog(ref); }   // in place — no builder jump
 
 // Full-screen viewer for a SIGNED contract: the frozen document with the client
 // signature cells + audit block injected at display time (same rules as sign.html —
@@ -6674,6 +6708,8 @@ function sigInjectIntoDoc(doc, row) {
         vals[0].innerHTML = signed.map(s => s.signature_image ? '<img src="' + s.signature_image + '" alt="signature" style="max-height:40px;max-width:170px;display:block;margin:2px 0">' : '').join('');
         vals[1].textContent = signed.map(s => s.typed_name || s.name).join(' · ');
         vals[2].textContent = signed.map(s => s.signed_at ? new Date(s.signed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '').join(' · ');
+        vals[1].style.cssText += ';font-family:inherit;font-size:13px';
+        vals[2].style.cssText += ';font-family:inherit;font-size:13px';
       }
     }
     const sign = doc.querySelector('.cw-sign');
@@ -6698,6 +6734,95 @@ function sigInjectIntoDoc(doc, row) {
       });
     }
   } catch (e) {}
+}
+
+// ── CONTRACTS PANEL (Saved Quotes header) ─────────────────────────────────────
+// The signing worklist — signing state is a SECOND AXIS from quote status (every
+// contract-stage quote is Accepted), so it gets its own panel instead of polluting
+// the status chips. Three questions, one screen:
+//   1. Needs attention  — generated-never-sent, quiet 7+ days, expired, revoked-unreplaced
+//   2. Out for signature — sent within 7 days, with days waiting + opened-or-not
+//   3. Signed            — grouped by recency, newest first ("these two signed this week")
+// Rows are NOT clickable (Sales-report ruling) — explicit buttons only. Manage opens
+// the signing dialog IN PLACE (no builder jump).
+function removeContractsPanel() { const m = document.getElementById('sigp-dialog'); if (m) m.remove(); }
+async function openContractsPanel() {
+  if (!USE_SUPABASE) { toast('Not connected to Supabase'); return; }
+  let rows;
+  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,customer,status,signers,sent_at,signed_at,expires_at,revoked_at&order=id'); }
+  catch (e) { toast('Could not load signing data: ' + e.message + ' (run supabase/contract-signing.sql?)'); return; }
+  const latest = {};
+  rows.forEach(r => { latest[r.quote_ref] = r; });   // ascending id → latest send wins
+
+  const dayCount = iso => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  const attention = [], out = [], signedList = [];
+  // contracts generated but with NO signing request at all — the forgotten ones
+  savedQuotes.forEach(sq => {
+    if (sq.contractMeta && !latest[sq.ref] && sq.contractMeta.status !== 'Signed') {
+      attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: sq.contractMeta.generatedAt, note: 'contract generated ' + sigDateOnly(sq.contractMeta.generatedAt) });
+    }
+  });
+  Object.values(latest).forEach(r => {
+    const base = { ref: r.quote_ref, customer: r.customer || '', r };
+    if (r.status === 'signed') { signedList.push({ ...base, when: r.signed_at }); return; }
+    if (r.status === 'revoked') { attention.push({ ...base, kind: 'Revoked — nothing outstanding', when: r.revoked_at || r.sent_at, note: 'revoked ' + sigDateOnly(r.revoked_at) }); return; }
+    if (r.expires_at && new Date(r.expires_at) < new Date()) { attention.push({ ...base, kind: 'Link expired unsigned', when: r.sent_at, note: 'sent ' + sigDateOnly(r.sent_at) + ', expired ' + sigDateOnly(r.expires_at) }); return; }
+    const d = dayCount(r.sent_at);
+    const opened = (r.signers || []).some(s => s.viewed_at);
+    const entry = { ...base, when: r.sent_at, note: 'sent ' + (d <= 0 ? 'today' : d + ' day' + (d === 1 ? '' : 's') + ' ago') + ' — ' + (opened ? 'opened' : 'not opened yet') };
+    if (d >= 7) attention.push({ ...entry, kind: 'Waiting ' + d + ' days' });
+    else out.push(entry);
+  });
+  attention.sort((a, b) => new Date(a.when) - new Date(b.when));   // most neglected first
+  out.sort((a, b) => new Date(a.when) - new Date(b.when));
+  signedList.sort((a, b) => new Date(b.when) - new Date(a.when));  // newest first
+
+  // recency groups for signed: this week (Mon start) / earlier this month / earlier
+  const now = new Date();
+  const monday = new Date(now); monday.setHours(0, 0, 0, 0); monday.setDate(monday.getDate() - ((monday.getDay() + 6) % 7));
+  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+  const gWeek = signedList.filter(s => new Date(s.when) >= monday);
+  const gMonth = signedList.filter(s => new Date(s.when) < monday && new Date(s.when) >= monthStart);
+  const gOlder = signedList.filter(s => new Date(s.when) < monthStart);
+
+  const esc = cwEsc;
+  const rowHtml = (e, actions) =>
+    '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--bd);font-size:12px;flex-wrap:wrap">' +
+      '<span style="font-family:\'DM Mono\',monospace;font-weight:600;min-width:74px">' + esc(e.ref) + '</span>' +
+      '<span style="flex:1;min-width:130px">' + esc(e.customer) + '</span>' +
+      '<span style="color:var(--i3)">' + esc(e.note || '') + '</span>' +
+      (actions || '') +
+    '</div>';
+  const manageBtn = ref => '<button class="btn btn-outline btn-sm" onclick="removeContractsPanel();sigOpenSendDialog(\'' + ref + '\')">Manage</button>';
+  const copyBtns = r => (r && r.signers || []).filter(s => !s.signed_at).map(s =>
+    '<button class="btn btn-outline btn-sm" onclick="sigCopyLink(\'' + s.token + '\',this)" title="Copy ' + esc(s.name) + '\'s signing link">📋 ' + esc((s.name || '').split(/\s+/)[0]) + '</button>').join('');
+  const signedRow = e => {
+    const sq = savedQuotes.find(q => q.ref === e.ref);
+    const start = sq && sq.schedulePlan && sq.schedulePlan.startDate;
+    return rowHtml({ ...e, note: 'signed ' + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') }, manageBtn(e.ref));
+  };
+  const section = (title, colour, inner) =>
+    '<div style="margin-bottom:14px"><div style="font-weight:700;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:' + colour + ';margin-bottom:4px">' + title + '</div>' +
+    (inner || '<div style="font-size:12px;color:var(--i3);padding:4px 0">Nothing here.</div>') + '</div>';
+  const fold = (label, list, open) => list.length
+    ? '<details' + (open ? ' open' : '') + ' style="margin-bottom:6px"><summary style="cursor:pointer;font-size:12px;font-weight:600;padding:4px 0">' + label + ' (' + list.length + ')</summary>' + list.map(signedRow).join('') + '</details>'
+    : '';
+
+  removeContractsPanel();
+  const wrap = document.createElement('div');
+  wrap.id = 'sigp-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeContractsPanel()">' +
+      '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
+        '<h3>✍ Contracts — e-signature overview</h3>' +
+        '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No contracts sent for signature yet') + '</div>' +
+        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.r ? copyBtns(e.r) : '') + manageBtn(e.ref))).join('') : '') +
+        section('✍ Out for signature', '#2563EB', out.length ? out.map(e => rowHtml(e, copyBtns(e.r) + manageBtn(e.ref))).join('') : '') +
+        section('✓ Signed', '#15803D', (gWeek.length + gMonth.length + gOlder.length)
+          ? fold('This week', gWeek, true) + fold('Earlier this month', gMonth, false) + fold('Earlier', gOlder, false) : '') +
+        '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="removeContractsPanel()">Close</button></div>' +
+      '</div></div>';
+  document.body.appendChild(wrap);
 }
 
 // ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
@@ -8182,8 +8307,9 @@ function csigUpload(input) {
       const s = Math.min(cw / img.width, ch / img.height, 1);
       const w = img.width * s, h = img.height * s;
       csigCtx.drawImage(img, (cw - w) / 2, (ch - h) / 2, w, h);
+      csigStripBackground();
       csigDrawn = true;
-      toast('Image loaded — Save signature to keep it');
+      toast('Image loaded — background removed. Save signature to keep it');
     };
     img.onerror = () => toast('Could not read that image');
     img.src = rd.result;
@@ -8191,9 +8317,42 @@ function csigUpload(input) {
   rd.readAsDataURL(f);
 }
 
+// Make an uploaded PHOTO behave like a drawing: turn the paper background transparent
+// so only the ink lands on contracts (a photo otherwise stamps as a solid rectangle —
+// cream paper and all). Luminance threshold between the darkest ink and lightest paper,
+// with a soft ramp so stroke edges stay smooth. One pass at upload time; the preview
+// shows the result before saving, so a bad photo is obvious and re-takeable.
+function csigStripBackground() {
+  const c = document.getElementById('csig-canvas');
+  const ctx = c.getContext('2d');
+  const id = ctx.getImageData(0, 0, c.width, c.height), d = id.data;
+  let min = 255, max = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 20) continue;                    // already transparent (outside the photo)
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    if (lum < min) min = lum;
+    if (lum > max) max = lum;
+  }
+  if (max - min < 40) return;                       // flat image (blank / already clean) — leave it
+  const thr = max - (max - min) * 0.4;              // everything brighter than this is paper
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i + 3] < 20) continue;
+    const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
+    if (lum >= thr) d[i + 3] = 0;
+    else {
+      const k = (thr - lum) / (thr - min);          // 0 at threshold → 1 at darkest ink
+      d[i + 3] = Math.min(255, Math.round(255 * Math.min(1, k * 1.4)));
+      d[i] = d[i + 1] = d[i + 2] = Math.round(30 + (d[i] + d[i + 1] + d[i + 2]) / 3 * 0.2);   // darken retained ink toward pen-black
+    }
+  }
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.putImageData(id, 0, 0);
+  ctx.restore();
+}
+
 // Export the canvas cropped to the ink's bounding box (+8px pad) so the stamped
 // signature has no dead space around it. Alpha threshold keeps drawn strokes AND
-// uploaded opaque images (those trim to their full frame, which is correct).
+// uploaded photos too, now that csigStripBackground makes their paper transparent.
 function csigTrimmed() {
   if (!csigDrawn) return null;
   const c = document.getElementById('csig-canvas');

@@ -13,8 +13,11 @@
   :root { --green:#2F5233; --amber:#B45309; --ink:#1e293b; --i2:#475569; --i3:#64748b; --bd:#e2e8f0; }
   * { box-sizing: border-box; margin: 0; }
   body { font-family: -apple-system, 'Segoe UI', Roboto, Arial, sans-serif; background: #F1F5F9; color: var(--ink); }
-  header { background: var(--green); color: #fff; padding: 14px 18px; font-size: 15px; font-weight: 600; letter-spacing: .3px; }
-  header .sub { font-weight: 400; font-size: 12px; opacity: .85; margin-top: 2px; }
+  /* Matches the contract's own brand banner (charcoal #4d4d4d) so the page and the
+     document read as one thing; the green Sign button then stands out as THE action. */
+  header { background: #4d4d4d; color: #fff; padding: 14px 18px; }
+  header .brand { font-size: 17px; font-weight: 600; letter-spacing: 3px; }
+  header .sub { font-weight: 400; font-size: 10px; letter-spacing: 2px; opacity: .8; margin-top: 2px; }
   .wrap { max-width: 900px; margin: 0 auto; padding: 14px; }
   .card { background: #fff; border: 1px solid var(--bd); border-radius: 12px; padding: 16px; margin-bottom: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.05); }
   .card h2 { font-size: 16px; margin-bottom: 6px; }
@@ -42,7 +45,7 @@
 </style>
 </head>
 <body>
-<header>First Light Landscaping<div class="sub">Contract of Works — electronic signing</div></header>
+<header><div class="brand">FIRST LIGHT</div><div class="sub">LANDSCAPING DESIGN &amp; BUILD — CONTRACT SIGNING</div></header>
 <div class="wrap">
 
   <div class="card" id="status-card">
@@ -55,7 +58,7 @@
     <h2>Sign this contract</h2>
     <div class="notice" style="margin-bottom:12px">Please read the whole contract above before signing.</div>
     <div style="margin-bottom:12px">
-      <label for="typed-name">Type your full name</label>
+      <label for="typed-name">Print your full name</label>
       <input type="text" id="typed-name" autocomplete="name" placeholder="Your full name">
     </div>
     <div style="margin-bottom:4px">
@@ -129,13 +132,33 @@ async function init() {
     var waiting = (body.coSigners || []).filter(function (c) { return !c.signed; });
     var done = (body.coSigners || []).filter(function (c) { return c.signed; });
     statusCard(
-      '<h2>Hello ' + esc(body.signerName) + '</h2>' +
-      '<div class="notice">Please review this Contract of Works for <strong>' + esc(body.customer) + '</strong> (ref ' + esc(body.quoteRef) + '), then sign at the bottom of the page.</div>' +
-      (done.length ? '<div class="muted" style="margin-top:6px">✓ Already signed by ' + done.map(function (c) { return esc(c.name); }).join(' and ') + '.</div>' : '') +
-      (waiting.length ? '<div class="muted" style="margin-top:6px">' + waiting.map(function (c) { return esc(c.name); }).join(' and ') + ' will also be asked to sign.</div>' : ''));
+      '<h2>Hi ' + esc(firstName(body.signerName)) + ',</h2>' +
+      '<div class="notice">Please find your contract below for your upcoming project. Have a read through, check everything, and sign at the bottom of the page.</div>' +
+      '<div class="notice" style="margin-top:8px">Any questions about any aspect of the contract — please just let us know on <strong>0113 2580428</strong>, or reply to the email this link came in.</div>' +
+      (done.length ? '<div class="muted" style="margin-top:8px">✓ Already signed by ' + done.map(function (c) { return esc(c.name); }).join(' and ') + '.</div>' : '') +
+      (waiting.length ? '<div class="muted" style="margin-top:8px">' + waiting.map(function (c) { return esc(c.name); }).join(' and ') + ' will also be asked to sign.</div>' : '') +
+      '<div style="margin-top:14px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">' +
+        '<button class="btn btn-ghost" onclick="printDoc()">🖨 Print or save a copy</button>' +
+        '<a href="#" onclick="goToSign();return false;" style="color:var(--green);font-weight:600;font-size:14px;text-decoration:none">↓ Take me to the signing box</a>' +
+      '</div>' +
+      '<div class="muted" style="margin-top:10px">To keep an electronic copy, choose &ldquo;Save as PDF&rdquo; in the print window.</div>' +
+      '<div class="muted" style="margin-top:6px">Ref ' + esc(body.quoteRef) + ' · This private link was created for you by First Light Landscaping. If anything looks unfamiliar, call us on 0113 2580428.</div>');
     document.getElementById('sign-panel').style.display = 'block';
-    document.getElementById('typed-name').value = body.signerName || '';
+    // Deliberately EMPTY — printing your own name is part of signing, and a
+    // self-typed name is stronger evidence of intent than a pre-filled one.
+    document.getElementById('typed-name').value = '';
     padInit();
+  }
+}
+function firstName(n) {
+  var f = String(n || '').trim().split(/\s+/)[0];
+  return f || n || 'there';
+}
+function goToSign() {
+  var p = document.getElementById('sign-panel');
+  if (p && p.style.display !== 'none') {
+    p.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.getElementById('typed-name').focus({ preventScroll: true });
   }
 }
 
@@ -172,6 +195,9 @@ function injectSignatures(iframe, body) {
         vals[2].textContent = signed.map(function (s) {
           return s.signedAt ? new Date(s.signedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
         }).join(' · ');
+        // plain typeface — only the drawn signature image should look like a signature
+        vals[1].style.cssText += ';font-family:inherit;font-size:13px';
+        vals[2].style.cssText += ';font-family:inherit;font-size:13px';
       }
     }
     // audit block
@@ -207,12 +233,14 @@ function showSignedState(body) {
   statusCard(
     '<h2>✓ ' + (body.allSigned ? 'Contract signed' : 'Your signature is recorded') + '</h2>' +
     '<div class="notice">' +
-      (body.alreadySigned ? 'You signed this contract' + (body.signedAt ? ' on ' + esc(fmtDate(body.signedAt)) : '') + '. ' : '') +
+      (body.alreadySigned ? 'Thank you ' + esc(firstName(body.signerName)) + ' — you signed this contract' + (body.signedAt ? ' on ' + esc(fmtDate(body.signedAt)) : '') + '. ' : '') +
       (body.allSigned
-        ? 'All parties have signed — the agreement is complete. Keep this link to view your signed copy at any time.'
+        ? 'All parties have signed — the agreement is complete.'
         : 'Waiting for ' + waiting.map(function (s) { return esc(s.name); }).join(' and ') + ' to sign.') +
     '</div>' +
-    '<div style="margin-top:12px"><button class="btn btn-ghost" onclick="printDoc()">🖨 Print / save as PDF</button></div>',
+    '<div class="notice" style="margin-top:8px">You can come back to this page any time to view or print your copy. We\'ll be in touch about the next steps.</div>' +
+    '<div style="margin-top:12px"><button class="btn btn-ghost" onclick="printDoc()">🖨 Print or save a copy</button></div>' +
+    '<div class="muted" style="margin-top:8px">To keep an electronic copy, choose &ldquo;Save as PDF&rdquo; in the print window.</div>',
     'ok-banner');
   document.getElementById('sign-panel').style.display = 'none';
 }
@@ -274,7 +302,7 @@ async function doSign() {
   var name = document.getElementById('typed-name').value.trim();
   var agreed = document.getElementById('agree').checked;
   var img = padImage();
-  if (!name) { alert('Please type your full name.'); return; }
+  if (!name) { alert('Please print your full name in the box.'); return; }
   if (!img) { alert('Please draw your signature in the box.'); return; }
   if (!agreed) { alert('Please tick the box to confirm you agree to the contract terms.'); return; }
   var btn = document.getElementById('sign-btn');
