@@ -6493,7 +6493,10 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
         '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;font-size:12px">' +
           '<div style="flex:1;min-width:0"><strong>' + cwEsc(s.name) + '</strong>' + (s.email ? ' · ' + cwEsc(s.email) : '') +
             ' — ' + (s.signed_at ? '✓ signed' : (s.viewed_at ? '👁 viewed' : 'not opened yet')) + '</div>' +
-          (s.signed_at ? '' : '<button class="btn btn-outline btn-sm" onclick="sigCopyLink(' + JSON.stringify(s.token) + ',this)">📋 Copy link</button>') +
+          // Token goes in SINGLE quotes — JSON.stringify's double quotes terminated the
+          // double-quoted onclick attribute, leaving a broken handler (silent no-op on click).
+          // Tokens are strictly 48 hex chars (sigToken), so no escaping is needed.
+          (s.signed_at ? '' : '<button class="btn btn-outline btn-sm" onclick="sigCopyLink(\'' + s.token + '\',this)">📋 Copy link</button>') +
         '</div>').join('') +
       '<div style="font-size:11px;color:var(--i3);margin-top:4px">Paste each link into your own email to that person. A link only works for the contract it belongs to.</div>' +
       '<div class="cw-modal-btns">' +
