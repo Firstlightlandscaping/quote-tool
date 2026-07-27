@@ -6212,7 +6212,7 @@ function cdRefresh(){
   body.innerHTML = '<table class="cw-preview-tbl"><tr><td>Total</td><td class="r">' + money(total) + '</td></tr>' +
     rows.map(r => '<tr><td>' + r.label + '</td><td class="r">' + money(r.amount) + '</td></tr>').join('') + '</table>' +
     (covered ? '<div style="margin-top:5px;font-size:11px;color:#64748b">Deposit + Completion cover 100% of the total — no weekly payments</div>' : '') +
-    (sum !== total ? '<div style="color:#dc2626;font-size:11px">⚠ milestones sum ' + money(sum) + ' ≠ total</div>' : '');
+    (Math.abs(sum - total) > 0.005 ? '<div style="color:#dc2626;font-size:11px">⚠ milestones sum ' + money(sum) + ' ≠ total</div>' : '');   // tolerance, not float equality
 }
 // refArg: open for a SAVED quote without loading it (Saved Quotes path). Totals and
 // labour then come from the saved record; the builder is only involved if the user
@@ -6236,7 +6236,9 @@ function openContractDialog(refArg){
   // Builder total when this quote is the one loaded (it may carry unsaved edits);
   // otherwise the saved record's total — the dialog must not read a DIFFERENT quote.
   const loadedHere = g('in-ref') === ref && lines.length;
-  const total = loadedHere ? contractGrandTotal() : (sq ? sqTotals(sq).inc : 0);
+  // round2 matters: sqTotals returns a raw float (…009999998); the milestone check and
+  // schedule maths expect a penny-exact figure like contractGrandTotal() has always given.
+  const total = loadedHere ? contractGrandTotal() : (sq ? round2(sqTotals(sq).inc) : 0);
   cwDialogRef = ref; cwDialogTotal = total;   // cdRefresh/fullScheduleText/doGenerateContract read these
   const cm = sq && sq.contractMeta;   // previously generated contract for this quote, if any
   // Drift warning: the quote total changed since a contract was last generated from it.
