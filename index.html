@@ -6078,8 +6078,9 @@ function renderContract(opts){
   window.scrollTo(0, 0);
 }
 function closeContract(){ document.body.classList.remove('contract-mode'); }
-// From Saved Quotes: load the quote into the builder, then open the contract dialog.
-function contractFromSaved(ref){ loadQuote(ref); openContractDialog(); }
+// From Saved Quotes: open the contract dialog IN PLACE (Neal's rule — only the customer
+// name loads the builder). The quote is loaded only if Generate/Regenerate is clicked.
+function contractFromSaved(ref){ openContractDialog(ref); }
 // Re-open a previously generated contract, rendered exactly as it was at generation (from the snapshot).
 function viewSavedContract(ref){
   const sq = savedQuotes.find(q => q.ref === ref);
@@ -6160,7 +6161,7 @@ function formatMiddleLines(text){
 // The WHOLE standard schedule (Deposit + weeklies + Completion) as editable text — seeds the
 // free-text box (pre-fill on switching to Custom, and the Reset link) from the current % inputs.
 function fullScheduleText(){
-  const total = contractGrandTotal();
+  const total = cwDialogTotal;   // the dialog's quote — NOT whatever is loaded in the builder
   return buildPaymentSchedule(total, readScheduleOpts()).map(r => r.label + ': ' + money(r.amount)).join('\n');
 }
 function cdResetMiddle(){ const ft = document.getElementById('cw-freetext'); if (ft){ ft.value = fullScheduleText(); cdRefresh(); } }
@@ -6174,7 +6175,7 @@ function cdToggleMode(){
 }
 function cdRefresh(){
   const custom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
-  const total = contractGrandTotal();
+  const total = cwDialogTotal;   // the dialog's quote — NOT whatever is loaded in the builder
   const body = document.getElementById('cw-preview-body');
   if (custom) {
     // Custom = the free text IS the whole schedule (Total is auto). Preview the lines as they'll
@@ -6213,24 +6214,37 @@ function cdRefresh(){
     (covered ? '<div style="margin-top:5px;font-size:11px;color:#64748b">Deposit + Completion cover 100% of the total — no weekly payments</div>' : '') +
     (sum !== total ? '<div style="color:#dc2626;font-size:11px">⚠ milestones sum ' + money(sum) + ' ≠ total</div>' : '');
 }
-function openContractDialog(){
-  if (!lines.length) { toast('Add items or load a quote first'); return; }
-  const ref = g('in-ref');
-  if (!ref) { toast('Save the quote first — it needs a quote number'); return; }
+// refArg: open for a SAVED quote without loading it (Saved Quotes path). Totals and
+// labour then come from the saved record; the builder is only involved if the user
+// actually clicks Generate/Regenerate (doGenerateContract loads the quote at that point).
+let cwDialogRef = null, cwDialogTotal = 0;
+function openContractDialog(refArg){
+  const ref = refArg || g('in-ref');
+  if (!ref) {
+    if (!lines.length) { toast('Add items or load a quote first'); return; }
+    toast('Save the quote first — it needs a quote number'); return;
+  }
   const sq = savedQuotes.find(q => q.ref === ref);
+  if (refArg && !sq) { toast('Quote ' + ref + ' not found'); return; }
+  if (!refArg && !lines.length) { toast('Add items or load a quote first'); return; }
   const status = sq ? (sq.status || 'Draft') : 'Draft';
   if (status !== 'Accepted') {
     if (!confirm('Quote ' + ref + ' isn\'t marked Accepted.\n\nMark it Accepted and generate the contract?')) return;
     updateQuoteStatus(ref, 'Accepted');
   }
   removeContractDialog();
-  const total = contractGrandTotal();
+  // Builder total when this quote is the one loaded (it may carry unsaved edits);
+  // otherwise the saved record's total — the dialog must not read a DIFFERENT quote.
+  const loadedHere = g('in-ref') === ref && lines.length;
+  const total = loadedHere ? contractGrandTotal() : (sq ? sqTotals(sq).inc : 0);
+  cwDialogRef = ref; cwDialogTotal = total;   // cdRefresh/fullScheduleText/doGenerateContract read these
   const cm = sq && sq.contractMeta;   // previously generated contract for this quote, if any
   // Drift warning: the quote total changed since a contract was last generated from it.
   if (cm && Math.abs((cm.total||0) - total) > 0.005) {
     toast('⚠ Quote total changed since the last contract (' + money(cm.total||0) + ' → ' + money(total) + ')');
   }
-  const labDays = lines.filter(l => !l.note).reduce((s,l) => s + (l.labDays||0), 0);
+  const srcLines = loadedHere ? lines : ((sq && sq.lines) || []);
+  const labDays = srcLines.filter(l => !l.note).reduce((s,l) => s + (l.labDays||0), 0);
   const suggestN = labDays > 0 ? Math.max(1, Math.ceil(labDays/5)) : 3;
   // Pre-fill from the saved contract if one exists (so re-opening remembers your settings).
   // A NEW contract defaults to TODAY — the day it's generated — NOT the quote date.
@@ -6260,10 +6274,16 @@ function openContractDialog(){
         (cm ? '<div style="font-size:11px;color:var(--i2);background:#F8FAFC;border:1px solid var(--bd);border-radius:7px;padding:7px 9px;margin-bottom:12px">Last generated ' +
               new Date(cm.generatedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) +
               ' · <a href="#" onclick="removeContractDialog();viewSavedContract(\'' + ref + '\');return false;"><strong>View last generated</strong></a>' +
-              ' · <a href="#" onclick="removeContractDialog();sigOpenSendDialog();return false;"><strong>✍ E-signature</strong></a>' +
-              ' · Status <select onchange="updateContractStatus(\'' + ref + '\',this.value)" style="padding:2px 6px;border-radius:6px;border:1px solid var(--bd);font-size:11px">' +
-              ['Generated','Sent','Signed'].map(s => '<option ' + (s===cmStatus?'selected':'') + '>' + s + '</option>').join('') +
-              '</select></div>' : '') +
+              ' · <a href="#" onclick="removeContractDialog();sigOpenSendDialog(\'' + ref + '\');return false;"><strong>✍ E-signature</strong></a>' +
+              // E-signed contracts: the status is DERIVED from signing truth and read-only
+              // (hand-setting would just be overwritten by the next sync). The dropdown
+              // survives only for pre-e-sign contracts with no signing history.
+              (sigStatusMap[ref]
+                ? ' · Status <strong>' + cmStatus + '</strong>'
+                : ' · Status <select onchange="updateContractStatus(\'' + ref + '\',this.value)" style="padding:2px 6px;border-radius:6px;border:1px solid var(--bd);font-size:11px">' +
+                  ['Generated','Sent','Signed'].map(s => '<option ' + (s===cmStatus?'selected':'') + '>' + s + '</option>').join('') +
+                  '</select>') +
+              '</div>' : '') +
         '<div class="cw-fg"><label>Contract date</label><input type="date" id="cw-date" value="' + date + '"></div>' +
         // % fields are STANDARD-mode only (hidden in Custom — the free text is the whole schedule).
         // They stay in the DOM because the Custom pre-fill/Reset and the saved meta still read them.
@@ -6284,19 +6304,18 @@ function openContractDialog(){
   cdRefresh();
 }
 async function doGenerateContract(){
+  const dref = cwDialogRef || g('in-ref');
   // Never-mutate rule (e-signing): a regenerated contract is a DIFFERENT document, so any
   // outstanding signing links must die with the old one. Best-effort — if the signing table
   // isn't reachable (pre-cutover live), generation proceeds as before.
   try {
-    const sref = g('in-ref');
-    const act = sref && USE_SUPABASE ? (await sigFetchRows(sref)).find(sigIsActive) : null;
+    const act = dref && USE_SUPABASE ? (await sigFetchRows(dref)).find(sigIsActive) : null;
     if (act) {
       if (!confirm('An e-signature request is outstanding for this contract (sent ' +
         new Date(act.sent_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) +
         ').\n\nRegenerating REVOKES those signing links. Continue?')) return;
       await sigRevokeRow(act.id);
       toast('Old signing links revoked');
-      sigRefreshStatuses();   // badge follows along (this was the missed third revoke path)
     }
   } catch (e) { /* signing table absent — nothing to revoke */ }
   const isCustom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
@@ -6306,8 +6325,9 @@ async function doGenerateContract(){
       // Empty box → renderContract falls back to the STANDARD schedule; make that explicit.
       if (!confirm('The payment schedule box is empty — the Standard weekly schedule will be printed instead.\n\nContinue?')) return;
     } else {
-      // Soft check: the typed schedule should add up to the contract total.
-      const total = contractGrandTotal();
+      // Soft check: the typed schedule should add up to the contract total (the DIALOG's
+      // quote — the builder may hold a different one, or nothing, until the load below).
+      const total = cwDialogTotal;
       const sum = round2(parseAmounts(txt).reduce((s,a)=>s+a,0));
       const diff = round2(total - sum);
       if (Math.abs(diff) > 0.01 && !confirm('Your payment lines add up to ' + money(sum) + ', but the contract total is ' + money(total) + ' (off by ' + money(Math.abs(diff)) + ').\n\nGenerate anyway?')) return;
@@ -6322,8 +6342,12 @@ async function doGenerateContract(){
     freeTextFull: isCustom   // new-format flag: the free text is the WHOLE schedule (see renderContract)
   };
   removeContractDialog();
+  // Generation is the ONE step that genuinely needs the builder — the contract renders
+  // from it. If the dialog was opened in place from Saved Quotes, load the quote now.
+  if (dref && g('in-ref') !== dref) loadQuote(dref);
   renderContract(opts);
   await saveContractSnapshot(opts);
+  sigRefreshStatuses();   // badges + derived labels follow (covers the regenerate-revoke path)
 }
 // Persist a snapshot of the contract on the quote (best-effort — the PDF is unaffected if this fails).
 async function saveContractSnapshot(opts){
@@ -6533,11 +6557,12 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
       '<div style="font-size:12px;color:var(--i2);margin-bottom:12px">This freezes the contract <strong>exactly as generated on ' + genDate + '</strong>, countersigned by ' + (companySigns.length > 1 ? 'the partner chosen below' : cwEsc(defSig.name)) + ', and creates a private signing link for each person. Links expire after 30 days; you can revoke them any time.</div>' +
       sigPicker +
       (drift ? '<div style="font-size:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 10px;margin-bottom:12px">⚠ The quote has changed since the contract was generated (' + money(cm.total || 0) + ' → ' + money(savedTotal) + '). If the new figures should apply, Cancel and <strong>Regenerate</strong> the contract first.</div>' : '') +
+      // ONE signer, matching how contracts have always been sent (couples go in as one
+      // signer — "Brian and Denise Wilkinson" — exactly like the HelloSign era). The
+      // storage and edge function keep multi-signer capability dormant; only this form
+      // was removed (Neal, 2026-07-27: partial-signing states were confusing).
       '<div class="cw-row2"><div class="cw-fg"><label>Signer name</label><input type="text" id="sig-name-1" placeholder="e.g. Jane Smith"></div>' +
       '<div class="cw-fg"><label>Client\'s email</label><input type="text" id="sig-email-1" placeholder="optional"></div></div>' +
-      '<div id="sig-second" style="display:none"><div class="cw-row2"><div class="cw-fg"><label>Second signer name</label><input type="text" id="sig-name-2" placeholder="e.g. John Smith"></div>' +
-      '<div class="cw-fg"><label>Client\'s email</label><input type="text" id="sig-email-2" placeholder="optional"></div></div></div>' +
-      '<a href="#" id="sig-add-2" onclick="document.getElementById(\'sig-second\').style.display=\'block\';this.style.display=\'none\';return false;" style="font-size:12px">+ Add a second signer (joint homeowners)</a>' +
       '<div class="cw-modal-btns"><button class="btn btn-primary" id="sig-send-btn" onclick="sigDoSend(\'' + ref + '\')">✍ Freeze contract &amp; create link</button>' +
       '<button class="btn btn-outline" onclick="removeSigDialog()">Cancel</button></div>';
   }
@@ -6555,12 +6580,9 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
 
 async function sigDoSend(ref) {
   const name1 = (document.getElementById('sig-name-1') || {}).value || '';
-  const name2 = (document.getElementById('sig-name-2') || {}).value || '';
   const email1 = (document.getElementById('sig-email-1') || {}).value || '';
-  const email2 = (document.getElementById('sig-email-2') || {}).value || '';
   const signerDefs = [];
   if (name1.trim()) signerDefs.push({ name: name1.trim(), email: email1.trim() });
-  if (name2.trim()) signerDefs.push({ name: name2.trim(), email: email2.trim() });
   if (!signerDefs.length) { toast('Enter the signer\'s name'); return; }
   const btn = document.getElementById('sig-send-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Freezing…'; }
@@ -6620,8 +6642,11 @@ async function sigRevoke(id, ref) {
   try { await sigRevokeRow(id); }
   catch (e) { toast('Revoke failed: ' + e.message); return; }
   toast('Links revoked');
-  sigRefreshStatuses();                  // badge follows along
+  sigRefreshStatuses();                  // badge + label derivation follow along
   const sq = savedQuotes.find(q => q.ref === ref);
+  // Immediate rollback so the label doesn't lie even for a moment (the derivation
+  // above also lands it, but asynchronously).
+  if (sq && sq.contractMeta && sq.contractMeta.status === 'Sent') sq.contractMeta.status = 'Generated';
   let rows = [];
   try { rows = await sigFetchRows(ref); } catch (e) {}
   sigRenderDialog(ref, sq, rows);
@@ -6659,11 +6684,16 @@ async function sigRefreshStatuses() {
   catch (e) { return; }                                        // table absent — feature not cut over yet
   sigStatusMap = {};
   rows.forEach(r => { sigStatusMap[r.quote_ref] = r; });       // ascending id → latest row wins
-  // contract lifecycle follows the signature without waiting for a dialog visit
+  // Where e-signing is in use, the contract label is DERIVED from signing truth —
+  // never left where an event happened to put it (Neal's QT-0058 finding: revoke left
+  // the label saying Sent). signed → Signed · revoked → back to Generated · else Sent.
+  // Quotes with NO signing rows (pre-e-sign, manually set) are never touched.
   for (const ref in sigStatusMap) {
     const r = sigStatusMap[ref], sq = savedQuotes.find(q => q.ref === ref);
-    if (r.status === 'signed' && sq && sq.contractMeta && sq.contractMeta.status !== 'Signed') {
-      sq.contractMeta.status = 'Signed';
+    if (!sq || !sq.contractMeta) continue;
+    const want = r.status === 'signed' ? 'Signed' : (r.status === 'revoked' ? 'Generated' : 'Sent');
+    if (sq.contractMeta.status !== want) {
+      sq.contractMeta.status = want;
       try { await sb('PATCH', 'quotes', { contract_meta: sq.contractMeta }, '?ref=eq.' + encodeURIComponent(ref)); } catch (e) {}
     }
   }
