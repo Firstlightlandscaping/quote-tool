@@ -60,6 +60,7 @@
     <div style="margin-bottom:12px">
       <label for="typed-name">Print your full name</label>
       <input type="text" id="typed-name" autocomplete="name" placeholder="Your full name">
+      <div class="muted" id="typed-name-hint" style="margin-top:4px"></div>
     </div>
     <div style="margin-bottom:4px">
       <div class="row-between">
@@ -146,7 +147,10 @@ async function init() {
     document.getElementById('sign-panel').style.display = 'block';
     // Deliberately EMPTY — printing your own name is part of signing, and a
     // self-typed name is stronger evidence of intent than a pre-filled one.
+    // The hint tells them what's expected (people copy what they see) — but the
+    // name is NEVER validated against it: "&" vs "and" must not reject anyone.
     document.getElementById('typed-name').value = '';
+    document.getElementById('typed-name-hint').textContent = 'as it appears on the contract: ' + (body.signerName || '');
     padInit();
   }
 }
@@ -302,7 +306,12 @@ async function doSign() {
   var name = document.getElementById('typed-name').value.trim();
   var agreed = document.getElementById('agree').checked;
   var img = padImage();
-  if (!name) { alert('Please print your full name in the box.'); return; }
+  // Shape check only — at least two words, so "x" or initials get a nudge. NEVER
+  // compared against the expected name (false rejections cost more than initials).
+  if (!name || name.split(/\s+/).length < 2) {
+    alert('Please print your full name' + (state && state.signerName ? ', e.g. ' + state.signerName : '') + '.');
+    return;
+  }
   if (!img) { alert('Please draw your signature in the box.'); return; }
   if (!agreed) { alert('Please tick the box to confirm you agree to the contract terms.'); return; }
   var btn = document.getElementById('sign-btn');

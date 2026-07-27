@@ -6665,6 +6665,9 @@ function sigCopyLink(token, btn) {
 // badge in Saved Quotes and auto-syncs contract_meta.status → 'Signed'. Best-effort:
 // on a DB without the signing table (pre-cutover live) everything quietly no-ops.
 let sigStatusMap = {};
+// Quote statuses that mean the deal is DEAD — dead deals generate no signing to-dos,
+// and a live link on one is a hazard to revoke (see updateQuoteStatus + the panel).
+const SIG_DEAD_STATUSES = ['Declined', 'Superseded'];
 function sigBadge(ref) {
   const r = sigStatusMap[ref];
   if (!r) return null;
@@ -6787,25 +6790,39 @@ async function openContractsPanel() {
   rows.forEach(r => { latest[r.quote_ref] = r; });   // ascending id → latest send wins
 
   const dayCount = iso => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  const isDead = sq => !!sq && SIG_DEAD_STATUSES.includes(sq.status);   // dead deal = no to-dos
   const attention = [], out = [], signedList = [];
   // contracts generated but with NO signing request at all — the forgotten ones
   savedQuotes.forEach(sq => {
-    if (sq.contractMeta && !latest[sq.ref] && sq.contractMeta.status !== 'Signed') {
+    if (sq.contractMeta && !latest[sq.ref] && sq.contractMeta.status !== 'Signed' && !isDead(sq)) {
       attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: sq.contractMeta.generatedAt, note: 'contract generated ' + sigDateOnly(sq.contractMeta.generatedAt) });
     }
   });
   Object.values(latest).forEach(r => {
-    const base = { ref: r.quote_ref, customer: r.customer || '', r };
-    if (r.status === 'signed') { signedList.push({ ...base, when: r.signed_at }); return; }
+    const sq = savedQuotes.find(q => q.ref === r.quote_ref);
+    const dead = isDead(sq);
+    const base = { ref: r.quote_ref, customer: r.customer || (sq && sq.customer) || '', r };
+    if (r.status === 'signed') {
+      // signed is a legal fact — always shown, quietly annotated if the deal died later
+      signedList.push({ ...base, when: r.signed_at, deadNote: dead ? ' (quote since ' + sq.status + ')' : '' });
+      return;
+    }
+    const active = sigIsActive(r);
+    if (dead) {
+      // The ONE dead-deal case that shouts: a live link the client could still sign.
+      if (active) attention.push({ ...base, urgent: true, when: r.sent_at, kind: 'Quote ' + sq.status + ' — signing link still LIVE. Revoke it.' });
+      return;   // everything else on a dead deal is a closed story, not a to-do
+    }
     if (r.status === 'revoked') { attention.push({ ...base, kind: 'Revoked — nothing outstanding', when: r.revoked_at || r.sent_at, note: 'revoked ' + sigDateOnly(r.revoked_at) }); return; }
-    if (r.expires_at && new Date(r.expires_at) < new Date()) { attention.push({ ...base, kind: 'Link expired unsigned', when: r.sent_at, note: 'sent ' + sigDateOnly(r.sent_at) + ', expired ' + sigDateOnly(r.expires_at) }); return; }
+    if (!active) { attention.push({ ...base, kind: 'Link expired unsigned', when: r.sent_at, note: 'sent ' + sigDateOnly(r.sent_at) + ', expired ' + sigDateOnly(r.expires_at) }); return; }
     const d = dayCount(r.sent_at);
     const opened = (r.signers || []).some(s => s.viewed_at);
-    const entry = { ...base, when: r.sent_at, note: 'sent ' + (d <= 0 ? 'today' : d + ' day' + (d === 1 ? '' : 's') + ' ago') + ' — ' + (opened ? 'opened' : 'not opened yet') };
+    const entry = { ...base, live: true, when: r.sent_at, note: 'sent ' + (d <= 0 ? 'today' : d + ' day' + (d === 1 ? '' : 's') + ' ago') + ' — ' + (opened ? 'opened' : 'not opened yet') };
     if (d >= 7) attention.push({ ...entry, kind: 'Waiting ' + d + ' days' });
     else out.push(entry);
   });
-  attention.sort((a, b) => new Date(a.when) - new Date(b.when));   // most neglected first
+  // urgent (live link on a dead deal) first, then most neglected first
+  attention.sort((a, b) => (b.urgent ? 1 : 0) - (a.urgent ? 1 : 0) || new Date(a.when) - new Date(b.when));
   out.sort((a, b) => new Date(a.when) - new Date(b.when));
   signedList.sort((a, b) => new Date(b.when) - new Date(a.when));  // newest first
 
@@ -6818,20 +6835,30 @@ async function openContractsPanel() {
   const gOlder = signedList.filter(s => new Date(s.when) < monthStart);
 
   const esc = cwEsc;
+  // One line per row at ANY width: ref and actions fixed, customer + note truncate
+  // with the full text on hover. No flex-wrap — wrapping broke rows in two (Neal).
   const rowHtml = (e, actions) =>
-    '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--bd);font-size:12px;flex-wrap:wrap">' +
-      '<span style="font-family:\'DM Mono\',monospace;font-weight:600;min-width:74px">' + esc(e.ref) + '</span>' +
-      '<span style="flex:1;min-width:130px">' + esc(e.customer) + '</span>' +
-      '<span style="color:var(--i3)">' + esc(e.note || '') + '</span>' +
-      (actions || '') +
+    '<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--bd);font-size:12px">' +
+      '<span style="font-family:\'DM Mono\',monospace;font-weight:600;flex:none;width:74px">' + esc(e.ref) + '</span>' +
+      '<span style="flex:0 1 auto;min-width:80px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(e.customer) + '">' + esc(e.customer) + '</span>' +
+      '<span style="flex:1 1 0;min-width:0;color:' + (e.urgent ? '#DC2626;font-weight:600' : 'var(--i3)') + ';overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + esc(e.note || '') + '">' + esc(e.note || '') + '</span>' +
+      '<span style="flex:none;display:flex;gap:6px;white-space:nowrap">' + (actions || '') + '</span>' +
     '</div>';
   const manageBtn = ref => '<button class="btn btn-outline btn-sm" onclick="removeContractsPanel();sigOpenSendDialog(\'' + ref + '\')">Manage</button>';
-  const copyBtns = r => (r && r.signers || []).filter(s => !s.signed_at).map(s =>
-    '<button class="btn btn-outline btn-sm" onclick="sigCopyLink(\'' + s.token + '\',this)" title="Copy ' + esc(s.name) + '\'s signing link">📋 ' + esc((s.name || '').split(/\s+/)[0]) + '</button>').join('');
+  // Copy buttons ONLY for rows with a LIVE link — a revoked/expired token is dead, and
+  // copying it would hand the client a "link withdrawn" page (Neal clicked exactly that).
+  // Uniform "Copy link" label; the per-name form survives only for historic multi-signer
+  // rows where there are genuinely several links to tell apart.
+  const copyBtns = r => {
+    const pending = ((r && r.signers) || []).filter(s => !s.signed_at);
+    return pending.map(s =>
+      '<button class="btn btn-outline btn-sm" onclick="sigCopyLink(\'' + s.token + '\',this)" title="Copy ' + esc(s.name) + '\'s signing link">📋 ' +
+      (pending.length > 1 ? esc((s.name || '').split(/\s+/)[0]) : 'Copy link') + '</button>').join('');
+  };
   const signedRow = e => {
     const sq = savedQuotes.find(q => q.ref === e.ref);
     const start = sq && sq.schedulePlan && sq.schedulePlan.startDate;
-    return rowHtml({ ...e, note: 'signed ' + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') }, manageBtn(e.ref));
+    return rowHtml({ ...e, note: 'signed ' + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') + (e.deadNote || '') }, manageBtn(e.ref));
   };
   const section = (title, colour, inner) =>
     '<div style="margin-bottom:14px"><div style="font-weight:700;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:' + colour + ';margin-bottom:4px">' + title + '</div>' +
@@ -6848,7 +6875,7 @@ async function openContractsPanel() {
       '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
         '<h3>✍ Contracts — e-signature overview</h3>' +
         '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No contracts sent for signature yet') + '</div>' +
-        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.r ? copyBtns(e.r) : '') + manageBtn(e.ref))).join('') : '') +
+        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.live ? copyBtns(e.r) : '') + manageBtn(e.ref))).join('') : '') +
         section('✍ Out for signature', '#2563EB', out.length ? out.map(e => rowHtml(e, copyBtns(e.r) + manageBtn(e.ref))).join('') : '') +
         section('✓ Signed', '#15803D', (gWeek.length + gMonth.length + gOlder.length)
           ? fold('This week', gWeek, true) + fold('Earlier this month', gMonth, false) + fold('Earlier', gOlder, false) : '') +
@@ -7297,6 +7324,18 @@ async function updateQuoteStatus(ref, status) {
   }
   renderSaved();
   toast('\u2713 ' + ref + ' marked as ' + status);
+  // Kill the hazard at the source: a dead deal must not leave a LIVE signing link out
+  // there (the client could still sign a contract Neal considers dead). Best-effort.
+  if (SIG_DEAD_STATUSES.includes(status) && USE_SUPABASE) {
+    try {
+      const act = (await sigFetchRows(ref)).find(sigIsActive);
+      if (act && confirm(ref + ' has a live signing link out with the client.\n\nRevoke it too? (Recommended \u2014 otherwise they could still sign the contract.)')) {
+        await sigRevokeRow(act.id);
+        toast('Signing link revoked');
+      }
+      sigRefreshStatuses();
+    } catch (e) { /* signing table absent \u2014 nothing to revoke */ }
+  }
 }
 
 // Returns the effective amount for a line within a saved quote's lines array
@@ -7551,7 +7590,7 @@ function renderSaved() {
           style="padding:3px 8px;border-radius:20px;border:2px solid ${statusCol};color:${statusCol};font-size:11px;font-weight:600;background:white;cursor:pointer;min-width:90px">
           ${QUOTE_STATUSES.map(s => `<option value="${s}" ${status===s?'selected':''}>${s}</option>`).join('')}
         </select>
-        ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract'}</button>` : ''}
+        ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract · To create'}</button>` : ''}
         ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
         <button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();duplicateQuote('${sq.ref}')" style="margin-left:4px" title="Duplicate this quote with a new reference number">⧉ Duplicate</button>
         <button class="btn btn-red btn-sm no-print" onclick="event.stopPropagation();deleteQuote('${sq.ref}')" style="margin-left:4px">Delete</button>
