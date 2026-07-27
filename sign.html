@@ -60,7 +60,10 @@
     <div style="margin-bottom:12px">
       <label for="typed-name">Print your full name</label>
       <input type="text" id="typed-name" autocomplete="name" placeholder="Your full name">
-      <div class="muted" id="typed-name-hint" style="margin-top:4px"></div>
+      <div style="margin-top:6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <button type="button" class="btn btn-ghost" id="name-chip" onclick="adoptName()"></button>
+        <span class="muted">or type it yourself</span>
+      </div>
     </div>
     <div style="margin-bottom:4px">
       <div class="row-between">
@@ -88,6 +91,15 @@ catch (e) { FN = 'https://zqowzcmyvaudgyfncfrz.supabase.co/functions/v1/sign-con
 var token = new URLSearchParams(location.search).get('t') || '';
 var state = null;         // last GET payload
 var padCtx = null, padDrawn = false;
+var nameAdopted = false;  // true = name entered via the chip (recorded honestly in the audit)
+function adoptName() {
+  if (!state) return;
+  var el = document.getElementById('typed-name');
+  el.value = state.signerName || '';
+  nameAdopted = true;
+  var pad = document.getElementById('pad');
+  if (pad) pad.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
 
 function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
 function statusCard(html, cls) {
@@ -145,12 +157,13 @@ async function init() {
       '<div class="muted" style="margin-top:10px">To keep an electronic copy, choose &ldquo;Save as PDF&rdquo; in the print window.</div>' +
       '<div class="muted" style="margin-top:6px">Ref ' + esc(body.quoteRef) + ' · This private link was created for you by First Light Landscaping. If anything looks unfamiliar, call us on 0113 2580428.</div>');
     document.getElementById('sign-panel').style.display = 'block';
-    // Deliberately EMPTY — printing your own name is part of signing, and a
-    // self-typed name is stronger evidence of intent than a pre-filled one.
-    // The hint tells them what's expected (people copy what they see) — but the
-    // name is NEVER validated against it: "&" vs "and" must not reject anyone.
+    // Deliberately EMPTY — the name is entered by a deliberate act: either typed, or
+    // adopted via the chip (one tap, the same legal weight — a click is a choice; only
+    // PASSIVE pre-fill was the problem). Never validated against the expected name:
+    // "&" vs "and" must not reject anyone.
     document.getElementById('typed-name').value = '';
-    document.getElementById('typed-name-hint').textContent = 'as it appears on the contract: ' + (body.signerName || '');
+    document.getElementById('name-chip').innerHTML = '<strong>' + esc(body.signerName || '') + '</strong>&nbsp;— tap to use this name';
+    document.getElementById('typed-name').addEventListener('input', function () { nameAdopted = false; });
     padInit();
   }
 }
@@ -217,7 +230,7 @@ function injectSignatures(iframe, body) {
         (body.signatures || []).map(function (s) {
           return '<div>' + esc(s.name) + ': ' +
             (s.viewedAt ? 'opened ' + esc(fmtDate(s.viewedAt)) + ' · ' : '') +
-            (s.signed ? 'signed ' + esc(fmtDate(s.signedAt)) + (s.typedName ? ' (typed name: ' + esc(s.typedName) + ')' : '') : 'not yet signed') + '</div>';
+            (s.signed ? 'signed ' + esc(fmtDate(s.signedAt)) + (s.typedName ? ' (' + (s.nameAdopted ? 'confirmed name' : 'typed name') + ': ' + esc(s.typedName) + ')' : '') : 'not yet signed') + '</div>';
         }).join('') +
         '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
         '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. ' +
@@ -321,7 +334,8 @@ async function doSign() {
     res = await fetch(FN, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: token, typedName: name, signatureImage: img, agreed: true })
+      body: JSON.stringify({ token: token, typedName: name, signatureImage: img, agreed: true,
+        nameAdopted: nameAdopted && name === (state && state.signerName) })   // honest audit: adopted vs typed
     });
     body = await res.json();
   } catch (e) {

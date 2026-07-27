@@ -113,7 +113,8 @@ async function handleGet(req: Request, token: string): Promise<Response> {
     signatures: row.signers.map((s: any) => ({
       name: s.name, signed: !!s.signed_at, signedAt: s.signed_at || null,
       viewedAt: s.viewed_at || null,
-      typedName: s.typed_name || null, image: s.signed_at ? (s.signature_image || null) : null,
+      typedName: s.typed_name || null, nameAdopted: !!s.name_adopted,
+      image: s.signed_at ? (s.signature_image || null) : null,
     })),
     contractHtml: row.contract_html,
   });
@@ -147,7 +148,9 @@ async function handlePost(req: Request): Promise<Response> {
   const now = new Date().toISOString();
   const signers = row.signers.map((s: any, i: number) =>
     i === idx
-      ? { ...s, viewed_at: s.viewed_at || now, signed_at: now, typed_name: typedName, signature_image: img, ...evidence(req) }
+      ? { ...s, viewed_at: s.viewed_at || now, signed_at: now, typed_name: typedName,
+          name_adopted: body.nameAdopted === true,   // adopted via the chip vs self-typed — audit honesty
+          signature_image: img, ...evidence(req) }
       : s);
   const allSigned = signers.every((s: any) => s.signed_at);
   const patch: Record<string, unknown> = { signers };

@@ -6276,7 +6276,6 @@ function openContractDialog(refArg){
         (cm ? '<div style="font-size:11px;color:var(--i2);background:#F8FAFC;border:1px solid var(--bd);border-radius:7px;padding:7px 9px;margin-bottom:12px">Last generated ' +
               new Date(cm.generatedAt).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) +
               ' · <a href="#" onclick="removeContractDialog();viewSavedContract(\'' + ref + '\');return false;"><strong>View last generated</strong></a>' +
-              ' · <a href="#" onclick="removeContractDialog();sigOpenSendDialog(\'' + ref + '\');return false;"><strong>✍ E-signature</strong></a>' +
               // E-signed contracts: the status is DERIVED from signing truth and read-only
               // (hand-setting would just be overwritten by the next sync). The dropdown
               // survives only for pre-e-sign contracts with no signing history.
@@ -6298,8 +6297,21 @@ function openContractDialog(refArg){
         '<div class="cw-fg" id="cw-std-block"' + (isCustom?' style="display:none"':'') + '><label>Number of weekly payments</label><input type="number" id="cw-weeks" value="' + weeks + '" min="1" max="12" oninput="cdRefresh()"><span class="cw-hint">suggested ' + suggestN + ' (from labour days ÷ 5)</span></div>' +
         '<div class="cw-fg" id="cw-custom-block"' + (isCustom?'':' style="display:none"') + '><label>Payment schedule — printed exactly as typed, one payment per line (only the Total line is added automatically)</label><textarea id="cw-freetext" rows="6" oninput="cdRefresh()" placeholder="Deposit: £500.00&#10;On delivery of stone: £250.00&#10;Completion of works: £750.00">' + cwEsc(ftVal) + '</textarea><a href="#" onclick="cdResetMiddle();return false;" style="font-size:11px">↻ Reset to even split</a><span class="cw-hint" style="margin-left:10px">Reset rebuilds from the Standard settings</span></div>' +
         '<div class="cw-preview"><div class="cw-preview-t">Payment schedule preview</div><div id="cw-preview-body"></div></div>' +
-        '<div class="cw-modal-btns"><button class="btn btn-primary" onclick="doGenerateContract()">' + (cm?'Regenerate &amp; Preview':'Generate &amp; Preview') + '</button>' +
-        '<button class="btn btn-outline" onclick="removeContractDialog()">Cancel</button></div>' +
+        // With a contract generated, SENDING it is the main event — e-signature gets the
+        // primary button (label follows signing state so "Send" never shows on a signed
+        // contract); Regenerate demotes to secondary. First generation is unchanged.
+        (cm
+          ? (() => {
+              const sr = sigStatusMap[ref];
+              const sigLabel = sr && sr.status === 'signed' ? '✍ E-signature — Signed'
+                : (sr && sigIsActive(sr) ? '✍ E-signature — Sent' : '✍ Send for e-signature');
+              return '<div class="cw-modal-btns">' +
+                '<button class="btn btn-primary" onclick="removeContractDialog();sigOpenSendDialog(\'' + ref + '\')">' + sigLabel + '</button>' +
+                '<button class="btn btn-outline" onclick="doGenerateContract()">Regenerate &amp; Preview</button>' +
+                '<button class="btn btn-outline" onclick="removeContractDialog()">Cancel</button></div>';
+            })()
+          : '<div class="cw-modal-btns"><button class="btn btn-primary" onclick="doGenerateContract()">Generate &amp; Preview</button>' +
+            '<button class="btn btn-outline" onclick="removeContractDialog()">Cancel</button></div>') +
       '</div>' +
     '</div>';
   document.body.appendChild(wrap);
@@ -6758,7 +6770,7 @@ function sigInjectIntoDoc(doc, row) {
         (row.sent_at ? '<div>Sent for signature: ' + sigDateTime(row.sent_at) + '</div>' : '') +
         (row.signers || []).map(s => '<div>' + cwEsc(s.name) + ': ' +
           (s.viewed_at ? 'opened ' + sigDateTime(s.viewed_at) + ' · ' : '') +
-          (s.signed_at ? 'signed ' + sigDateTime(s.signed_at) + (s.typed_name ? ' (typed name: ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') +
+          (s.signed_at ? 'signed ' + sigDateTime(s.signed_at) + (s.typed_name ? ' (' + (s.name_adopted ? 'confirmed name' : 'typed name') + ': ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') +
           '</div>').join('') +
         '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
         '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. Full evidence (date, time, network address, device) is held on record.</div>';
@@ -6813,8 +6825,10 @@ async function openContractsPanel() {
       if (active) attention.push({ ...base, urgent: true, when: r.sent_at, kind: 'Quote ' + sq.status + ' — signing link still LIVE. Revoke it.' });
       return;   // everything else on a dead deal is a closed story, not a to-do
     }
-    if (r.status === 'revoked') { attention.push({ ...base, kind: 'Revoked — nothing outstanding', when: r.revoked_at || r.sent_at, note: 'revoked ' + sigDateOnly(r.revoked_at) }); return; }
-    if (!active) { attention.push({ ...base, kind: 'Link expired unsigned', when: r.sent_at, note: 'sent ' + sigDateOnly(r.sent_at) + ', expired ' + sigDateOnly(r.expires_at) }); return; }
+    // Worklist wording: state the FORK, not the history — the entry exists because a
+    // decision is pending (deal on → re-send; deal off → decline and it stops nagging).
+    if (r.status === 'revoked') { attention.push({ ...base, kind: 'Links revoked ' + sigDateOnly(r.revoked_at || r.sent_at) + ' — send new links, or decline the quote', when: r.revoked_at || r.sent_at }); return; }
+    if (!active) { attention.push({ ...base, kind: 'Link expired ' + sigDateOnly(r.expires_at) + ' unsigned — send new links, or decline the quote', when: r.sent_at }); return; }
     const d = dayCount(r.sent_at);
     const opened = (r.signers || []).some(s => s.viewed_at);
     const entry = { ...base, live: true, when: r.sent_at, note: 'sent ' + (d <= 0 ? 'today' : d + ' day' + (d === 1 ? '' : 's') + ' ago') + ' — ' + (opened ? 'opened' : 'not opened yet') };
@@ -7106,7 +7120,7 @@ async function duplicateQuote(ref) {
   // is kept in full but marked Superseded so it drops out of the totals.
   if ((sq.status||'Draft') !== 'Superseded' && (sq.status||'Draft') !== 'Estimate') {
     if (confirm('Is this copy a REVISED VERSION replacing ' + ref + '?\n\nOK  = mark ' + ref + ' as Superseded (kept, but excluded from sales totals)\nCancel = plain copy, ' + ref + ' unchanged')) {
-      await updateQuoteStatus(ref, 'Superseded');
+      await updateQuoteStatus(ref, 'Superseded', { autoRevoke: true });   // its own confirm just ran — no second question
     }
   }
   // Load the quote data into lines — leave ref blank, assigned at save time
@@ -7313,9 +7327,53 @@ function toggleStatusChip(btn) {
   renderSaved();
 }
 
-async function updateQuoteStatus(ref, status) {
+// App-style two-button dialog for killing a quote that still has a LIVE signing link.
+// Resolves true = proceed (mark dead AND revoke), false = cancel (nothing changes).
+// Two buttons deliberately \u2014 "dead but still signable" is a contradiction the system
+// would then have to babysit, so it is not offered (Neal, 2026-07-28).
+function sigDeadStatusDialog(ref, status) {
+  return new Promise(resolve => {
+    const old = document.getElementById('sig-dead-dialog');
+    if (old) old.remove();
+    const verb = status === 'Declined' ? 'Decline' : 'Supersede';
+    const wrap = document.createElement('div');
+    wrap.id = 'sig-dead-dialog';
+    wrap.innerHTML =
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:440px;max-width:95vw">' +
+        '<h3>' + cwEsc(ref) + ' has a live signing link</h3>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:16px">The client is holding a working link \u2014 ' +
+        (status === 'Declined' ? 'declining' : 'superseding') + ' this quote while it stays live means they could still sign the contract.</div>' +
+        '<div class="cw-modal-btns">' +
+          '<button class="btn btn-red" id="sig-dead-go">' + verb + ' &amp; revoke link</button>' +
+          '<button class="btn btn-outline" id="sig-dead-cancel">Cancel</button>' +
+        '</div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('sig-dead-go').onclick = () => done(true);
+    document.getElementById('sig-dead-cancel').onclick = () => done(false);
+  });
+}
+// opts.autoRevoke: revoke a live link WITHOUT asking \u2014 the supersede-on-duplicate flow
+// has already had its own confirm; a second question would be noise.
+async function updateQuoteStatus(ref, status, opts) {
   const q = savedQuotes.find(x => x.ref === ref);
   if (!q) return;
+  // A dead status must not leave a live signing link out there. Decided BEFORE anything
+  // is written, so Cancel genuinely cancels; revoke + status change succeed or fail
+  // together, so "declined but signable" can never arise from this path.
+  if (SIG_DEAD_STATUSES.includes(status) && USE_SUPABASE) {
+    let act = null;
+    try { act = (await sigFetchRows(ref)).find(sigIsActive) || null; }
+    catch (e) { /* signing table absent \u2014 nothing to guard */ }
+    if (act) {
+      const proceed = (opts && opts.autoRevoke) || await sigDeadStatusDialog(ref, status);
+      if (!proceed) { renderSaved(); return; }        // snap the dropdown back to reality
+      try { await sigRevokeRow(act.id); }
+      catch (e) { toast('Could not revoke the signing link \u2014 status NOT changed: ' + e.message); renderSaved(); return; }
+      toast('Signing link revoked');
+    }
+  }
   q.status = status;
   if (USE_SUPABASE) {
     try {
@@ -7324,18 +7382,7 @@ async function updateQuoteStatus(ref, status) {
   }
   renderSaved();
   toast('\u2713 ' + ref + ' marked as ' + status);
-  // Kill the hazard at the source: a dead deal must not leave a LIVE signing link out
-  // there (the client could still sign a contract Neal considers dead). Best-effort.
-  if (SIG_DEAD_STATUSES.includes(status) && USE_SUPABASE) {
-    try {
-      const act = (await sigFetchRows(ref)).find(sigIsActive);
-      if (act && confirm(ref + ' has a live signing link out with the client.\n\nRevoke it too? (Recommended \u2014 otherwise they could still sign the contract.)')) {
-        await sigRevokeRow(act.id);
-        toast('Signing link revoked');
-      }
-      sigRefreshStatuses();
-    } catch (e) { /* signing table absent \u2014 nothing to revoke */ }
-  }
+  sigRefreshStatuses();   // badges + derived labels follow
 }
 
 // Returns the effective amount for a line within a saved quote's lines array
