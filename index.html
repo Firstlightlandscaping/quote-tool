@@ -263,6 +263,7 @@ tr.dragging td{background:var(--brp)!important}
 #report-view{display:none}
 body.report-mode .shell{display:none!important}
 body.report-mode #sales-check-dialog{display:none!important}
+body.report-mode #dcsr-dialog{display:none!important}
 body.report-mode #report-view{display:block;background:white}
 body.contract-mode .shell{display:none!important}
 body.contract-mode #contract-view{display:block;background:#f1f5f9;min-height:100vh;padding:24px 0}
@@ -341,6 +342,7 @@ body.contract-mode #contract-view .group-member-row{display:none!important}
 @media print{
   body.report-mode .shell{display:none!important}
   body.report-mode #sales-check-dialog{display:none!important}
+  body.report-mode #dcsr-dialog{display:none!important}
   body.report-mode #report-view{display:block!important;background:#fff;padding:0}
   body.contract-mode .shell{display:none!important}
   body.contract-mode #contract-view{display:block!important;background:#fff;padding:0}
@@ -992,6 +994,8 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
     <div class="ch"><span class="ct">Design Contracts</span>
       <div style="display:flex;align-items:center;gap:10px">
         <span id="dc-count" style="font-size:11px;color:var(--i3)"></span>
+        <button class="btn btn-outline btn-sm" onclick="dcOpenSalesReport()" title="Design sales — totals by contract date, separate from build sales">📊 Sales report</button>
+        <button class="btn btn-outline btn-sm" onclick="openContractsPanel(true)" title="Design e-signature overview — what needs chasing, what's signed">✍ Signing overview</button>
         <button class="btn btn-primary btn-sm" onclick="dcOpenEditor()">＋ New design contract</button>
       </div>
     </div>
@@ -6608,8 +6612,9 @@ function sigStampCounter(rootEl, dateStr, sig) {
 // Render the saved contract snapshot, capture it as a standalone HTML document with the
 // countersignature stamped in, and restore the screen. The document carries ALL the app's
 // CSS so it renders identically in sign.html / a bare browser tab, print styles included.
-function sigBuildFrozenDoc(ref, sig) {
-  viewSavedContract(ref);                                     // exact snapshot render
+function sigBuildFrozenDoc(a, sig) {
+  const ref = a.ref;
+  if (a.isDesign) viewDesignContract(ref); else viewSavedContract(ref);   // exact snapshot render
   const clone = document.getElementById('contract-view').cloneNode(true);
   closeContract();
   const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
@@ -6643,28 +6648,49 @@ function removeSigDialog() { const m = document.getElementById('sig-dialog'); if
 // refArg: open for a SAVED quote without loading it into the builder (the badge path —
 // Neal's rule: only the customer name and the Contract button load the builder). Falls
 // back to the loaded quote for the contract-dialog entry point.
+// The signing flow serves TWO record types — quotes (QT-) and design contracts (DC-).
+// This adapter is the one place that knows the difference; everything downstream works
+// off {ref, customer, cm (contract_meta), totalInc, isDesign}.
+function sigRecordFor(ref) {
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (sq) return { ref, isDesign: false, customer: sq.customer || '', cm: sq.contractMeta || null, totalInc: round2(sqTotals(sq).inc) };
+  const dc = designContracts.find(d => d.ref === ref);
+  if (dc) return { ref, isDesign: true, customer: dc.customer || '', cm: dc.contract_meta || null, totalInc: round2(dcTotals(dc.lines).inc) };
+  return null;
+}
+async function sigPersistCm(a) {
+  const table = a.isDesign ? 'design_contracts' : 'quotes';
+  await sb('PATCH', table, { contract_meta: a.cm }, '?ref=eq.' + encodeURIComponent(a.ref));
+}
+async function sigReopenNew(ref) {   // "send the new version" from the signed state
+  const a = sigRecordFor(ref);
+  let rows = [];
+  try { rows = await sigFetchRows(ref); } catch (e) {}
+  if (a) sigRenderDialog(a, rows, true);
+}
 async function sigOpenSendDialog(refArg) {
   const ref = refArg || g('in-ref');
   if (!ref) { toast('Save the quote first'); return; }
-  const sq = savedQuotes.find(q => q.ref === ref);
-  if (!sq || !sq.contractMeta) { toast('Generate the contract first'); return; }
-  if (!companySigns.length) { toast('Set up a Company Signature first (Price Manager tab)'); return; }
+  const a = sigRecordFor(ref);
+  if (!a || !a.cm) { toast('Generate the contract first'); return; }
+  if (!companySigns.length) { toast('Set up a Company Signature first (Contracts tab)'); return; }
   removeSigDialog();
   let rows = [];
   try { rows = await sigFetchRows(ref); }
   catch (e) { toast('Could not check signing status: ' + e.message + ' (run supabase/contract-signing.sql?)'); return; }
-  sigRenderDialog(ref, sq, rows);
+  sigRenderDialog(a, rows);
 }
 
-function sigRenderDialog(ref, sq, rows, forceNew) {
+function sigRenderDialog(a, rows, forceNew) {
   removeSigDialog();
-  const cm = sq.contractMeta;
+  const ref = a.ref, cm = a.cm;
   const active = rows.find(sigIsActive) || null;
   const signed = forceNew ? null : (rows.find(r => r.status === 'signed') || null);
   const genDate = new Date(cm.generatedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  // Drift check reads the SAVED quote, not the builder — the dialog can open from the
-  // Saved Quotes badge with a different (or no) quote loaded.
-  const savedTotal = sqTotals(sq).inc;
+  // Drift check reads the SAVED record, not the builder — the dialog can open from a
+  // badge with a different (or no) quote loaded. (Design contracts regenerate on every
+  // edit, so their drift is ~always zero — kept anyway as a tripwire.)
+  const savedTotal = a.totalInc;
   const drift = Math.abs((cm.total || 0) - savedTotal) > 0.005;
 
   let body;
@@ -6691,7 +6717,7 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
       // A variation after signing = regenerate the contract, then send the NEW version.
       // The signed row above stays forever as the record of what was agreed first.
       '<div style="font-size:11px;color:var(--i3);margin-top:10px">Contract changed since? Regenerate it, then ' +
-      '<a href="#" onclick="(async()=>{const r=await sigFetchRows(\'' + ref + '\');sigRenderDialog(\'' + ref + '\',savedQuotes.find(q=>q.ref===\'' + ref + '\'),r,true)})();return false;">send the new version for signature</a>.</div>';
+      '<a href="#" onclick="sigReopenNew(\'' + ref + '\');return false;">send the new version for signature</a>.</div>';
   } else if (active) {
     const st = (active.signers || []);
     body =
@@ -6740,10 +6766,10 @@ function sigRenderDialog(ref, sq, rows, forceNew) {
   wrap.innerHTML =
     '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeSigDialog()">' +
       '<div class="cw-modal"><h3>E-signature — ' + cwEsc(ref) + '</h3>' +
-      '<div class="cw-modal-sub">' + cwEsc(sq.customer || '') + '</div>' + body + '</div></div>';
+      '<div class="cw-modal-sub">' + cwEsc(a.customer || '') + '</div>' + body + '</div></div>';
   document.body.appendChild(wrap);
   const n1 = document.getElementById('sig-name-1');
-  if (n1) { n1.value = n1.value || (sq.customer || ''); n1.focus(); }
+  if (n1) { n1.value = n1.value || (a.customer || ''); n1.focus(); }
 }
 
 async function sigDoSend(ref) {
@@ -6759,18 +6785,19 @@ async function sigDoSend(ref) {
     const chosen = (selEl && companySigns.find(s => s.id === parseInt(selEl.value, 10))) || companySigns[0];
     if (!chosen) throw new Error('no company signature set up');
     try { localStorage.setItem('fl_countersig_last', String(chosen.id)); } catch (e) {}
-    const doc = sigBuildFrozenDoc(ref, chosen);
+    const a = sigRecordFor(ref);
+    if (!a) throw new Error('record not found');
+    const doc = sigBuildFrozenDoc(a, chosen);
     if (!doc) throw new Error('countersignature could not be stamped');
     const hash = await sigSha256(doc);
-    const sq = savedQuotes.find(q => q.ref === ref);
     const now = new Date();
     const row = {
       quote_ref: ref,
-      customer: sq.customer || '',
+      customer: a.customer || '',
       status: 'sent',
       contract_html: doc,
       contract_hash: hash,
-      terms_version: (sq.contractMeta && sq.contractMeta.termsVersion) || null,
+      terms_version: (a.cm && a.cm.termsVersion) || null,
       signers: signerDefs.map(s => ({ token: sigToken(), name: s.name, email: s.email })),
       sent_at: now.toISOString(),
       expires_at: new Date(now.getTime() + 30 * 24 * 3600 * 1000).toISOString(),
@@ -6780,14 +6807,14 @@ async function sigDoSend(ref) {
     const saved = Array.isArray(ins) && ins[0];
     if (!saved) throw new Error('insert returned nothing');
     // Contract lifecycle follows along (Generated → Sent). Quote status is untouched.
-    if (sq.contractMeta && sq.contractMeta.status !== 'Signed') {
-      sq.contractMeta.status = 'Sent';
-      try { await sb('PATCH', 'quotes', { contract_meta: sq.contractMeta }, '?ref=eq.' + encodeURIComponent(ref)); } catch (e) {}
-      renderSaved();
+    if (a.cm && a.cm.status !== 'Signed') {
+      a.cm.status = 'Sent';
+      try { await sigPersistCm(a); } catch (e) {}
+      if (a.isDesign) renderDesignContracts(); else renderSaved();
     }
     toast('✓ Contract frozen — ' + saved.signers.length + ' signing link' + (saved.signers.length > 1 ? 's' : '') + ' created');
     sigRefreshStatuses();                // badge follows along
-    sigRenderDialog(ref, sq, [saved]);   // re-open in "outstanding" state with the Copy buttons
+    sigRenderDialog(a, [saved]);         // re-open in "outstanding" state with the Copy buttons
   } catch (e) {
     toast('Send failed: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '✍ Freeze contract & create link'; }
@@ -6811,13 +6838,13 @@ async function sigRevoke(id, ref) {
   catch (e) { toast('Revoke failed: ' + e.message); return; }
   toast('Links revoked');
   sigRefreshStatuses();                  // badge + label derivation follow along
-  const sq = savedQuotes.find(q => q.ref === ref);
+  const a = sigRecordFor(ref);
   // Immediate rollback so the label doesn't lie even for a moment (the derivation
   // above also lands it, but asynchronously).
-  if (sq && sq.contractMeta && sq.contractMeta.status === 'Sent') sq.contractMeta.status = 'Generated';
+  if (a && a.cm && a.cm.status === 'Sent') a.cm.status = 'Generated';
   let rows = [];
   try { rows = await sigFetchRows(ref); } catch (e) {}
-  sigRenderDialog(ref, sq, rows);
+  if (a) sigRenderDialog(a, rows);
 }
 
 function sigCopyLink(token, btn) {
@@ -6860,15 +6887,16 @@ async function sigRefreshStatuses() {
   // the label saying Sent). signed → Signed · revoked → back to Generated · else Sent.
   // Quotes with NO signing rows (pre-e-sign, manually set) are never touched.
   for (const ref in sigStatusMap) {
-    const r = sigStatusMap[ref], sq = savedQuotes.find(q => q.ref === ref);
-    if (!sq || !sq.contractMeta) continue;
+    const r = sigStatusMap[ref], a = sigRecordFor(ref);
+    if (!a || !a.cm) continue;
     const want = r.status === 'signed' ? 'Signed' : (r.status === 'revoked' ? 'Generated' : 'Sent');
-    if (sq.contractMeta.status !== want) {
-      sq.contractMeta.status = want;
-      try { await sb('PATCH', 'quotes', { contract_meta: sq.contractMeta }, '?ref=eq.' + encodeURIComponent(ref)); } catch (e) {}
+    if (a.cm.status !== want) {
+      a.cm.status = want;
+      try { await sigPersistCm(a); } catch (e) {}
     }
   }
   renderSaved();
+  renderDesignContracts();
 }
 // Saved Quotes badge → load the quote and open the signing dialog (contractFromSaved pattern).
 function sigFromSaved(ref) { sigOpenSendDialog(ref); }   // in place — no builder jump
@@ -6947,11 +6975,16 @@ function sigInjectIntoDoc(doc, row) {
 // Rows are NOT clickable (Sales-report ruling) — explicit buttons only. Manage opens
 // the signing dialog IN PLACE (no builder jump).
 function removeContractsPanel() { const m = document.getElementById('sigp-dialog'); if (m) m.remove(); }
-async function openContractsPanel() {
+// designMode: the SAME panel filtered to the design arm (DC- refs), opened from the
+// Design tab — the two arms never mix (Neal's ruling), so the Saved Quotes panel
+// shows only QT- refs and this one only DC-.
+async function openContractsPanel(designMode) {
   if (!USE_SUPABASE) { toast('Not connected to Supabase'); return; }
+  const wantDesign = !!designMode;
   let rows;
   try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,customer,status,signers,sent_at,signed_at,expires_at,revoked_at&order=id'); }
   catch (e) { toast('Could not load signing data: ' + e.message + ' (run supabase/contract-signing.sql?)'); return; }
+  rows = rows.filter(r => (r.quote_ref || '').startsWith('DC-') === wantDesign);
   const latest = {};
   rows.forEach(r => { latest[r.quote_ref] = r; });   // ascending id → latest send wins
 
@@ -6959,11 +6992,19 @@ async function openContractsPanel() {
   const isDead = sq => !!sq && SIG_DEAD_STATUSES.includes(sq.status);   // dead deal = no to-dos
   const attention = [], out = [], signedList = [];
   // contracts generated but with NO signing request at all — the forgotten ones
-  savedQuotes.forEach(sq => {
-    if (sq.contractMeta && !latest[sq.ref] && sq.contractMeta.status !== 'Signed' && !isDead(sq)) {
-      attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: sq.contractMeta.generatedAt, note: 'contract generated ' + sigDateOnly(sq.contractMeta.generatedAt) });
-    }
-  });
+  if (wantDesign) {
+    designContracts.forEach(dc => {
+      if (dc.contract_meta && !latest[dc.ref] && dc.contract_meta.status !== 'Signed') {
+        attention.push({ kind: 'Never sent for signature', ref: dc.ref, customer: dc.customer || '', when: dc.contract_meta.generatedAt, note: 'contract generated ' + sigDateOnly(dc.contract_meta.generatedAt) });
+      }
+    });
+  } else {
+    savedQuotes.forEach(sq => {
+      if (sq.contractMeta && !latest[sq.ref] && sq.contractMeta.status !== 'Signed' && !isDead(sq)) {
+        attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: sq.contractMeta.generatedAt, note: 'contract generated ' + sigDateOnly(sq.contractMeta.generatedAt) });
+      }
+    });
+  }
   Object.values(latest).forEach(r => {
     const sq = savedQuotes.find(q => q.ref === r.quote_ref);
     const dead = isDead(sq);
@@ -7041,8 +7082,8 @@ async function openContractsPanel() {
   wrap.innerHTML =
     '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeContractsPanel()">' +
       '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
-        '<h3>✍ Contracts — e-signature overview</h3>' +
-        '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No contracts sent for signature yet') + '</div>' +
+        '<h3>✍ ' + (wantDesign ? 'Design contracts' : 'Contracts') + ' — e-signature overview</h3>' +
+        '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No ' + (wantDesign ? 'design ' : '') + 'contracts sent for signature yet') + '</div>' +
         section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.live ? copyBtns(e.r) : '') + manageBtn(e.ref))).join('') : '') +
         section('✍ Out for signature', '#2563EB', out.length ? out.map(e => rowHtml(e, copyBtns(e.r) + manageBtn(e.ref))).join('') : '') +
         section('✓ Signed', '#15803D', (gWeek.length + gMonth.length + gOlder.length)
@@ -7178,8 +7219,9 @@ async function generateDCRef() {
 }
 
 function removeDcDialog() { const m = document.getElementById('dc-dialog'); if (m) m.remove(); }
-function dcOpenEditor(ref) {
+function dcOpenEditor(ref, asCopy) {
   const dc = ref ? designContracts.find(d => d.ref === ref) : null;
+  const isEdit = !!dc && !asCopy;   // a copy pre-fills from the source but creates a NEW number
   if (!designPackages.filter(p => !p.is_archived).length && !dc) { toast('Add a design package first (Contracts tab)'); return; }
   dcLines = dc ? JSON.parse(JSON.stringify(dc.lines || [])) : [{ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }];
   dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
@@ -7189,10 +7231,10 @@ function dcOpenEditor(ref) {
   wrap.innerHTML =
     '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this&&confirm(\'Close without saving?\'))removeDcDialog()">' +
       '<div class="cw-modal" style="width:680px;max-width:95vw;max-height:92vh;overflow:auto">' +
-        '<h3>' + (dc ? 'Design contract — ' + cwEsc(dc.ref) : 'New design contract') + '</h3>' +
-        (dc ? '<div class="cw-modal-sub">Editing regenerates the contract; the number stays ' + cwEsc(dc.ref) + '</div>' : '') +
+        '<h3>' + (isEdit ? 'Design contract — ' + cwEsc(dc.ref) : (dc ? 'New design contract (copy of ' + cwEsc(dc.ref) + ')' : 'New design contract')) + '</h3>' +
+        (isEdit ? '<div class="cw-modal-sub">Editing regenerates the contract; the number stays ' + cwEsc(dc.ref) + '</div>' : '') +
         '<div class="cw-row2"><div class="cw-fg"><label>Customer name</label><input type="text" id="dc-cust" value="' + (dc ? cwEsc(dc.customer || '') : '') + '" placeholder="e.g. Mrs Beverley Gaunt"></div>' +
-        '<div class="cw-fg"><label>Contract date</label><input type="date" id="dc-date" value="' + (dc ? (dc.date || '') : new Date().toISOString().split('T')[0]) + '"></div></div>' +
+        '<div class="cw-fg"><label>Contract date</label><input type="date" id="dc-date" value="' + (isEdit ? (dc.date || '') : new Date().toISOString().split('T')[0]) + '"></div></div>' +
         '<div class="cw-row2"><div class="cw-fg"><label>Address line 1</label><input type="text" id="dc-a1" value="' + (dc ? cwEsc(dc.addr1 || '') : '') + '"></div>' +
         '<div class="cw-fg"><label>Town / City</label><input type="text" id="dc-city" value="' + (dc ? cwEsc(dc.city || '') : '') + '"></div></div>' +
         '<div class="cw-fg" style="max-width:180px"><label>Postcode</label><input type="text" id="dc-post" value="' + (dc ? cwEsc(dc.post || '') : '') + '"></div>' +
@@ -7203,7 +7245,7 @@ function dcOpenEditor(ref) {
         '<textarea id="dc-schedule" rows="4" oninput="dcSchedTouched=true;dcRefreshTotals()"></textarea>' +
         '<a href="#" onclick="dcSchedTouched=false;dcRefreshTotals();return false;" style="font-size:11px">↻ Reset to 25 / 50 / 25</a>' +
         '<span id="dc-sched-check" style="font-size:11px;margin-left:10px"></span></div>' +
-        '<div class="cw-modal-btns"><button class="btn btn-primary" id="dc-create-btn" onclick="dcCreate(' + (dc ? '\'' + dc.ref + '\'' : 'null') + ')">' + (dc ? 'Regenerate contract' : 'Create contract') + '</button>' +
+        '<div class="cw-modal-btns"><button class="btn btn-primary" id="dc-create-btn" onclick="dcCreate(' + (isEdit ? '\'' + dc.ref + '\'' : 'null') + ')">' + (isEdit ? 'Regenerate contract' : 'Create contract') + '</button>' +
         '<button class="btn btn-outline" onclick="removeDcDialog()">Cancel</button></div>' +
       '</div></div>';
   document.body.appendChild(wrap);
@@ -7263,6 +7305,26 @@ async function dcCreate(existingRef) {
   const freeText = (document.getElementById('dc-schedule').value || '').trim();
   const btn = document.getElementById('dc-create-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+  const reEnable = () => { if (btn) { btn.disabled = false; btn.textContent = existingRef ? 'Regenerate contract' : 'Create contract'; } };
+  // Same never-mutate rules as build contracts: regenerating over a SIGNED design
+  // contract deserves a pause, and outstanding links die with the old version.
+  if (existingRef && USE_SUPABASE) {
+    try {
+      const rows = await sigFetchRows(existingRef);
+      const latest = rows[0] || null;
+      if (latest && latest.status === 'signed') {
+        if (!(await sigSignedRegenDialog(existingRef))) { reEnable(); return; }
+      }
+      const act = rows.find(sigIsActive);
+      if (act) {
+        if (!confirm('An e-signature request is outstanding for this contract (sent ' +
+          new Date(act.sent_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) +
+          ').\n\nRegenerating REVOKES those signing links. Continue?')) { reEnable(); return; }
+        await sigRevokeRow(act.id);
+        toast('Old signing links revoked');
+      }
+    } catch (e) { /* signing table absent — nothing to revoke */ }
+  }
   try {
     const ref = existingRef || await generateDCRef();
     const prev = existingRef ? designContracts.find(d => d.ref === existingRef) : null;
@@ -7302,6 +7364,7 @@ async function dcCreate(existingRef) {
     }
     removeDcDialog();
     renderDesignContracts();
+    sigRefreshStatuses();      // badges + derived labels follow (covers the regenerate-revoke path)
     toast('✓ ' + ref + (prev ? ' regenerated' : ' created'));
     viewDesignContract(ref);   // straight into the preview, like Generate & Preview does
   } catch (e) {
@@ -7358,18 +7421,127 @@ function renderDesignContracts() {
   el.innerHTML = designContracts.map(d => {
     const t = dcTotals(d.lines);
     const dt = d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
-    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)">' +
+    const st = sigBadge(d.ref);
+    const cmStatus = (d.contract_meta && d.contract_meta.status) || 'Generated';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">' +
       '<span style="font-family:\'DM Mono\',monospace;font-weight:600;flex:none;width:74px">' + cwEsc(d.ref) + '</span>' +
       '<span style="flex:1;min-width:120px;color:var(--i1)">' + cwEsc(d.customer || '—') + '</span>' +
       '<span style="color:var(--i3);flex:none">' + dt + '</span>' +
       '<span style="font-weight:600;flex:none;min-width:90px;text-align:right">' + money(t.inc) + '</span>' +
       '<button class="btn btn-outline btn-sm" onclick="viewDesignContract(\'' + d.ref + '\')">📄 View</button>' +
+      '<button class="btn btn-outline btn-sm" onclick="sigOpenSendDialog(\'' + d.ref + '\')" title="E-signature — send, check status, view signed">✍ ' + cmStatus + '</button>' +
+      (st ? '<button class="btn btn-outline btn-sm" onclick="sigOpenSendDialog(\'' + d.ref + '\')" style="border-color:' + st.col + ';color:' + st.col + '">' + st.label + '</button>' : '') +
       '<button class="btn btn-outline btn-sm" onclick="dcOpenEditor(\'' + d.ref + '\')">✎ Edit</button>' +
+      '<button class="btn btn-outline btn-sm" onclick="dcOpenEditor(\'' + d.ref + '\', true)" title="New design contract pre-filled from this one">⧉ Duplicate</button>' +
       '<button class="btn btn-red btn-sm" style="margin-left:6px" onclick="dcDelete(\'' + d.ref + '\')">Delete</button>' +
     '</div>';
   }).join('');
   const c = document.getElementById('dc-count');
   if (c) c.textContent = designContracts.length + ' contract' + (designContracts.length === 1 ? '' : 's');
+}
+
+// ── Design sales report — TOTALS ONLY, by CONTRACT DATE, never mixed with build sales
+// (separate arms of the business — Neal). No designer breakdown (deliberately dropped).
+function removeDcsr() { const m = document.getElementById('dcsr-dialog'); if (m) m.remove(); }
+function dcsrRange() {
+  const p = (document.getElementById('dcsr-period') || {}).value || 'this-month';
+  const now = new Date();
+  const custom = document.getElementById('dcsr-custom');
+  if (custom) custom.style.display = p === 'custom' ? 'flex' : 'none';
+  if (p === 'this-month') return { from: new Date(now.getFullYear(), now.getMonth(), 1), to: now, label: 'This month' };
+  if (p === 'last-month') return { from: new Date(now.getFullYear(), now.getMonth() - 1, 1), to: new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59), label: 'Last month' };
+  if (p === 'this-year') return { from: new Date(now.getFullYear(), 0, 1), to: now, label: 'This year' };
+  if (p === 'custom') {
+    const f = (document.getElementById('dcsr-from') || {}).value, t = (document.getElementById('dcsr-to') || {}).value;
+    return { from: f ? new Date(f) : new Date(2000, 0, 1), to: t ? new Date(t + 'T23:59:59') : now, label: (f || '…') + ' to ' + (t || 'today') };
+  }
+  return { from: new Date(2000, 0, 1), to: now, label: 'All time' };
+}
+function dcsrGather() {
+  const r = dcsrRange();
+  const inPeriod = designContracts.filter(d => {
+    if (!d.date) return false;
+    const dt = new Date(d.date + 'T12:00:00');
+    return dt >= r.from && dt <= r.to;
+  });
+  let ex = 0, inc = 0;
+  inPeriod.forEach(d => { const t = dcTotals(d.lines); ex += t.ex; inc += t.inc; });
+  return { ...r, inPeriod, ex: round2(ex), inc: round2(inc) };
+}
+function dcsrRecalc() {
+  const g2 = dcsrGather();
+  const body = document.getElementById('dcsr-body');
+  if (!body) return;
+  body.innerHTML =
+    '<div style="display:flex;gap:28px;margin:10px 0 14px">' +
+      '<div><div style="font-size:11px;color:var(--i3)">Contracts</div><div style="font-size:20px;font-weight:700">' + g2.inPeriod.length + '</div></div>' +
+      '<div><div style="font-size:11px;color:var(--i3)">Ex VAT</div><div style="font-size:20px;font-weight:700">' + money(g2.ex) + '</div></div>' +
+      '<div><div style="font-size:11px;color:var(--i3)">Inc VAT</div><div style="font-size:20px;font-weight:700">' + money(g2.inc) + '</div></div>' +
+    '</div>' +
+    (g2.inPeriod.length ? g2.inPeriod.map(d => {
+      const t = dcTotals(d.lines);
+      return '<div style="display:flex;gap:10px;font-size:12px;padding:4px 0;border-bottom:1px solid var(--bd)">' +
+        '<span style="font-family:\'DM Mono\',monospace;color:var(--i3);width:74px">' + cwEsc(d.ref) + '</span>' +
+        '<span style="flex:1">' + cwEsc(d.customer || '') + '</span>' +
+        '<span style="color:var(--i3)">' + cwEsc(d.date || '') + '</span>' +
+        '<span style="font-family:\'DM Mono\',monospace;min-width:90px;text-align:right">' + money(t.inc) + '</span>' +
+      '</div>';
+    }).join('') : '<div style="font-size:12px;color:var(--i3)">No design contracts in this period.</div>');
+}
+function dcOpenSalesReport() {
+  removeDcsr();
+  const wrap = document.createElement('div');
+  wrap.id = 'dcsr-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)removeDcsr()">' +
+      '<div class="cw-modal" style="width:560px;max-width:95vw;max-height:88vh;overflow:auto">' +
+        '<h3>📊 Design sales report</h3>' +
+        '<div class="cw-modal-sub">By contract date · design arm only — never mixed with build sales</div>' +
+        '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:6px">' +
+          '<select id="dcsr-period" onchange="dcsrRecalc()"><option value="this-month">This month</option><option value="last-month">Last month</option><option value="this-year">This year</option><option value="all">All time</option><option value="custom">Custom…</option></select>' +
+          '<div id="dcsr-custom" style="display:none;gap:6px;align-items:center"><input type="date" id="dcsr-from" onchange="dcsrRecalc()"> to <input type="date" id="dcsr-to" onchange="dcsrRecalc()"></div>' +
+        '</div>' +
+        '<div id="dcsr-body"></div>' +
+        '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="dcsrPrint()">🖨 Print / PDF</button><button class="btn btn-outline" onclick="removeDcsr()">Close</button></div>' +
+      '</div></div>';
+  document.body.appendChild(wrap);
+  dcsrRecalc();
+}
+function dcsrPrint() {
+  const g2 = dcsrGather();
+  const brand = (document.querySelector('#tab-quote .q-brand-header') || {}).outerHTML || '';
+  let view = document.getElementById('report-view');
+  if (!view) { view = document.createElement('div'); view.id = 'report-view'; document.body.appendChild(view); }
+  view.innerHTML = '<table class="qwrap"><thead><tr><td>' + brand + '</td></tr></thead><tbody><tr><td>' +
+    '<div style="padding:18px 8px 0">' +
+      '<div style="font-size:24px;font-weight:300;letter-spacing:-0.5px;color:#1a1a1a">Design sales report</div>' +
+      '<div style="font-size:12px;color:#666;margin:6px 0 14px">' + cwEsc(g2.label) + ' · by contract date · generated ' + new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) + '</div>' +
+      '<div style="display:flex;gap:36px;margin-bottom:18px">' +
+        '<div><div style="font-size:11px;color:#888">Contracts</div><div style="font-size:22px;font-weight:700">' + g2.inPeriod.length + '</div></div>' +
+        '<div><div style="font-size:11px;color:#888">Ex VAT</div><div style="font-size:22px;font-weight:700">' + money(g2.ex) + '</div></div>' +
+        '<div><div style="font-size:11px;color:#888">Inc VAT</div><div style="font-size:22px;font-weight:700">' + money(g2.inc) + '</div></div>' +
+      '</div>' +
+      '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+        g2.inPeriod.map(d => {
+          const t = dcTotals(d.lines);
+          return '<tr style="border-bottom:1px solid #eee">' +
+            '<td style="padding:4px 8px 4px 0;font-family:\'DM Mono\',monospace;color:#666;width:78px">' + cwEsc(d.ref) + '</td>' +
+            '<td style="padding:4px 8px 4px 0">' + cwEsc(d.customer || '') + '</td>' +
+            '<td style="padding:4px 8px 4px 0;color:#666;width:90px">' + cwEsc(d.date || '') + '</td>' +
+            '<td style="padding:4px 0;text-align:right;font-family:\'DM Mono\',monospace;width:110px">' + money(t.inc) + '</td>' +
+          '</tr>';
+        }).join('') +
+      '</table>' +
+    '</div></td></tr></tbody></table>';
+  document.body.classList.add('report-mode');
+  // Same banner gotcha as scPrint: the base64 logos must be loaded AND painted before
+  // the print snapshot — plain timers, since decode()/rAF stall in hidden documents.
+  const imgs = Array.from(view.querySelectorAll('img'));
+  const ready = () => imgs.every(im => im.complete && im.naturalWidth > 0);
+  const go = () => setTimeout(() => { window.print(); document.body.classList.remove('report-mode'); }, 150);
+  if (ready()) { go(); return; }
+  let tries = 0;
+  const timer = setInterval(() => { if (ready() || ++tries > 100) { clearInterval(timer); go(); } }, 50);
 }
 
 // ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
