@@ -7214,14 +7214,19 @@ function dcDefaultSchedule(lines) {
   const surveys = (lines || []).filter(l => dcIsSurveyLine(l) && incOf(l) > 0);
   const surveySum = round2(surveys.reduce((s, l) => s + incOf(l), 0));
   const design = round2(total - surveySum);
+  // Survey lines sit after the acceptance payment — the topo happens between
+  // acceptance and the concept design (Neal, 2026-07-28).
   const out = [];
+  const surveyLines = surveys.map(l => l.name + ' — payable on completion of the survey: ' + money(incOf(l)));
   if (design > 0.005) {
     const a = round2(design * 0.25), b = round2(design * 0.50), c = round2(design - a - b);
     out.push('25% on acceptance: ' + money(a));
+    out.push(...surveyLines);
     out.push('50% after presenting the concept design: ' + money(b));
     out.push('25% on completion: ' + money(c));
+  } else {
+    out.push(...surveyLines);
   }
-  surveys.forEach(l => out.push(l.name + ' — payable on completion of the survey: ' + money(incOf(l))));
   return out.join('\n');
 }
 async function generateDCRef() {
