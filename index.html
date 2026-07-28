@@ -339,6 +339,9 @@ body.contract-mode #contract-view .lt td .print-only{display:block!important;tex
 body.contract-mode #contract-view .lt td input,body.contract-mode #contract-view .lt td select{display:none!important}
 body.contract-mode #contract-view .lt th.no-print,body.contract-mode #contract-view .lt td.no-print{display:none!important;width:0!important;padding:0!important;border:none!important}
 body.contract-mode #contract-view .group-member-row{display:none!important}
+/* On-screen contract view must match print/frozen output: group rows drop the builder's
+   blue highlight (print CSS and the frozen doc's screenFixes already do this). */
+body.contract-mode #contract-view .group-header-row{background:#fff!important;border-left:none!important;border-top:1px solid #eee}
 @media print{
   body.report-mode .shell{display:none!important}
   body.report-mode #sales-check-dialog{display:none!important}
@@ -5970,13 +5973,14 @@ function normalizeDesignTerms(raw){
 }
 
 // Cover letter body (after "Dear {customer}"). Quote ref is used as the contract Reference.
+// The "starting week ... confirmed via email" sentence was removed 2026-07-28 (Neal's call)
+// — already-frozen contracts keep their original wording via the snapshot.
 const CONTRACT_COVER_TEXT =
   "Thank you for choosing FirstLight Landscaping Ltd.<br><br>" +
-  "This Contract of Works specifies the agreed works to be carried out. The starting week of the work " +
-  "will have been confirmed with you via email. For information regarding payment, please see the Payment Schedule.<br><br>" +
+  "This Contract of Works specifies the agreed works to be carried out. For information regarding payment, please see the Payment Schedule.<br><br>" +
   "The Client hereby agrees to engage Firstlight Landscaping Ltd to provide the Client with the services detailed below.";
-// Design cover letter — identical to build's except it DROPS the starting-week sentence
-// (verbatim from the signed FL-3456/FL-3466 design contracts).
+// Design cover letter — same text but the company-name spellings are verbatim from the
+// signed FL-3456/FL-3466 design contracts, so the constants stay separate.
 const DESIGN_COVER_TEXT =
   "Thank you for choosing FirstLight Landscaping Ltd.<br><br>" +
   "This Contract of Works specifies the agreed works to be carried out. For information regarding payment, please see the Payment Schedule.<br><br>" +
@@ -7199,11 +7203,26 @@ function dcTotals(lines) {
   const inc = (lines || []).reduce((s, l) => s + (+l.qty || 0) * (+l.fee || 0) * (1 + (+l.vat || 0) / 100), 0);
   return { ex: round2(ex), inc: round2(inc) };
 }
-// Default 25/50/25 of the inc-VAT total, in the Gaunt wording (Neal's pick). Last line
-// takes the remainder so the three always sum penny-exact to the total.
-function dcDefaultSchedule(inc) {
-  const a = round2(inc * 0.25), b = round2(inc * 0.50), c = round2(inc - a - b);
-  return '25% on acceptance: ' + money(a) + '\n50% after presenting the concept design: ' + money(b) + '\n25% on completion: ' + money(c);
+// Default schedule, in the Gaunt wording (Neal's pick): 25/50/25 of the inc-VAT total.
+// Survey lines (topo etc.) are carved OUT of the split and get their own line, payable
+// on completion of the survey (design terms 10.iii) — Neal's call 2026-07-28. The last
+// 25/50/25 line takes the remainder so the whole schedule sums penny-exact to the total.
+function dcIsSurveyLine(l) { return /^SRV/i.test(l.code || '') || /topo|survey/i.test(l.name || ''); }
+function dcDefaultSchedule(lines) {
+  const incOf = l => round2((+l.qty || 0) * (+l.fee || 0) * (1 + (+l.vat || 0) / 100));
+  const total = dcTotals(lines).inc;
+  const surveys = (lines || []).filter(l => dcIsSurveyLine(l) && incOf(l) > 0);
+  const surveySum = round2(surveys.reduce((s, l) => s + incOf(l), 0));
+  const design = round2(total - surveySum);
+  const out = [];
+  if (design > 0.005) {
+    const a = round2(design * 0.25), b = round2(design * 0.50), c = round2(design - a - b);
+    out.push('25% on acceptance: ' + money(a));
+    out.push('50% after presenting the concept design: ' + money(b));
+    out.push('25% on completion: ' + money(c));
+  }
+  surveys.forEach(l => out.push(l.name + ' — payable on completion of the survey: ' + money(incOf(l))));
+  return out.join('\n');
 }
 async function generateDCRef() {
   try {
@@ -7219,9 +7238,9 @@ async function generateDCRef() {
 }
 
 function removeDcDialog() { const m = document.getElementById('dc-dialog'); if (m) m.remove(); }
-function dcOpenEditor(ref, asCopy) {
+function dcOpenEditor(ref) {
   const dc = ref ? designContracts.find(d => d.ref === ref) : null;
-  const isEdit = !!dc && !asCopy;   // a copy pre-fills from the source but creates a NEW number
+  const isEdit = !!dc;
   if (!designPackages.filter(p => !p.is_archived).length && !dc) { toast('Add a design package first (Contracts tab)'); return; }
   dcLines = dc ? JSON.parse(JSON.stringify(dc.lines || [])) : [{ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }];
   dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
@@ -7231,7 +7250,7 @@ function dcOpenEditor(ref, asCopy) {
   wrap.innerHTML =
     '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this&&confirm(\'Close without saving?\'))removeDcDialog()">' +
       '<div class="cw-modal" style="width:680px;max-width:95vw;max-height:92vh;overflow:auto">' +
-        '<h3>' + (isEdit ? 'Design contract — ' + cwEsc(dc.ref) : (dc ? 'New design contract (copy of ' + cwEsc(dc.ref) + ')' : 'New design contract')) + '</h3>' +
+        '<h3>' + (isEdit ? 'Design contract — ' + cwEsc(dc.ref) : 'New design contract') + '</h3>' +
         (isEdit ? '<div class="cw-modal-sub">Editing regenerates the contract; the number stays ' + cwEsc(dc.ref) + '</div>' : '') +
         '<div class="cw-row2"><div class="cw-fg"><label>Customer name</label><input type="text" id="dc-cust" value="' + (dc ? cwEsc(dc.customer || '') : '') + '" placeholder="e.g. Mrs Beverley Gaunt"></div>' +
         '<div class="cw-fg"><label>Contract date</label><input type="date" id="dc-date" value="' + (isEdit ? (dc.date || '') : new Date().toISOString().split('T')[0]) + '"></div></div>' +
@@ -7243,7 +7262,7 @@ function dcOpenEditor(ref, asCopy) {
         '<div style="font-size:13px;font-weight:600;margin:10px 0 4px">Total: <span id="dc-total"></span></div>' +
         '<div class="cw-fg"><label>Payment schedule — printed exactly as typed (only the Total line is added automatically)</label>' +
         '<textarea id="dc-schedule" rows="4" oninput="dcSchedTouched=true;dcRefreshTotals()"></textarea>' +
-        '<a href="#" onclick="dcSchedTouched=false;dcRefreshTotals();return false;" style="font-size:11px">↻ Reset to 25 / 50 / 25</a>' +
+        '<a href="#" onclick="dcSchedTouched=false;dcRefreshTotals();return false;" style="font-size:11px">↻ Reset to the default split</a>' +
         '<span id="dc-sched-check" style="font-size:11px;margin-left:10px"></span></div>' +
         '<div class="cw-modal-btns"><button class="btn btn-primary" id="dc-create-btn" onclick="dcCreate(' + (isEdit ? '\'' + dc.ref + '\'' : 'null') + ')">' + (isEdit ? 'Regenerate contract' : 'Create contract') + '</button>' +
         '<button class="btn btn-outline" onclick="removeDcDialog()">Cancel</button></div>' +
@@ -7287,7 +7306,7 @@ function dcRefreshTotals() {
   const el = document.getElementById('dc-total');
   if (el) el.textContent = money(t.inc) + ' inc VAT (' + money(t.ex) + ' ex)';
   const ta = document.getElementById('dc-schedule');
-  if (ta && !dcSchedTouched) ta.value = dcDefaultSchedule(t.inc);
+  if (ta && !dcSchedTouched) ta.value = dcDefaultSchedule(dcLines);
   const chk = document.getElementById('dc-sched-check');
   if (chk && ta) {
     const sum = round2(parseAmounts(ta.value).reduce((s, a) => s + a, 0));
@@ -7432,7 +7451,6 @@ function renderDesignContracts() {
       '<button class="btn btn-outline btn-sm" onclick="sigOpenSendDialog(\'' + d.ref + '\')" title="E-signature — send, check status, view signed">✍ ' + cmStatus + '</button>' +
       (st ? '<button class="btn btn-outline btn-sm" onclick="sigOpenSendDialog(\'' + d.ref + '\')" style="border-color:' + st.col + ';color:' + st.col + '">' + st.label + '</button>' : '') +
       '<button class="btn btn-outline btn-sm" onclick="dcOpenEditor(\'' + d.ref + '\')">✎ Edit</button>' +
-      '<button class="btn btn-outline btn-sm" onclick="dcOpenEditor(\'' + d.ref + '\', true)" title="New design contract pre-filled from this one">⧉ Duplicate</button>' +
       '<button class="btn btn-red btn-sm" style="margin-left:6px" onclick="dcDelete(\'' + d.ref + '\')">Delete</button>' +
     '</div>';
   }).join('');

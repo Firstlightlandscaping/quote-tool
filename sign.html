@@ -144,9 +144,15 @@ async function init() {
   } else {
     var waiting = (body.coSigners || []).filter(function (c) { return !c.signed; });
     var done = (body.coSigners || []).filter(function (c) { return c.signed; });
+    // Design contracts (DC- refs) get their own greeting (Neal's wording, 2026-07-28);
+    // build contracts keep the original.
+    var isDesign = /^DC-/.test(String(body.quoteRef || ''));
+    var intro = isDesign
+      ? 'Thank you for choosing First Light Landscaping to design your garden &mdash; we&rsquo;re looking forward to getting started. Below you&rsquo;ll find your Contract of Works, detailing everything included in your chosen design package. Please read through it carefully, and sign at the bottom of the page when you&rsquo;re happy.'
+      : 'Please find your contract below for your upcoming project. Have a read through, check everything, and sign at the bottom of the page.';
     statusCard(
       '<h2>Hi ' + esc(firstName(body.signerName)) + ',</h2>' +
-      '<div class="notice">Please find your contract below for your upcoming project. Have a read through, check everything, and sign at the bottom of the page.</div>' +
+      '<div class="notice">' + intro + '</div>' +
       '<div class="notice" style="margin-top:8px">Any questions about any aspect of the contract — please just let us know on <strong>0113 2580428</strong>, or reply to the email this link came in.</div>' +
       (done.length ? '<div class="muted" style="margin-top:8px">✓ Already signed by ' + done.map(function (c) { return esc(c.name); }).join(' and ') + '.</div>' : '') +
       (waiting.length ? '<div class="muted" style="margin-top:8px">' + waiting.map(function (c) { return esc(c.name); }).join(' and ') + ' will also be asked to sign.</div>' : '') +
