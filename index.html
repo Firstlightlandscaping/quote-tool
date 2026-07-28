@@ -1005,6 +1005,14 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       </div>
     </div>
   </div>
+  <div class="card no-print" id="design-packages-card">
+    <div class="ch"><span class="ct">Design Packages</span><span id="dp-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--i2)">The packages offered on <strong>design contracts</strong> — picking one when creating a contract auto-fills its description (editable per contract). Kept separate from deliverables, so these never appear in quote pickers or the Order List.</div>
+      <div id="dp-list" style="font-size:12px;color:var(--i3)">No packages yet.</div>
+      <div><button class="btn btn-outline btn-sm" onclick="dpOpenEditor()">＋ Add package</button></div>
+    </div>
+  </div>
   <div class="card no-print" id="company-sign-card">
     <div class="ch"><span class="ct">Company Signature</span><span id="csig-status" style="font-size:11px;color:var(--i3)"></span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:10px">
@@ -1425,7 +1433,7 @@ async function sbAllPages(table, query) {
 
 async function loadFromSupabase() {
   // Load all data in parallel (each table paged — see sbAllPages)
-  const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows] = await Promise.all([
+  const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows, dpRows] = await Promise.all([
     sbAllPages('deliverables', '?order=code'),
     sbAllPages('materials', '?order=del_code,idx,id'),
     sbAllPages('mpl', '?order=code'),
@@ -1435,7 +1443,9 @@ async function loadFromSupabase() {
     sbAllPages('staff', '?order=name,id').catch(() => []),
     // Bank details for contracts — lives only in Supabase (behind RLS+Auth), never in this file.
     // .catch keeps load working if the table/column isn't there yet (run supabase/contract-feature.sql).
-    sb('GET', 'company_settings', null, '?limit=1').catch(() => [])
+    sb('GET', 'company_settings', null, '?limit=1').catch(() => []),
+    // Design packages — absent on live until the design-contracts cutover (design-contracts.sql).
+    sbAllPages('design_packages', '?order=sort_order,id').catch(() => [])
   ]);
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
@@ -1445,6 +1455,8 @@ async function loadFromSupabase() {
   renderNoteTemplates();
   companySigns = normalizeCompanySigns(companySettings && companySettings.company_signature);
   renderCompanySigns();
+  designPackages = Array.isArray(dpRows) ? dpRows : [];
+  renderDesignPackages();
   // Load group templates
   if (templateRows && templateRows.length > 0) {
     groupTemplates = templateRows.map(t => ({ id: t.id, name: t.name, description: t.description||'' }));
@@ -7008,6 +7020,98 @@ async function openContractsPanel() {
         '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="removeContractsPanel()">Close</button></div>' +
       '</div></div>';
   document.body.appendChild(wrap);
+}
+
+// ── DESIGN PACKAGES (Contracts tab card) ──────────────────────────────────────
+// The design-contract catalogue (design_packages table): GD01/GD02/GD03 + survey
+// items. Own table by design — never mixed into deliverables/quote pickers.
+let designPackages = [];
+function renderDesignPackages() {
+  const el = document.getElementById('dp-list');
+  if (!el) return;
+  const live = designPackages.filter(p => !p.is_archived);
+  const archived = designPackages.filter(p => p.is_archived);
+  const row = p =>
+    `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)">
+      <span style="font-family:'DM Mono',monospace;font-weight:600;flex:none;width:56px">${cwEsc(p.code)}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:12px;color:var(--i1)">${cwEsc(p.name)}</div>
+        <div style="font-size:11px;color:var(--i3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(p.description||'')}">${cwEsc((p.description||'').split('\n')[0])}</div>
+      </div>
+      <span style="font-family:'DM Mono',monospace;flex:none">${(+p.default_fee||0) > 0 ? '£' + (+p.default_fee).toFixed(2) : '<span style="color:#B45309">fee not set</span>'}</span>
+      <button class="btn btn-outline btn-sm" onclick="dpOpenEditor(${p.id})">✎ Edit</button>
+      <button class="btn btn-red btn-sm" style="margin-left:6px" onclick="dpArchive(${p.id}, true)" title="Archive — hidden from the package picker, restorable below">×</button>
+    </div>`;
+  el.innerHTML = (live.length ? live.map(row).join('') : 'No packages yet.') +
+    (archived.length
+      ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:11px;color:var(--i3)">Archived (${archived.length})</summary>` +
+        archived.map(p => `<div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bd);opacity:.6">
+          <span style="font-family:'DM Mono',monospace;flex:none;width:56px">${cwEsc(p.code)}</span>
+          <span style="flex:1">${cwEsc(p.name)}</span>
+          <button class="btn btn-outline btn-sm" onclick="dpArchive(${p.id}, false)">↩ Restore</button>
+        </div>`).join('') + '</details>'
+      : '');
+  const st = document.getElementById('dp-status');
+  if (st) st.textContent = live.length ? (live.length + ' package' + (live.length === 1 ? '' : 's')) : '';
+}
+function dpOpenEditor(id) {
+  const p = id != null ? designPackages.find(x => x.id === id) : null;
+  const old = document.getElementById('dp-dialog');
+  if (old) old.remove();
+  const panel = document.createElement('div');
+  panel.id = 'dp-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center;padding:16px';
+  panel.innerHTML =
+    `<div style="background:white;border-radius:12px;padding:24px;width:640px;max-width:95vw;max-height:92vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 16px;font-size:16px">${p ? 'Edit package — ' + cwEsc(p.code) : 'Add a design package'}</h3>
+      <div style="display:grid;grid-template-columns:110px 1fr 130px;gap:12px;margin-bottom:12px">
+        <div class="fg" style="margin:0"><label>Code</label><input type="text" id="dp-code" value="${p ? cwEsc(p.code) : ''}" placeholder="e.g. GD04" style="width:100%;font-family:'DM Mono',monospace;text-transform:uppercase" oninput="this.value=this.value.toUpperCase()"></div>
+        <div class="fg" style="margin:0"><label>Name</label><input type="text" id="dp-name" value="${p ? cwEsc(p.name) : ''}" placeholder="e.g. Garden Design Service — Premium Package" style="width:100%"></div>
+        <div class="fg" style="margin:0"><label>Default fee £ (ex VAT)</label><input type="number" id="dp-fee" value="${p && p.default_fee != null ? p.default_fee : ''}" min="0" step="0.01" style="width:100%"></div>
+      </div>
+      <div class="fg" style="margin:0 0 16px"><label>Client description — printed on the contract (auto-fills the line, editable per contract)</label>
+        <textarea id="dp-desc" rows="12" style="width:100%;resize:vertical;font-size:12px;line-height:1.45">${p ? cwEsc(p.description||'') : ''}</textarea></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn btn-outline" onclick="document.getElementById('dp-dialog').remove()">Cancel</button>
+        <button class="btn btn-primary" onclick="dpSave(${p ? p.id : 'null'})">${p ? 'Save changes' : 'Add package'}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  document.getElementById(p ? 'dp-name' : 'dp-code').focus();
+}
+async function dpSave(id) {
+  const code = (document.getElementById('dp-code').value || '').trim().toUpperCase();
+  const name = (document.getElementById('dp-name').value || '').trim();
+  const fee = parseFloat(document.getElementById('dp-fee').value);
+  const description = (document.getElementById('dp-desc').value || '').trim();
+  if (!code || !name) { toast('Enter a code and a name'); return; }
+  const clash = designPackages.find(p => p.code === code && p.id !== id);
+  if (clash) { toast('Code ' + code + ' is already used by "' + clash.name + '"'); return; }
+  const body = { code, name, description, default_fee: isNaN(fee) ? null : fee };
+  try {
+    if (id != null) {
+      await sb('PATCH', 'design_packages', body, '?id=eq.' + id);
+      const p = designPackages.find(x => x.id === id);
+      Object.assign(p, body);
+    } else {
+      body.sort_order = Math.max(0, ...designPackages.map(p => +p.sort_order || 0)) + 10;
+      const ins = await sb('POST', 'design_packages', [body], '', true);
+      if (Array.isArray(ins) && ins[0]) designPackages.push(ins[0]);
+    }
+  } catch (e) { toast('Save failed: ' + e.message + ' (run supabase/design-contracts.sql?)'); return; }
+  document.getElementById('dp-dialog').remove();
+  renderDesignPackages();
+  toast(id != null ? '✓ Package updated' : '✓ Package added');
+}
+async function dpArchive(id, flag) {
+  const p = designPackages.find(x => x.id === id);
+  if (!p) return;
+  if (flag && !confirm('Archive "' + p.name + '"? It disappears from the package picker; contracts already created keep their wording.')) return;
+  try { await sb('PATCH', 'design_packages', { is_archived: flag }, '?id=eq.' + id); }
+  catch (e) { toast('Failed: ' + e.message); return; }
+  p.is_archived = flag;
+  renderDesignPackages();
+  toast(flag ? 'Package archived' : 'Package restored');
 }
 
 // ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
