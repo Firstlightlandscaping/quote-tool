@@ -44,8 +44,10 @@ if (-not $Query) { throw "No query given" }
 
 $body = @{ query = $Query } | ConvertTo-Json -Depth 4
 try {
+  # charset=utf-8 is REQUIRED: PS 5.1 otherwise encodes the body as Latin-1, silently
+  # best-fit-mapping non-ASCII (em-dash became a hyphen in seeded data before this fix).
   $resp = Invoke-RestMethod -Method Post -Uri "https://api.supabase.com/v1/projects/$Ref/database/query" `
-    -Headers @{ Authorization = "Bearer $tok" } -ContentType "application/json" -Body $body
+    -Headers @{ Authorization = "Bearer $tok" } -ContentType "application/json; charset=utf-8" -Body $body
   $resp | ConvertTo-Json -Depth 10
 } catch {
   $r = $_.Exception.Response

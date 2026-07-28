@@ -408,6 +408,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
   <button class="tab" onclick="showTab('prices',this)">🏷 Price Manager</button>
   <button class="tab" onclick="showTab('saved',this)">🗂 Saved Quotes</button>
   <button class="tab" onclick="showTab('schedule',this)">🗓 Schedule</button>
+  <button class="tab" onclick="showTab('design',this)">🎨 Design</button>
   <button class="tab" onclick="showTab('contracts',this)">📑 Contracts</button>
 </div>
 
@@ -985,6 +986,22 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
   <div id="schedule-content"></div>
 </div>
 
+<!-- ═══ TAB: DESIGN (design contracts — the separate arm; never mixed with quotes) ═══ -->
+<div id="tab-design" class="tab-panel no-print">
+  <div class="card no-print">
+    <div class="ch"><span class="ct">Design Contracts</span>
+      <div style="display:flex;align-items:center;gap:10px">
+        <span id="dc-count" style="font-size:11px;color:var(--i3)"></span>
+        <button class="btn btn-primary btn-sm" onclick="dcOpenEditor()">＋ New design contract</button>
+      </div>
+    </div>
+    <div class="cb">
+      <div style="font-size:12px;color:var(--i2);margin-bottom:10px">Design work is only ever contracted — never quoted through the app (package booklets handle that phase). Creating one picks a package, takes the agreed fee, and produces the contract ready to send for e-signature.</div>
+      <div id="dc-list" style="font-size:12px;color:var(--i3)">No design contracts yet.</div>
+    </div>
+  </div>
+</div>
+
 <!-- ═══ TAB: CONTRACTS (settings — terms + signatures, moved out of the ~40,000px Price Manager) ═══ -->
 <div id="tab-contracts" class="tab-panel no-print">
   <div class="card no-print" id="contract-terms-card">
@@ -1433,7 +1450,7 @@ async function sbAllPages(table, query) {
 
 async function loadFromSupabase() {
   // Load all data in parallel (each table paged — see sbAllPages)
-  const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows, dpRows] = await Promise.all([
+  const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows, dpRows, dcRows] = await Promise.all([
     sbAllPages('deliverables', '?order=code'),
     sbAllPages('materials', '?order=del_code,idx,id'),
     sbAllPages('mpl', '?order=code'),
@@ -1444,8 +1461,9 @@ async function loadFromSupabase() {
     // Bank details for contracts — lives only in Supabase (behind RLS+Auth), never in this file.
     // .catch keeps load working if the table/column isn't there yet (run supabase/contract-feature.sql).
     sb('GET', 'company_settings', null, '?limit=1').catch(() => []),
-    // Design packages — absent on live until the design-contracts cutover (design-contracts.sql).
-    sbAllPages('design_packages', '?order=sort_order,id').catch(() => [])
+    // Design packages + contracts — absent on live until the design-contracts cutover (design-contracts.sql).
+    sbAllPages('design_packages', '?order=sort_order,id').catch(() => []),
+    sbAllPages('design_contracts', '?order=saved.desc,ref').catch(() => [])
   ]);
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
@@ -1457,6 +1475,8 @@ async function loadFromSupabase() {
   renderCompanySigns();
   designPackages = Array.isArray(dpRows) ? dpRows : [];
   renderDesignPackages();
+  designContracts = Array.isArray(dcRows) ? dcRows : [];
+  renderDesignContracts();
   // Load group templates
   if (templateRows && templateRows.length > 0) {
     groupTemplates = templateRows.map(t => ({ id: t.id, name: t.name, description: t.description||'' }));
@@ -5951,6 +5971,12 @@ const CONTRACT_COVER_TEXT =
   "This Contract of Works specifies the agreed works to be carried out. The starting week of the work " +
   "will have been confirmed with you via email. For information regarding payment, please see the Payment Schedule.<br><br>" +
   "The Client hereby agrees to engage Firstlight Landscaping Ltd to provide the Client with the services detailed below.";
+// Design cover letter — identical to build's except it DROPS the starting-week sentence
+// (verbatim from the signed FL-3456/FL-3466 design contracts).
+const DESIGN_COVER_TEXT =
+  "Thank you for choosing FirstLight Landscaping Ltd.<br><br>" +
+  "This Contract of Works specifies the agreed works to be carried out. For information regarding payment, please see the Payment Schedule.<br><br>" +
+  "The Client hereby agrees to engage First Light Landscaping Ltd to provide the Client with the services detailed below.";
 const CONTRACT_CHEQUE_PAYEE = "FirstLight Landscaping Ltd"; // bank account/sort code come from company_settings, never hardcoded
 
 // Bank details, fetched from Supabase (company_settings) after login — never in this file. Set by loadFromSupabase.
@@ -6147,11 +6173,15 @@ function renderContract(opts){
       '<tbody><tr><td class="cw-body-cell">' +
         // ── Cover + works ──
         '<div class="cw-meta">' +
-          '<div><div class="cw-title">Contract of Works</div><div class="blk">' + cwEsc(cust) + (addr ? '<br>' + addr : '') + '</div></div>' +
+          // opts.designLabel: the service label under the title, exactly as the Xero-era
+          // design contracts carried it ("Contract of Works / GARDEN DESIGN SERVICE").
+          '<div><div class="cw-title">Contract of Works</div>' +
+          (opts.designLabel ? '<div style="font-weight:700;font-size:13px;letter-spacing:1.5px;margin:2px 0 10px">GARDEN DESIGN SERVICE</div>' : '') +
+          '<div class="blk">' + cwEsc(cust) + (addr ? '<br>' + addr : '') + '</div></div>' +
           '<div class="blk"><span class="lbl">Date</span>' + dateStr + '<div style="height:8px"></div><span class="lbl">Reference</span>' + cwEsc(ref) + '</div>' +
           '<div class="blk">' + fromBlock + '</div>' +
         '</div>' +
-        '<div class="cw-letter">Dear ' + cwEsc(cust) + ',<br><br>' + CONTRACT_COVER_TEXT + '</div>' +
+        '<div class="cw-letter">Dear ' + cwEsc(cust) + ',<br><br>' + (opts.coverText || CONTRACT_COVER_TEXT) + '</div>' +
         (summaryHtml.trim() ? '<div class="cw-sum-t">Summary</div><div class="cw-sum-b">' + summaryHtml + '</div>' : '') +
         cloneWorksTable() +
         '<div style="padding:0 8px">' + cloneTotalsBox() + '</div>' +
@@ -7112,6 +7142,234 @@ async function dpArchive(id, flag) {
   p.is_archived = flag;
   renderDesignPackages();
   toast(flag ? 'Package archived' : 'Package restored');
+}
+
+// ── DESIGN CONTRACTS (Design tab — the separate arm) ──────────────────────────
+// A design contract is NOT a quote: no pipeline, no Order List, no Schedule, no
+// Saved Quotes entry. One record (design_contracts table) holding the agreed lines
+// and a contract_meta in the SAME freeze shape as quotes — so renderContract, the
+// snapshot re-render trick and (D6) the e-signature flow are reused unchanged.
+let designContracts = [];
+let dcLines = [];             // working lines in the open editor
+let dcSchedTouched = false;   // schedule textarea: auto-derives from totals until hand-edited
+
+function dcTotals(lines) {
+  const ex = (lines || []).reduce((s, l) => s + (+l.qty || 0) * (+l.fee || 0), 0);
+  const inc = (lines || []).reduce((s, l) => s + (+l.qty || 0) * (+l.fee || 0) * (1 + (+l.vat || 0) / 100), 0);
+  return { ex: round2(ex), inc: round2(inc) };
+}
+// Default 25/50/25 of the inc-VAT total, in the Gaunt wording (Neal's pick). Last line
+// takes the remainder so the three always sum penny-exact to the total.
+function dcDefaultSchedule(inc) {
+  const a = round2(inc * 0.25), b = round2(inc * 0.50), c = round2(inc - a - b);
+  return '25% on acceptance: ' + money(a) + '\n50% after presenting the concept design: ' + money(b) + '\n25% on completion: ' + money(c);
+}
+async function generateDCRef() {
+  try {
+    const result = await sb('POST', 'rpc/next_dc_number', {}, '');
+    let num = null;
+    if (typeof result === 'number') num = result;
+    else if (Array.isArray(result) && result.length) num = (typeof result[0] === 'number') ? result[0] : Object.values(result[0] || {})[0];
+    else if (result && typeof result === 'object') num = Object.values(result)[0];
+    if (num !== null && !isNaN(parseInt(num))) return 'DC-' + String(parseInt(num)).padStart(4, '0');
+  } catch (e) { console.warn('DC counter unavailable, falling back to local:', e); }
+  const maxLocal = designContracts.reduce((m, d) => Math.max(m, parseInt((d.ref || '').replace('DC-', '')) || 0), 0);
+  return 'DC-' + String(maxLocal + 1).padStart(4, '0');
+}
+
+function removeDcDialog() { const m = document.getElementById('dc-dialog'); if (m) m.remove(); }
+function dcOpenEditor(ref) {
+  const dc = ref ? designContracts.find(d => d.ref === ref) : null;
+  if (!designPackages.filter(p => !p.is_archived).length && !dc) { toast('Add a design package first (Contracts tab)'); return; }
+  dcLines = dc ? JSON.parse(JSON.stringify(dc.lines || [])) : [{ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }];
+  dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
+  removeDcDialog();
+  const wrap = document.createElement('div');
+  wrap.id = 'dc-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this&&confirm(\'Close without saving?\'))removeDcDialog()">' +
+      '<div class="cw-modal" style="width:680px;max-width:95vw;max-height:92vh;overflow:auto">' +
+        '<h3>' + (dc ? 'Design contract — ' + cwEsc(dc.ref) : 'New design contract') + '</h3>' +
+        (dc ? '<div class="cw-modal-sub">Editing regenerates the contract; the number stays ' + cwEsc(dc.ref) + '</div>' : '') +
+        '<div class="cw-row2"><div class="cw-fg"><label>Customer name</label><input type="text" id="dc-cust" value="' + (dc ? cwEsc(dc.customer || '') : '') + '" placeholder="e.g. Mrs Beverley Gaunt"></div>' +
+        '<div class="cw-fg"><label>Contract date</label><input type="date" id="dc-date" value="' + (dc ? (dc.date || '') : new Date().toISOString().split('T')[0]) + '"></div></div>' +
+        '<div class="cw-row2"><div class="cw-fg"><label>Address line 1</label><input type="text" id="dc-a1" value="' + (dc ? cwEsc(dc.addr1 || '') : '') + '"></div>' +
+        '<div class="cw-fg"><label>Town / City</label><input type="text" id="dc-city" value="' + (dc ? cwEsc(dc.city || '') : '') + '"></div></div>' +
+        '<div class="cw-fg" style="max-width:180px"><label>Postcode</label><input type="text" id="dc-post" value="' + (dc ? cwEsc(dc.post || '') : '') + '"></div>' +
+        '<div class="cw-fg"><label>Lines — package, quantity, fee (£ ex VAT, 20% VAT applied)</label><div id="dc-lines-host"></div>' +
+        '<button class="btn btn-outline btn-sm" onclick="dcAddLine()">+ Add line</button></div>' +
+        '<div style="font-size:13px;font-weight:600;margin:10px 0 4px">Total: <span id="dc-total"></span></div>' +
+        '<div class="cw-fg"><label>Payment schedule — printed exactly as typed (only the Total line is added automatically)</label>' +
+        '<textarea id="dc-schedule" rows="4" oninput="dcSchedTouched=true;dcRefreshTotals()"></textarea>' +
+        '<a href="#" onclick="dcSchedTouched=false;dcRefreshTotals();return false;" style="font-size:11px">↻ Reset to 25 / 50 / 25</a>' +
+        '<span id="dc-sched-check" style="font-size:11px;margin-left:10px"></span></div>' +
+        '<div class="cw-modal-btns"><button class="btn btn-primary" id="dc-create-btn" onclick="dcCreate(' + (dc ? '\'' + dc.ref + '\'' : 'null') + ')">' + (dc ? 'Regenerate contract' : 'Create contract') + '</button>' +
+        '<button class="btn btn-outline" onclick="removeDcDialog()">Cancel</button></div>' +
+      '</div></div>';
+  document.body.appendChild(wrap);
+  dcPaintLines();
+  if (dc && dc.contract_meta && dc.contract_meta.freeText) document.getElementById('dc-schedule').value = dc.contract_meta.freeText;
+  dcRefreshTotals();
+  document.getElementById('dc-cust').focus();
+}
+function dcPaintLines() {
+  const host = document.getElementById('dc-lines-host');
+  if (!host) return;
+  const pkgs = designPackages.filter(p => !p.is_archived);
+  host.innerHTML = dcLines.map((l, i) =>
+    '<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">' +
+      '<select onchange="dcPickPackage(' + i + ',this.value)" style="flex:1;min-width:0">' +
+        '<option value="">— select a package —</option>' +
+        pkgs.map(p => '<option value="' + cwEsc(p.code) + '"' + (l.code === p.code ? ' selected' : '') + '>' + cwEsc(p.code) + ' — ' + cwEsc(p.name) + '</option>').join('') +
+        (l.code && !pkgs.some(p => p.code === l.code) ? '<option value="' + cwEsc(l.code) + '" selected>' + cwEsc(l.code) + ' — ' + cwEsc(l.name) + ' (archived)</option>' : '') +
+      '</select>' +
+      '<input type="number" value="' + (+l.qty || 1) + '" min="1" step="1" title="Quantity" style="width:52px" onchange="dcLines[' + i + '].qty=parseFloat(this.value)||1;dcRefreshTotals()">' +
+      '<input type="number" value="' + (l.fee === '' ? '' : +l.fee) + '" min="0" step="0.01" placeholder="fee £" title="Fee £ ex VAT" style="width:96px" onchange="dcLines[' + i + '].fee=parseFloat(this.value)||0;dcRefreshTotals()">' +
+      '<button class="btn btn-outline btn-sm" onclick="dcToggleDesc(' + i + ')" title="Edit this line\'s printed description">✎</button>' +
+      '<button class="btn btn-red btn-sm" onclick="dcLines.splice(' + i + ',1);dcPaintLines();dcRefreshTotals()" title="Remove line">×</button>' +
+    '</div>' +
+    '<div id="dc-desc-wrap-' + i + '" style="display:none;margin:0 0 8px"><textarea id="dc-desc-' + i + '" rows="8" style="width:100%;resize:vertical;font-size:12px" oninput="dcLines[' + i + '].description=this.value">' + cwEsc(l.description || '') + '</textarea></div>'
+  ).join('');
+}
+function dcPickPackage(i, code) {
+  const p = designPackages.find(x => x.code === code);
+  if (!p) { dcLines[i] = { code: '', name: '', description: '', qty: dcLines[i].qty || 1, fee: '', vat: 20 }; }
+  else dcLines[i] = { code: p.code, name: p.name, description: p.description || '', qty: dcLines[i].qty || 1, fee: (+p.default_fee || 0) || '', vat: 20 };
+  dcPaintLines();
+  dcRefreshTotals();
+}
+function dcAddLine() { dcLines.push({ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }); dcPaintLines(); }
+function dcToggleDesc(i) { const w = document.getElementById('dc-desc-wrap-' + i); if (w) w.style.display = w.style.display === 'none' ? 'block' : 'none'; }
+function dcRefreshTotals() {
+  const t = dcTotals(dcLines);
+  const el = document.getElementById('dc-total');
+  if (el) el.textContent = money(t.inc) + ' inc VAT (' + money(t.ex) + ' ex)';
+  const ta = document.getElementById('dc-schedule');
+  if (ta && !dcSchedTouched) ta.value = dcDefaultSchedule(t.inc);
+  const chk = document.getElementById('dc-sched-check');
+  if (chk && ta) {
+    const sum = round2(parseAmounts(ta.value).reduce((s, a) => s + a, 0));
+    const ok = Math.abs(sum - t.inc) < 0.01;
+    chk.style.color = ok ? '#15803D' : '#dc2626';
+    chk.textContent = ok ? '✓ adds up to the total' : '⚠ lines total ' + money(sum) + ' ≠ ' + money(t.inc);
+  }
+}
+async function dcCreate(existingRef) {
+  const cust = (document.getElementById('dc-cust').value || '').trim();
+  if (!cust) { toast('Enter the customer name'); return; }
+  const lines = dcLines.filter(l => l.code && (+l.fee || 0) >= 0 && l.name);
+  if (!lines.length || !lines.some(l => +l.fee > 0)) { toast('Add at least one package line with a fee'); return; }
+  const t = dcTotals(lines);
+  const freeText = (document.getElementById('dc-schedule').value || '').trim();
+  const btn = document.getElementById('dc-create-btn');
+  if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
+  try {
+    const ref = existingRef || await generateDCRef();
+    const prev = existingRef ? designContracts.find(d => d.ref === existingRef) : null;
+    const date = document.getElementById('dc-date').value || new Date().toISOString().split('T')[0];
+    const meta = {
+      generatedAt: new Date().toISOString(),
+      contractDate: date,
+      freeText: freeText || null, freeTextFull: true,
+      termsVersion: (designTerms && designTerms.version) || 1,
+      termsSnapshot: JSON.parse(JSON.stringify({ version: designTerms.version, numbering: 'sections', sections: designTerms.sections })),
+      total: t.inc,
+      design: true,
+      status: (prev && prev.contract_meta && prev.contract_meta.status) || 'Generated',
+      snapshot: {
+        customer: cust,
+        addr1: (document.getElementById('dc-a1').value || '').trim(),
+        city: (document.getElementById('dc-city').value || '').trim(),
+        post: (document.getElementById('dc-post').value || '').trim(),
+        ref, date,
+        // quote-line shape so the snapshot re-render borrows the builder unchanged
+        lines: lines.map((l, i) => ({ id: i + 1, code: l.code, name: l.name, xdesc: l.description || '', qty: +l.qty || 1, unitPrice: +l.fee || 0, vat: +l.vat || 20, labDays: 0, labRate: 0, matCost: 0 }))
+      }
+    };
+    const row = {
+      ref, customer: cust,
+      addr1: meta.snapshot.addr1, city: meta.snapshot.city, post: meta.snapshot.post, date,
+      lines, contract_meta: meta,
+      created_by: (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || ''
+    };
+    if (prev) {
+      await sb('PATCH', 'design_contracts', row, '?ref=eq.' + encodeURIComponent(ref));
+      Object.assign(prev, row);
+    } else {
+      row.saved = new Date().toISOString();
+      const ins = await sb('POST', 'design_contracts', [row], '', true);
+      designContracts.unshift((Array.isArray(ins) && ins[0]) || row);
+    }
+    removeDcDialog();
+    renderDesignContracts();
+    toast('✓ ' + ref + (prev ? ' regenerated' : ' created'));
+    viewDesignContract(ref);   // straight into the preview, like Generate & Preview does
+  } catch (e) {
+    toast('Create failed: ' + e.message + ' (run supabase/design-contracts.sql?)');
+    if (btn) { btn.disabled = false; btn.textContent = existingRef ? 'Regenerate contract' : 'Create contract'; }
+  }
+}
+// Render a design contract EXACTLY as generated — the viewSavedContract trick: load the
+// snapshot into the (hidden) builder, render through the shared engine, restore.
+function dcRenderFromMeta(meta) {
+  const snap = meta && meta.snapshot;
+  if (!snap) { toast('No snapshot on this design contract'); return; }
+  const ids = ['in-cust', 'in-a1', 'in-city', 'in-post', 'in-ref', 'in-vno', 'in-date'];
+  const savedLines = lines;
+  const savedFields = {}; ids.forEach(id => savedFields[id] = (document.getElementById(id) || {}).value);
+  const sm = document.getElementById('qh-summary');
+  const savedSummary = sm ? sm.innerHTML : '';
+  try {
+    lines = (snap.lines || []).map(l => ({ ...l }));
+    const set = (id, v) => { const e = document.getElementById(id); if (e) e.value = v || ''; };
+    set('in-cust', snap.customer); set('in-a1', snap.addr1); set('in-city', snap.city); set('in-post', snap.post);
+    set('in-ref', snap.ref); set('in-vno', ''); set('in-date', snap.date);
+    if (sm) sm.innerHTML = '';                     // design contracts carry no job summary
+    renderLines(); recalc(); syncH();
+    renderContract({
+      contractDate: meta.contractDate, freeText: meta.freeText, freeTextFull: true,
+      terms: meta.termsSnapshot, designLabel: true, coverText: DESIGN_COVER_TEXT
+    });
+  } finally {
+    lines = savedLines;
+    ids.forEach(id => { const e = document.getElementById(id); if (e) e.value = savedFields[id]; });
+    if (sm) sm.innerHTML = savedSummary;
+    renderLines(); recalc(); syncH();
+  }
+}
+function viewDesignContract(ref) {
+  const dc = designContracts.find(d => d.ref === ref);
+  if (!dc || !dc.contract_meta) { toast('No contract found for ' + ref); return; }
+  dcRenderFromMeta(dc.contract_meta);
+}
+async function dcDelete(ref) {
+  const dc = designContracts.find(d => d.ref === ref);
+  if (!dc || !confirm('Delete design contract ' + ref + ' (' + (dc.customer || '') + ')? This cannot be undone.')) return;
+  try { await sb('DELETE', 'design_contracts', null, '?ref=eq.' + encodeURIComponent(ref)); }
+  catch (e) { toast('Delete failed: ' + e.message); return; }
+  designContracts = designContracts.filter(d => d.ref !== ref);
+  renderDesignContracts();
+  toast(ref + ' deleted');
+}
+function renderDesignContracts() {
+  const el = document.getElementById('dc-list');
+  if (!el) return;
+  if (!designContracts.length) { el.textContent = 'No design contracts yet.'; const c0 = document.getElementById('dc-count'); if (c0) c0.textContent = ''; return; }
+  el.innerHTML = designContracts.map(d => {
+    const t = dcTotals(d.lines);
+    const dt = d.date ? new Date(d.date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+    return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd)">' +
+      '<span style="font-family:\'DM Mono\',monospace;font-weight:600;flex:none;width:74px">' + cwEsc(d.ref) + '</span>' +
+      '<span style="flex:1;min-width:120px;color:var(--i1)">' + cwEsc(d.customer || '—') + '</span>' +
+      '<span style="color:var(--i3);flex:none">' + dt + '</span>' +
+      '<span style="font-weight:600;flex:none;min-width:90px;text-align:right">' + money(t.inc) + '</span>' +
+      '<button class="btn btn-outline btn-sm" onclick="viewDesignContract(\'' + d.ref + '\')">📄 View</button>' +
+      '<button class="btn btn-outline btn-sm" onclick="dcOpenEditor(\'' + d.ref + '\')">✎ Edit</button>' +
+      '<button class="btn btn-red btn-sm" style="margin-left:6px" onclick="dcDelete(\'' + d.ref + '\')">Delete</button>' +
+    '</div>';
+  }).join('');
+  const c = document.getElementById('dc-count');
+  if (c) c.textContent = designContracts.length + ' contract' + (designContracts.length === 1 ? '' : 's');
 }
 
 // ══ CONTRACT TERMS EDITOR (Price Manager card) ═══════════════════════════════════
