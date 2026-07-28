@@ -6317,13 +6317,45 @@ function openContractDialog(refArg){
   document.body.appendChild(wrap);
   cdRefresh();
 }
+// Two-button caution for regenerating a SIGNED contract. It also documents the real
+// process at the point of the mistake: email-agreed extras don't need a regenerate —
+// the signed contract plus the email IS the agreement. (Variation-note feature was
+// considered and rejected: email already holds that evidence.)
+function sigSignedRegenDialog(ref) {
+  return new Promise(resolve => {
+    const old = document.getElementById('sig-regen-dialog');
+    if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'sig-regen-dialog';
+    wrap.innerHTML =
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:480px;max-width:95vw">' +
+        '<h3>' + cwEsc(ref) + ' — this contract has been signed</h3>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:10px">The signed version stays on record and cannot change. Regenerating creates a <strong>new version that nobody has agreed</strong>.</div>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:16px">For small extras agreed by email, you usually don\'t need to regenerate — the signed contract plus the email is your agreement. Regenerate only if you intend to <strong>send the new version for signature</strong>.</div>' +
+        '<div class="cw-modal-btns">' +
+          '<button class="btn btn-red" id="sig-regen-go">Regenerate anyway</button>' +
+          '<button class="btn btn-outline" id="sig-regen-cancel">Cancel</button>' +
+        '</div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('sig-regen-go').onclick = () => done(true);
+    document.getElementById('sig-regen-cancel').onclick = () => done(false);
+  });
+}
 async function doGenerateContract(){
   const dref = cwDialogRef || g('in-ref');
   // Never-mutate rule (e-signing): a regenerated contract is a DIFFERENT document, so any
-  // outstanding signing links must die with the old one. Best-effort — if the signing table
-  // isn't reachable (pre-cutover live), generation proceeds as before.
+  // outstanding signing links must die with the old one — and regenerating over a SIGNED
+  // contract deserves a deliberate pause. Best-effort — if the signing table isn't
+  // reachable (pre-cutover live), generation proceeds as before.
   try {
-    const act = dref && USE_SUPABASE ? (await sigFetchRows(dref)).find(sigIsActive) : null;
+    const rows = dref && USE_SUPABASE ? await sigFetchRows(dref) : [];
+    const latest = rows[0] || null;                       // sigFetchRows orders id.desc
+    if (latest && latest.status === 'signed') {
+      if (!(await sigSignedRegenDialog(dref))) return;    // contract dialog stays open
+    }
+    const act = rows.find(sigIsActive);
     if (act) {
       if (!confirm('An e-signature request is outstanding for this contract (sent ' +
         new Date(act.sent_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) +
