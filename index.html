@@ -408,6 +408,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
   <button class="tab" onclick="showTab('prices',this)">🏷 Price Manager</button>
   <button class="tab" onclick="showTab('saved',this)">🗂 Saved Quotes</button>
   <button class="tab" onclick="showTab('schedule',this)">🗓 Schedule</button>
+  <button class="tab" onclick="showTab('contracts',this)">📑 Contracts</button>
 </div>
 
 
@@ -722,8 +723,6 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
     <button class="btn btn-outline btn-sm" onclick="pmJump('pm-mpl-card')">Price List</button>
     <button class="btn btn-outline btn-sm" onclick="pmJump('group-templates-card')">Group Templates</button>
     <button class="btn btn-outline btn-sm" onclick="pmJump('note-templates-card')">Note Templates</button>
-    <button class="btn btn-outline btn-sm" onclick="pmJump('contract-terms-card')">Contract Terms</button>
-    <button class="btn btn-outline btn-sm" onclick="pmJump('company-sign-card')">Signatures</button>
     <button class="btn btn-outline btn-sm" onclick="pmJump('backup-card')">Backup &amp; Restore</button>
   </nav>
   <div class="card" id="pm-dels-card">
@@ -912,27 +911,6 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       </div>
     </div>
   </div>
-  <div class="card no-print" id="contract-terms-card">
-    <div class="ch"><span class="ct">Contract Terms</span><span id="ct-edit-status" style="font-size:11px;color:var(--i3)"></span></div>
-    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
-      <div style="font-size:12px;color:var(--i2)">The standard terms printed on every <strong>Contract of Works</strong>. Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with. Select text and use <b>B</b> / <i>I</i> / <u>U</u> / • on a clause for formatting.</div>
-      <div id="ct-editor"></div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--bd);padding-top:10px">
-        <button class="btn btn-primary btn-sm" id="ct-save-btn" onclick="saveContractTerms()">Save terms</button>
-        <button class="btn btn-outline btn-sm" onclick="resetContractTermsEditor()">Reset</button>
-        <button class="btn btn-outline btn-sm" onclick="ctAddSection()">+ Add section</button>
-        <span id="ct-dirty" style="font-size:11px;color:#b45309"></span>
-      </div>
-    </div>
-  </div>
-  <div class="card no-print" id="company-sign-card">
-    <div class="ch"><span class="ct">Company Signature</span><span id="csig-status" style="font-size:11px;color:var(--i3)"></span></div>
-    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
-      <div style="font-size:12px;color:var(--i2)">Used to <strong>countersign e-signed contracts</strong> — every contract sent for signature goes out already signed. Store one signature per partner; when more than one is saved, the send dialog asks which one signs. Stored in the database behind the login, never in this page's code.</div>
-      <div id="csig-list" style="font-size:12px;color:var(--i3)">Not set up yet.</div>
-      <div><button class="btn btn-outline btn-sm" id="csig-edit-btn" onclick="csigOpenEditor()">＋ Add signature</button></div>
-    </div>
-  </div>
   <div class="card no-print" id="backup-card">
     <div class="ch"><span class="ct">Data Backup</span><span id="backup-status" style="font-size:11px;color:var(--i3)"></span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:8px">
@@ -1005,6 +983,36 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 <!-- SCHEDULE SETUP — build the TeamGantt plan for the loaded quote (no chart here; the agent pushes it) -->
 <div id="tab-schedule" class="tab-panel no-print">
   <div id="schedule-content"></div>
+</div>
+
+<!-- ═══ TAB: CONTRACTS (settings — terms + signatures, moved out of the ~40,000px Price Manager) ═══ -->
+<div id="tab-contracts" class="tab-panel no-print">
+  <div class="card no-print" id="contract-terms-card">
+    <div class="ch"><span class="ct">Contract Terms</span><span id="ct-edit-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
+      <!-- Two term sets, one editor: BUILD (flat 1..N numbering) and DESIGN (sections 1..11, clauses i/ii/iii) -->
+      <div style="display:flex;gap:6px">
+        <button class="btn btn-sm" id="ct-mode-build" onclick="ctSetMode('build')">Build contract</button>
+        <button class="btn btn-sm" id="ct-mode-design" onclick="ctSetMode('design')">Design contract</button>
+      </div>
+      <div style="font-size:12px;color:var(--i2)" id="ct-mode-intro">The standard terms printed on every <strong>Contract of Works</strong>. Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with. Select text and use <b>B</b> / <i>I</i> / <u>U</u> / • on a clause for formatting.</div>
+      <div id="ct-editor"></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:1px solid var(--bd);padding-top:10px">
+        <button class="btn btn-primary btn-sm" id="ct-save-btn" onclick="saveContractTerms()">Save terms</button>
+        <button class="btn btn-outline btn-sm" onclick="resetContractTermsEditor()">Reset</button>
+        <button class="btn btn-outline btn-sm" onclick="ctAddSection()">+ Add section</button>
+        <span id="ct-dirty" style="font-size:11px;color:#b45309"></span>
+      </div>
+    </div>
+  </div>
+  <div class="card no-print" id="company-sign-card">
+    <div class="ch"><span class="ct">Company Signature</span><span id="csig-status" style="font-size:11px;color:var(--i3)"></span></div>
+    <div class="cb" style="display:flex;flex-direction:column;gap:10px">
+      <div style="font-size:12px;color:var(--i2)">Used to <strong>countersign e-signed contracts</strong> — every contract sent for signature goes out already signed. Store one signature per partner; when more than one is saved, the send dialog asks which one signs. Stored in the database behind the login, never in this page's code.</div>
+      <div id="csig-list" style="font-size:12px;color:var(--i3)">Not set up yet.</div>
+      <div><button class="btn btn-outline btn-sm" id="csig-edit-btn" onclick="csigOpenEditor()">＋ Add signature</button></div>
+    </div>
+  </div>
 </div>
 
 </div><!-- /shell -->
@@ -1431,6 +1439,7 @@ async function loadFromSupabase() {
   ]);
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
+  designTerms = normalizeDesignTerms(companySettings && companySettings.design_terms);
   if (document.getElementById('ct-editor')) initContractTermsEditor();
   noteTemplates = normalizeNoteTemplates(companySettings && companySettings.note_templates);
   renderNoteTemplates();
@@ -5803,6 +5812,53 @@ function olToggle(id) {
 // line items (rendered exactly like the quote) → totals → fixed terms → payment schedule
 // → signature page. Downloaded via browser print-to-PDF, then uploaded to HelloSign.
 
+// Design-contract terms — transcribed VERBATIM from the signed design contracts
+// (FL-3456 Gaunt / FL-3466 Prince, identical terms in both; PDF line-wraps healed,
+// wording untouched — Neal's call: tweaks later in the editor). Rendered with
+// two-level numbering (sections 1..11, clauses i/ii/iii) via terms.numbering='sections'.
+const DESIGN_TERMS = [
+  { title: 'CONTRACT', items: [
+    "A Contract of Works is produced for each project undertaken. This is to be signed by both parties and is a legally binding contract. FirstLight Landscaping Ltd will not carry out any work that is not explicitly stated in the Contract. If the Client notices any aspect of works that has been omitted, please contact FirstLight Landscaping Ltd before signing this Contract."
+  ]},
+  { title: 'MEETINGS AND COMMUNICATION', items: [
+    "The design service fee includes two in-person meetings: the initial meeting to discuss the design brief and conduct a site survey, and a follow-up meeting to review and discuss the concept designs. All additional consultations and communications will be conducted online or via phone. Should any additional in-person meetings be requested, they will be billed at our standard hourly rate plus any applicable travel expenses."
+  ]},
+  { title: 'BUDGET AND ADJUSTMENTS', items: [
+    "If you provide us with a budget for your garden, while we will make every effort to design your garden within the specified budget, please note that we cannot guarantee the final costs will remain within the provided budget.",
+    "Estimates Prior to Completion: During the design process, we may, if necessary, provide an estimate for any applicable costs for the build. Please note that such estimates are based on preliminary assessments and may not be fully accurate. The actual costs may vary once the final design is completed, and a detailed quote is issued.",
+    "No Binding Agreement on Estimates: Any estimates provided before the final design booklet is completed are not binding and should be treated as approximations only. The actual charges may differ based on the final design requirements and additional considerations that may arise during the design process."
+  ]},
+  { title: 'DESIGN REVISIONS', items: [
+    "Our package includes up to 2 sets of design revisions to ensure your satisfaction. Any additional revisions beyond this limit will be charged at our hourly rate. Please provide feedback in a timely manner to keep the project on schedule."
+  ]},
+  { title: 'SITE CONDITIONS AND SURVEY REQUIREMENTS', items: [
+    "It is the client's responsibility to provide accurate and complete information about the site, including any factors that could impact the design, such as planning restrictions (e.g., conservation areas or greenbelt) or known site issues. If there are any changes to the site conditions that were not disclosed in the initial brief, and these changes significantly affect the design or construction, additional work or revisions may be required, which could incur extra charges."
+  ]},
+  { title: 'BRIEF', items: [
+    "An initial brief will be created after the first in-person meeting, which will be sent to the client for approval. Once this brief has been approved, it will be used to create the concept designs. If the brief changes after this stage, resulting in the garden requiring a full redesign, this may incur an additional charge that will be communicated in writing before work commences."
+  ]},
+  { title: 'INTELLECTUAL PROPERTY', items: [
+    "All design work remains the intellectual property of FirstLight Landscaping Ltd until full payment is received. Upon payment, ownership rights to the final design are transferred to the client; however, we reserve the right to use the design for portfolio and marketing purposes."
+  ]},
+  { title: 'CONCLUSION OF SERVICES', items: [
+    "If the design process cannot be completed due to non-response to correspondence from the client, the final invoice will be issued 6 months after the date of the contract for the remaining balance of the contract."
+  ]},
+  { title: 'AGREEMENT ACCEPTANCE', items: [
+    "By engaging in our garden design services, the client agrees to these terms and conditions."
+  ]},
+  { title: 'PAYMENT', items: [
+    "The payment breakdown for the design service will be as detailed in the payment schedule below.",
+    "Deposit: Deposits are non-refundable after commencement of the design process.",
+    "Survey Fee: If a topographical survey has been carried out by a third party, this will be payable on completion of the survey.",
+    "Design Fee: The design fee will be payable as specified in the payment schedule. An invoice will be sent when a payment is due.",
+    "Completion of Design: After the completion of the design service, as specified in the description, the completion invoice for the design is due. If a quotation is being provided, this will be produced after the design fee has been paid in full.",
+    "Payment Due on Receipt: Once payments have been invoiced, they will be due on receipt, excluding the completion of the design invoice, which is due one week from the completion of the design. This is to ensure the client is satisfied with the service provided."
+  ]},
+  { title: 'DISPUTE RESOLUTIONS', items: [
+    "If there is any issue that the client and the contractor are unable to resolve, as a BALI-registered company, both the client and the contractor are encouraged to utilise BALI's Dispute Resolution Service before taking any legal action. For more information, see BALI Dispute Resolution Service."
+  ]}
+];
+
 const CONTRACT_TERMS_VERSION = 1;
 // Fixed standard terms — 28 clauses in 6 sections, numbered continuously 1–28 at render time.
 // Transcribed verbatim from the current Contract of Works, with these source typos corrected:
@@ -5862,6 +5918,19 @@ function normalizeContractTerms(raw){
     if (sections.length) return { version: (+raw.version || 1), updatedAt: raw.updatedAt || null, updatedBy: raw.updatedBy || null, sections };
   }
   return { version: CONTRACT_TERMS_VERSION, sections: CONTRACT_TERMS.map(s => ({ title: s.title, items: s.items.slice() })) };
+}
+
+// Design terms — same shape, own column (company_settings.design_terms), and ALWAYS
+// two-level numbering (forced here so the flag can't be lost by an edit round-trip).
+let designTerms = { version: 1, numbering: 'sections', sections: DESIGN_TERMS };
+function normalizeDesignTerms(raw){
+  if (raw && Array.isArray(raw.sections)) {
+    const sections = raw.sections
+      .filter(s => s && typeof s.title === 'string' && Array.isArray(s.items))
+      .map(s => ({ title: s.title, items: s.items.filter(it => typeof it === 'string') }));
+    if (sections.length) return { version: (+raw.version || 1), updatedAt: raw.updatedAt || null, updatedBy: raw.updatedBy || null, numbering: 'sections', sections };
+  }
+  return { version: 1, numbering: 'sections', sections: DESIGN_TERMS.map(s => ({ title: s.title, items: s.items.slice() })) };
 }
 
 // Cover letter body (after "Dear {customer}"). Quote ref is used as the contract Reference.
@@ -5972,10 +6041,21 @@ function cloneTotalsBox(){
   c.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
   return c.outerHTML;
 }
-// Fixed terms → numbered list, continuous 1..28 across the six sections.
+// Fixed terms → numbered list. Two numbering styles, chosen by terms.numbering and
+// FROZEN into each contract's snapshot (freeTextFull pattern — old snapshots lack the
+// field → flat, so everything already signed re-renders exactly as signed):
+//   flat (build, default): clauses run 1..N continuously across sections
+//   'sections' (design):   sections numbered 1..11, clauses i/ii/iii within each
 function renderTermsHtml(terms){
   const secs = (terms && Array.isArray(terms.sections) && terms.sections.length) ? terms.sections
              : ((contractTerms && contractTerms.sections) || CONTRACT_TERMS);
+  if (terms && terms.numbering === 'sections') {
+    return '<div class="cw-terms">' + secs.map((sec, si) =>
+      '<div class="cw-section-h">' + (si + 1) + '. ' + cwEsc(sec.title) + '</div><ol style="list-style-type:lower-roman">' +
+      (sec.items||[]).map(it => '<li>' + cwSanitizeHtml(it) + '</li>').join('') +
+      '</ol>'
+    ).join('') + '</div>';
+  }
   let n = 0;
   return '<div class="cw-terms">' + secs.map(sec =>
     '<div class="cw-section-h">' + cwEsc(sec.title) + '</div><ol>' +
@@ -6935,15 +7015,40 @@ async function openContractsPanel() {
 // Rich text is limited to the cwSanitizeHtml whitelist (bold/italic/underline/lists).
 let ctWorking = null;   // [{title, items:[html,...]}]
 let ctDirty = false;
-function ctSessionEmail(){ try { return (SESSION && SESSION.user && SESSION.user.email) || ''; } catch(e){ return ''; } }
+let ctMode = 'build';   // 'build' (contract_terms, flat numbering) | 'design' (design_terms, sections numbering)
+function ctSessionEmail(){ try { return (SESSION && SESSION.email) || ''; } catch(e){ return ''; } }
 function ctStatus(msg){ const e=document.getElementById('ct-edit-status'); if(e) e.textContent = msg||''; }
 function ctMarkDirty(){ ctDirty=true; const e=document.getElementById('ct-dirty'); if(e) e.textContent='● unsaved changes'; }
 function ctClearDirty(){ ctDirty=false; const e=document.getElementById('ct-dirty'); if(e) e.textContent=''; }
+// The active mode's saved terms / fallback seed / storage column, in one place.
+function ctModeCfg(){
+  return ctMode === 'design'
+    ? { terms: designTerms, seed: DESIGN_TERMS, column: 'design_terms' }
+    : { terms: contractTerms, seed: CONTRACT_TERMS, column: 'contract_terms' };
+}
+function ctSetMode(m){
+  if (m === ctMode) return;
+  if (ctDirty && !confirm('Discard unsaved changes to the ' + ctMode + ' contract terms?')) return;
+  ctMode = m;
+  initContractTermsEditor();
+}
+function ctPaintModeButtons(){
+  const b = document.getElementById('ct-mode-build'), d = document.getElementById('ct-mode-design');
+  if (!b || !d) return;
+  b.className = 'btn btn-sm ' + (ctMode === 'build' ? 'btn-primary' : 'btn-outline');
+  d.className = 'btn btn-sm ' + (ctMode === 'design' ? 'btn-primary' : 'btn-outline');
+  const intro = document.getElementById('ct-mode-intro');
+  if (intro) intro.innerHTML = ctMode === 'design'
+    ? 'The standard terms printed on every <strong>design contract</strong> (sections numbered 1, 2, 3… with clauses i, ii, iii). Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with.'
+    : 'The standard terms printed on every <strong>Contract of Works</strong>. Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with. Select text and use <b>B</b> / <i>I</i> / <u>U</u> / • on a clause for formatting.';
+}
 
 function initContractTermsEditor(){
-  ctWorking = JSON.parse(JSON.stringify((contractTerms && contractTerms.sections) || CONTRACT_TERMS));
+  const cfg = ctModeCfg();
+  ctWorking = JSON.parse(JSON.stringify((cfg.terms && cfg.terms.sections) || cfg.seed));
   ctClearDirty();
-  ctStatus((contractTerms && contractTerms.version) ? ('v'+contractTerms.version) : '');
+  ctStatus((cfg.terms && cfg.terms.version) ? ('v'+cfg.terms.version) : '');
+  ctPaintModeButtons();
   paintContractTerms();
 }
 function resetContractTermsEditor(){
@@ -6998,26 +7103,31 @@ function ctDeleteSection(si){ ctSyncFromDom(); if(!confirm('Delete the whole "'+
 function ctAddSection(){ ctSyncFromDom(); ctWorking.push({ title:'NEW SECTION', items:[''] }); ctMarkDirty(); paintContractTerms(); }
 async function saveContractTerms(){
   ctSyncFromDom();
+  const cfg = ctModeCfg();
   const sections = (ctWorking||[])
     .map(s => ({ title:(s.title||'').trim(), items:(s.items||[]).map(cwSanitizeHtml).filter(it => cwStripText(it) !== '') }))
     .filter(s => s.title || s.items.length);
   if (!sections.length) { toast('Add at least one section with a clause'); return; }
-  const obj = { version: (((contractTerms && contractTerms.version) || 1) + 1), updatedAt: new Date().toISOString(), updatedBy: ctSessionEmail(), sections };
+  const obj = { version: (((cfg.terms && cfg.terms.version) || 1) + 1), updatedAt: new Date().toISOString(), updatedBy: ctSessionEmail(), sections };
+  if (ctMode === 'design') obj.numbering = 'sections';   // design always renders two-level
   const btn = document.getElementById('ct-save-btn'); if (btn) btn.disabled = true;
   ctStatus('Saving…');
   try {
     if (USE_SUPABASE) {
+      const patch = { updated_at: new Date().toISOString() };
+      patch[cfg.column] = obj;
       if (companySettings && companySettings.id != null) {
-        await sb('PATCH', 'company_settings', { contract_terms: obj, updated_at: new Date().toISOString() }, '?id=eq.' + encodeURIComponent(companySettings.id));
+        await sb('PATCH', 'company_settings', patch, '?id=eq.' + encodeURIComponent(companySettings.id));
       } else {
-        const ins = await sb('POST', 'company_settings', [{ contract_terms: obj }], '', true);
+        const ins = await sb('POST', 'company_settings', [patch], '', true);
         if (Array.isArray(ins) && ins[0]) companySettings = ins[0];
       }
     }
-    contractTerms = { version: obj.version, updatedAt: obj.updatedAt, updatedBy: obj.updatedBy, sections: obj.sections };
-    if (companySettings) companySettings.contract_terms = obj;
+    const fresh = { version: obj.version, updatedAt: obj.updatedAt, updatedBy: obj.updatedBy, numbering: obj.numbering, sections: obj.sections };
+    if (ctMode === 'design') designTerms = fresh; else contractTerms = fresh;
+    if (companySettings) companySettings[cfg.column] = obj;
     initContractTermsEditor();
-    toast('Contract terms saved (v' + obj.version + ')');
+    toast((ctMode === 'design' ? 'Design' : 'Contract') + ' terms saved (v' + obj.version + ')');
   } catch(e) {
     ctStatus('Save failed'); toast('Save failed: ' + e.message);
   } finally {
