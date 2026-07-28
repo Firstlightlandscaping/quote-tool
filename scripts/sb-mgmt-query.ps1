@@ -39,7 +39,7 @@ public class CredMan {
 $tok = [System.Text.Encoding]::UTF8.GetString([CredMan]::GetBlob("Supabase CLI:supabase")).Trim()
 if (-not $tok) { throw "Empty token from Credential Manager" }
 
-if ($QueryFile) { $Query = Get-Content -Raw $QueryFile }
+if ($QueryFile) { $Query = Get-Content -Raw -Encoding UTF8 $QueryFile }   # repo files are UTF-8; PS5.1 default is ANSI
 if (-not $Query) { throw "No query given" }
 
 $body = @{ query = $Query } | ConvertTo-Json -Depth 4

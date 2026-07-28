@@ -1224,11 +1224,11 @@ function updateAuthStatus() {
 }
 
 // ── DATA BACKUP (read-only export of all tables) ──────────────────────────────
-const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings','qt_counter','contract_signing'];
+const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings','qt_counter','contract_signing','design_packages','design_contracts','dc_counter'];
 // Tables that may legitimately not exist yet on the connected DB (schema rolls out
 // sandbox-first): skipped with a note instead of failing the whole backup.
 // Core tables above are NOT in this set — their failure must still abort the backup.
-const BACKUP_OPTIONAL = new Set(['contract_signing']);
+const BACKUP_OPTIONAL = new Set(['contract_signing','design_packages','design_contracts','dc_counter']);
 
 // Fetch EVERY row of a table, paging in case it exceeds PostgREST's per-request cap (~1000).
 // Single-user app with no concurrent writes during a backup, so offset paging is reliable.
@@ -1293,8 +1293,8 @@ async function backupAllData() {
 
 // ── DATA RESTORE (import a backup file — write rows back per table) ────────────
 // Parents before children (matters only if FKs are ever added; harmless without).
-const RESTORE_ORDER = ['company_settings','qt_counter','deliverables','mpl','staff','group_templates','quotes','materials','quote_lines','contract_signing'];
-const RESTORE_CONFLICT = { company_settings:'id', qt_counter:'id', quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id', contract_signing:'id' };
+const RESTORE_ORDER = ['company_settings','qt_counter','dc_counter','deliverables','mpl','staff','group_templates','design_packages','quotes','materials','quote_lines','contract_signing','design_contracts'];
+const RESTORE_CONFLICT = { company_settings:'id', qt_counter:'id', dc_counter:'id', quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id', contract_signing:'id', design_packages:'id', design_contracts:'ref' };
 let _restoreBackup = null;
 
 // Show which DB we'd write to, and flag if it's the baked-in LIVE url
