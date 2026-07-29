@@ -215,7 +215,11 @@ function injectMobileStyles(iframe) {
     if (d.getElementById('fl-mobile')) return;
     var st = d.createElement('style');
     st.id = 'fl-mobile';
-    st.textContent = '@media (max-width:760px){' +
+    // Kill iOS Safari's font boosting: it selectively inflates long text blocks
+    // (terms rendered ~2x while table content stayed small — Neal's iPhone find,
+    // 2026-07-29). We set the mobile type scale deliberately below instead.
+    st.textContent = 'html,body{-webkit-text-size-adjust:100%;text-size-adjust:100%}' +
+      '@media (max-width:760px){' +
       'body.contract-mode #contract-view{padding:8px 0}' +
       // table-layout:fixed stops the wide lines table dictating the document width
       // (a scrollable block inside a table cell still bleeds its min-content into
@@ -234,10 +238,20 @@ function injectMobileStyles(iframe) {
       '.cw-sign-row{grid-template-columns:1fr;gap:10px}' +
       '.cw-sign-cell{width:100%}' +
       '#esign-audit{margin:20px 12px 10px!important;overflow-wrap:anywhere}' +
-      // print sizes read small on a phone — bump the main reading text
-      '.cw-letter{font-size:13.5px;line-height:1.55}' +
-      '.cw-terms li{font-size:13px;line-height:1.5}' +
-      '.cw-section-h{font-size:14px}' +
+      // One deliberate mobile type scale (Neal picked 14px, 2026-07-29): all prose
+      // at 14, section headings 15, numeric table cells 13. Consistent by design —
+      // with font boosting off, these are the sizes that actually render.
+      '.cw-letter{font-size:14px;line-height:1.55}' +
+      '.cw-terms li{font-size:14px;line-height:1.5}' +
+      '.cw-section-h{font-size:15px}' +
+      '.l-name{font-size:14px}' +
+      '.l-xdesc{font-size:14px}' +
+      '.lt td{font-size:13px}' +
+      '.tot-row,.tot-val{font-size:14px}' +
+      '.cw-sum-t,.cw-sum-b{font-size:14px}' +
+      '.cw-meta,.cw-meta .blk{font-size:14px}' +
+      '.cw-bank{font-size:14px}' +
+      '.cw-pay{font-size:14px}' +
     '}';
     d.head.appendChild(st);
   } catch (e) {}
