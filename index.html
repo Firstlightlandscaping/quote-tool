@@ -364,6 +364,18 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 .sp-drop-hover{border-color:#16A34A!important;background:#F0FDF4!important;box-shadow:0 0 0 3px rgba(22,163,74,.12)}
 @keyframes sp-pulse{0%,100%{background:transparent}50%{background:#F0FDF4}}
 .sp-drag-ghost{position:fixed;top:-200px;left:-200px;background:white;border:1px solid var(--bd);border-radius:16px;padding:6px 14px;font-size:13px;font-weight:600;color:var(--i1);box-shadow:0 6px 18px rgba(0,0,0,.18);white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;z-index:99999}
+/* Group containment in the "On the quote" list: the rail runs down the members and
+   stops before the next standalone line, so the group's END is visible (indent alone
+   wasn't — wrapped lines broke the rhythm). */
+.sp-group-member{border-left:2px solid var(--i4);margin-left:5px;border-top-left-radius:0;border-bottom-left-radius:0}
+/* Insertion points between task cards: invisible strip that reveals a pill on hover
+   (and while a drag is live) — click inserts a blank task there, drop creates one
+   from the dragged deliverable at that position. */
+.sp-insert{position:relative;height:12px;margin:-3px 0;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .15s ease;border-radius:5px}
+.sp-insert::before{content:'';position:absolute;left:0;right:0;top:50%;border-top:1px dashed var(--i4)}
+.sp-insert:hover,body.sp-dragging .sp-insert{opacity:1}
+.sp-insert-pill{position:relative;background:white;border:1px solid var(--bd);border-radius:10px;font-size:10px;padding:0 9px;color:var(--i2);cursor:pointer;line-height:17px;font-weight:600}
+.sp-insert-pill:hover{border-color:#16A34A;color:#15803D}
 </style>
 </head>
 <body>
@@ -5046,8 +5058,10 @@ function spManDaysOf(l) { return (l && l.labTotal ? l.labTotal : 0) / spRate(); 
 function spLabDaysFor(ids) { return (ids||[]).reduce((s,id) => s + spManDaysOf(lines.find(x => x.id === id)), 0); }
 // Tasks LINK to the quote lines they cover (task.srcLineIds). Grey-out in the quote
 // column is DERIVED from those links, so deleting a task un-greys its lines.
-function spNewTask(name, days, srcLineIds) {
-  spEnsurePlan().tasks.push({ id: Date.now() + Math.floor(Math.random()*1000), name: name || '', days: Math.max(0.5, Math.round((days||1)*2)/2), srcLineIds: srcLineIds || [] });
+function spNewTask(name, days, srcLineIds, at) {
+  const ts = spEnsurePlan().tasks;
+  const t = { id: Date.now() + Math.floor(Math.random()*1000), name: name || '', days: Math.max(0.5, Math.round((days||1)*2)/2), srcLineIds: srcLineIds || [] };
+  if (at == null || at < 0 || at >= ts.length) ts.push(t); else ts.splice(at, 0, t);
 }
 // + on one line: task named from it, days from its labour ÷ crew, linked (moves it
 // out of any other task — one task per deliverable).
@@ -5138,6 +5152,25 @@ function spDropNewTask(ev, el) {
   spNewTask(first ? first.name : 'New task', Math.max(0.5, Math.round(spLabDaysFor(ids) / crew * 2) / 2), []);
   spAssignToTask(spEnsurePlan().tasks.length - 1, ids);
 }
+// Insertion points between cards: every create path used to APPEND, so a task needed
+// mid-plan meant add-at-bottom + ▲▲▲. The hover pill inserts a blank task in place
+// (focus lands on its name); the same strip is a drop target — dropping a deliverable
+// creates the task at that position. Cascade recomputes, so mid-list insertion is safe.
+function spInsertTaskAt(idx) {
+  spNewTask('', 1, [], idx);
+  spMark(); renderSchedule();
+  const inp = document.getElementById('sp-task-name-' + idx);
+  if (inp) inp.focus();
+}
+function spDropInsertTask(ev, idx, el) {
+  ev.preventDefault(); spDragLeave(el); spDragEnd();
+  const ids = spDragIds(ev);
+  if (!ids.length) return;
+  const first = lines.find(l => l.id === ids[0]);
+  const crew = Math.max(1, spEnsurePlan().crewSize || 1);
+  spNewTask(first ? first.name : 'New task', Math.max(0.5, Math.round(spLabDaysFor(ids) / crew * 2) / 2), [], idx);
+  spAssignToTask(idx, ids);
+}
 function spMark() { spDirty = true; const el = document.getElementById('sp-status'); if (el) { el.textContent = '● unsaved changes'; el.style.color = '#B45309'; } }
 
 function renderSchedule() {
@@ -5177,7 +5210,7 @@ function renderSchedule() {
     const inTask = ti !== undefined;
     const taskTag = inTask ? `<span style="font-size:10px;color:var(--i3);white-space:nowrap;max-width:90px;overflow:hidden;text-overflow:ellipsis" title="In task ${ti+1}: ${cwEsc(p.tasks[ti].name||'')}">→ ${ti+1}. ${cwEsc((p.tasks[ti].name||'').slice(0,14))}</span>` : '';
     return `
-    <div class="sp-drag-row" draggable="true" ondragstart="spDragLine(event,[${l.id}])" ondragend="spDragEnd()" style="display:flex;align-items:center;gap:6px;padding:3px 2px;${indent?'padding-left:14px;':''}${inTask?'opacity:.5;':''}">
+    <div class="sp-drag-row${indent?' sp-group-member':''}" draggable="true" ondragstart="spDragLine(event,[${l.id}])" ondragend="spDragEnd()" style="display:flex;align-items:center;gap:6px;padding:3px 2px;${indent?'padding-left:12px;':''}${inTask?'opacity:.5;':''}">
       <span class="sp-grip">⋮⋮</span>
       <input type="checkbox" class="sp-seed-cb" value="${l.id}" ${spTicked.has(l.id)?'checked':''} onchange="spTick(this)" title="Tick to combine or attach with a task's ⇤" style="cursor:pointer;flex-shrink:0">
       <span style="flex:1;font-size:13px;color:var(--i1);min-width:0;line-height:1.25">${l.misc?'📦 ':''}${cwEsc(l.name||'')}</span>
@@ -5217,10 +5250,11 @@ function renderSchedule() {
         <button onclick="spUnassignLine(${i},${id})" title="Take out of this task" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:0 6px;color:#DC2626">×</button>
       </div>`;
     }).join('');
-    return `<div class="sp-task-card" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropOnTask(event,${i},this)" style="background:white;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-bottom:6px">
+    return `<div class="sp-insert" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropInsertTask(event,${i},this)"><span class="sp-insert-pill" onclick="spInsertTaskAt(${i})" title="Insert a new task here (or drop a deliverable on this line)">＋ add task here</span></div>
+    <div class="sp-task-card" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropOnTask(event,${i},this)" style="background:white;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
-        <input type="text" value="${cwEsc(t.name)}" onchange="spTaskName(${i},this.value)" size="${Math.max(15, (t.name||'').length)}" oninput="this.size=Math.max(15,this.value.length)" style="flex:1 1 auto;min-width:130px;max-width:100%;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
+        <input type="text" id="sp-task-name-${i}" value="${cwEsc(t.name)}" placeholder="Task name…" onchange="spTaskName(${i},this.value)" size="${Math.max(15, (t.name||'').length)}" oninput="this.size=Math.max(15,this.value.length)" style="flex:1 1 auto;min-width:130px;max-width:100%;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
         ${attach}${quoted}
         <input type="number" value="${Math.max(0.5, Math.round((t.days||1)*2)/2)}" min="0.5" step="0.5" onchange="spTaskDays(${i},this.value)" title="Working days (half days allowed)" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
         <span style="display:inline-flex;align-items:center;gap:2px;font-size:12px;color:var(--i2)" title="How many of YOUR team are on this task (default: team size). 0 = subcontractor day: stays on the schedule and in TeamGantt, but counts no team labour. Affects the quoted ≈ comparison and capacity only — never the dates.">👤<input type="number" value="${men}" min="0" step="1" onchange="spTaskMen(${i},this.value)" style="width:38px;padding:5px 2px;border:1px solid ${t.men != null ? 'var(--i3)' : 'var(--bd)'};border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)"></span>
