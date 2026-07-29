@@ -10,7 +10,7 @@
     {
       "name": "main-live",
       "runtimeExecutable": "npx",
-      "runtimeArgs": ["serve", "C:\\Projects\\firstlight-quote-tool-main", "-l", "5051"],
+      "runtimeArgs": ["serve", ".", "-l", "5051"],
       "port": 5051
     }
   ]
