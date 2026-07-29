@@ -4430,7 +4430,7 @@ function spItemCtlHtml(it) {
     ${it.ceilTo != null ? `<button data-key="${cwEsc(it.key)}" onclick="spRoundUpItem(this.dataset.key)" title="Round the order up to ${it.ceilTo} — becomes an ✎ edit (amber tag, planned spend updates, reversible)" style="background:#FFFBEB;border:1px solid #F59E0B;border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#92400E;font-weight:600">⏫ ${it.ceilTo}</button>` : ''}
     <button data-key="${cwEsc(it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the order quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
     ${it.extra
-      ? `<button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
+      ? `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — keep it on the plan but don't order it. Still counts as a cost, because using stock means replacing it" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
       : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it, but it still counts as a cost because it gets replaced (no change to profit)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Not needed — don't buy it at all; the saving becomes extra profit (quote unchanged)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑 remove</button>`}
   </span>`;
 }
@@ -4868,6 +4868,8 @@ function spDelExtra(key) {
   p.extraItems = (p.extraItems||[]).filter(e => 'extra:' + e.id !== key);
   if (p.matEdits) delete p.matEdits[key];
   if (p.supplierOverrides) delete p.supplierOverrides[key];
+  if (p.stockKeys) delete p.stockKeys[key];   // extras can be stocked (2026-07-30) — don't leave a dangling flag
+  if (p.removedKeys) delete p.removedKeys[key];
   (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
   // Drop rows this delete left EMPTY (no allocations, nothing in the rollup bucket, no
   // date set) — a row created just for an extra shouldn't linger as a shell after the
