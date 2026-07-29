@@ -4441,6 +4441,24 @@ function spEditedTagHtml(it) {
   if (it.overridePriced) h += ` <span title="Priced from the material cost you typed on the quote line (less the 10% markup), not the price list — so the profit figure follows what you actually charged" style="font-size:10px;color:#6D28D9;border:1px solid #DDD6FE;border-radius:8px;padding:0 5px;cursor:help">quote-priced</span>`;
   return h;
 }
+// Grey "from <deliverable>" sub-line for an item row, built from the row's allocs —
+// shared by the ☰ items dialog and the Unassigned inline list so they can't drift.
+// Extras have no quote source (the "added" tag says what they are), so no line.
+function spProvHtml(row, it) {
+  if (it.extra) return '';
+  const srcs = ((row && row.alloc) || []).filter(a => a.key === it.key && a.qty > 0);
+  if (!srcs.length) return '';
+  const lineName = id => { if (id === -1) return 'added'; const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
+  const prov = srcs.length > 1
+    ? 'from ' + srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + spQtyDisp(a.qty) + ')').join(' · ')
+    : 'from ' + cwEsc(lineName(srcs[0].lineId));
+  return `<div style="font-size:12px;color:var(--i3);margin-top:2px;padding-left:2px">${prov}</div>`;
+}
+// Right-aligned per-item cost — same rounded-pounds format as the row totals, so the
+// costs read as a column. £0 shown honestly (a hand-added item with no price counts £0).
+function spItemCostHtml(it) {
+  return `<span style="font-size:12px;color:var(--i2);font-weight:600;white-space:nowrap;font-family:'DM Mono',monospace">£${Math.round(it.cost || 0).toLocaleString('en-GB')}</span>`;
+}
 // ☰ items — a proper read-out of one delivery (split-dialog sized, no split controls):
 // combined order lines with provenance on their own sub-line, per-item ✎/📦 controls,
 // the supplier's stock list, and + add item. Auto-refreshes after any item action.
@@ -4453,25 +4471,17 @@ function spItemsDialog(rowIdx) {
   const meta = spItemMeta();
   const items = spRowItems(row, meta);
   const tot = items.reduce((s,it) => s + it.cost, 0);
-  const srcByKey = {};
-  (row.alloc||[]).forEach(a => { if (a.qty > 0) (srcByKey[a.key] = srcByKey[a.key] || []).push(a); });
-  const lineName = id => { if (id === -1) return 'added'; const l = lines.find(x => x.id === id); return l ? (l.misc ? '📦 ' : '') + (l.name || '') : '(removed line)'; };
   const supItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items;
   const stockItems = supItems.filter(x => x.stock && !x.removed);
   const removedItems = supItems.filter(x => x.removed);
-  const itemHtml = items.map(it => {
-    const srcs = srcByKey[it.key] || [];
-    const prov = it.extra ? '' : (srcs.length > 1
-      ? 'from ' + srcs.map(a => cwEsc(lineName(a.lineId)) + ' (' + spQtyDisp(a.qty) + ')').join(' · ')
-      : (srcs.length === 1 ? 'from ' + cwEsc(lineName(srcs[0].lineId)) : ''));
-    return `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
+  const itemHtml = items.map(it => `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
+        ${spItemCostHtml(it)}
         ${spItemCtlHtml(it)}
       </div>
-      ${prov ? `<div style="font-size:12px;color:var(--i3);margin-top:2px;padding-left:2px">${prov}</div>` : ''}
-    </div>`;
-  }).join('');
+      ${spProvHtml(row, it)}
+    </div>`).join('');
   const stockHtml = stockItems.length ? `
     <div style="margin-top:10px">
       <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not ordered</div>
@@ -5283,14 +5293,18 @@ function renderSchedule() {
     let itemsHtml = '';
     if (isUn) {
       itemsHtml = items.map(it => `
-        <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--i1);padding:3px 0;flex-wrap:wrap">
-          <span style="flex:1;min-width:160px"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
-          <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:170px;font-weight:600">
-            <option value="">assign supplier…</option>
-            ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
-            <option value="__new__">+ new supplier…</option>
-          </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}
-          ${spItemCtlHtml(it)}
+        <div style="padding:3px 0">
+          <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--i1);flex-wrap:wrap">
+            <span style="flex:1;min-width:160px"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
+            ${spItemCostHtml(it)}
+            <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:170px;font-weight:600">
+              <option value="">assign supplier…</option>
+              ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
+              <option value="__new__">+ new supplier…</option>
+            </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}
+            ${spItemCtlHtml(it)}
+          </div>
+          ${spProvHtml(row, it)}
         </div>`).join('');
       if (!items.length) itemsHtml = '<div style="font-size:12px;color:#B45309">Nothing left to assign.</div>';
       if (stockItems.length) itemsHtml += `
