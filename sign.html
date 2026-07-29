@@ -29,7 +29,10 @@
   .amber-banner { border-color: #FDE68A; background: #FFFBEB; color: #92400E; font-size: 13px; }
   #doc-wrap { display: none; background: #fff; border: 1px solid var(--bd); border-radius: 12px; overflow: hidden; margin-bottom: 14px; }
   #doc-scroll { overflow-x: auto; }
-  #doc { width: 100%; min-width: 640px; border: 0; display: block; }
+  /* Full-width frame: on phones the injected mobile styles (injectMobileStyles) reflow
+     the document to fit, so the old min-width/pan behaviour is gone. #doc-scroll stays
+     as a harmless fallback for anything that still overflows. */
+  #doc { width: 100%; border: 0; display: block; }
   label { font-size: 12px; font-weight: 600; color: var(--i2); display: block; margin-bottom: 4px; }
   input[type=text] { width: 100%; padding: 10px; border: 1px solid var(--bd); border-radius: 8px; font-size: 15px; }
   .agree { display: flex; gap: 9px; align-items: flex-start; font-size: 13px; margin: 12px 0; cursor: pointer; }
@@ -189,12 +192,55 @@ function goToSign() {
 function renderDoc(body) {
   var iframe = document.getElementById('doc');
   iframe.onload = function () {
+    injectMobileStyles(iframe);
     injectSignatures(iframe, body);
     sizeIframe(iframe);
     setTimeout(function () { sizeIframe(iframe); }, 400);   // images settle
   };
   iframe.srcdoc = body.contractHtml;
   document.getElementById('doc-wrap').style.display = 'block';
+}
+
+// Phone-width reflow, applied at DISPLAY time only — the stored document (and its
+// SHA-256 fingerprint, computed from the raw contractHtml string) is never touched,
+// so already-sent contracts get this automatically. The document is print-shaped
+// (fixed-grid meta block, 170px signature cells, a wide lines table inside an outer
+// layout <table>); on a phone that forced sideways panning to read every line. These
+// rules reflow the prose to full width at reading size, stack the fixed grids, and
+// let the lines table scroll sideways on its own. Print is untouched (paper width
+// never matches the media query).
+function injectMobileStyles(iframe) {
+  try {
+    var d = iframe.contentDocument;
+    if (d.getElementById('fl-mobile')) return;
+    var st = d.createElement('style');
+    st.id = 'fl-mobile';
+    st.textContent = '@media (max-width:760px){' +
+      'body.contract-mode #contract-view{padding:8px 0}' +
+      // table-layout:fixed stops the wide lines table dictating the document width
+      // (a scrollable block inside a table cell still bleeds its min-content into
+      // the cell otherwise); the outer table is single-column so fixed is safe.
+      '.cw-doc{max-width:100%;width:100%;table-layout:fixed;box-shadow:none}' +
+      'body.contract-mode .q-brand-header{grid-template-columns:132px 1fr}' +
+      'body.contract-mode .q-brand-left{padding:8px}' +
+      'body.contract-mode .q-brand-logo{width:36px;height:42px}' +
+      'body.contract-mode .q-brand-name{font-size:12px;letter-spacing:.5px}' +
+      'body.contract-mode .q-brand-sub{font-size:7px;letter-spacing:1px}' +
+      'body.contract-mode .q-brand-right{gap:4px;padding:4px 6px;flex-wrap:wrap;justify-content:center}' +
+      'body.contract-mode .q-brand-badge{height:38px;max-width:42px}' +
+      'body.contract-mode .q-brand-badge-tall{height:46px;max-width:26px}' +
+      '.cw-meta{grid-template-columns:1fr;gap:12px}' +
+      '.lt{display:block;overflow-x:auto;-webkit-overflow-scrolling:touch}' +
+      '.cw-sign-row{grid-template-columns:1fr;gap:10px}' +
+      '.cw-sign-cell{width:100%}' +
+      '#esign-audit{margin:20px 12px 10px!important;overflow-wrap:anywhere}' +
+      // print sizes read small on a phone — bump the main reading text
+      '.cw-letter{font-size:13.5px;line-height:1.55}' +
+      '.cw-terms li{font-size:13px;line-height:1.5}' +
+      '.cw-section-h{font-size:14px}' +
+    '}';
+    d.head.appendChild(st);
+  } catch (e) {}
 }
 
 function sizeIframe(iframe) {
