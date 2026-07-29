@@ -6473,6 +6473,53 @@ function sigSignedRegenDialog(ref) {
     document.getElementById('sig-regen-cancel').onclick = () => done(false);
   });
 }
+// Delete guard for quotes/design contracts with signing history (Neal, 2026-07-29,
+// after deleting a signed test quote past the generic confirm): a SIGNED contract is
+// kept forever as a legal record (no FK by design) and shows in the Contracts panel
+// marked deleted — the modal says so explicitly; a LIVE link must be revoked as part
+// of the delete or the client could sign a deal that no longer exists. Handles ALL
+// confirmation for the delete flow; falls back to the plain confirm when there is no
+// signing history (or the table is unreachable). Returns true = go ahead and delete.
+async function sigDeleteGuard(ref, isDesign, label) {
+  const noun = isDesign ? 'design contract' : 'quote';
+  let rows = [];
+  if (USE_SUPABASE) { try { rows = await sigFetchRows(ref); } catch (e) {} }
+  const signed = rows.find(r => r.status === 'signed');
+  const active = rows.find(sigIsActive);
+  if (signed) {
+    const names = (signed.signers || []).filter(s => s.signed_at).map(s => s.typed_name || s.name).join(' and ');
+    const ok = await new Promise(resolve => {
+      const old = document.getElementById('sig-del-dialog'); if (old) old.remove();
+      const wrap = document.createElement('div');
+      wrap.id = 'sig-del-dialog';
+      wrap.innerHTML =
+        '<div class="cw-modal-back"><div class="cw-modal" style="width:480px;max-width:95vw">' +
+          '<h3>' + cwEsc(ref) + ' has a SIGNED contract</h3>' +
+          '<div style="font-size:13px;color:var(--i2);margin-bottom:10px">Signed' + (signed.signed_at ? ' ' + cwEsc(sigDateOnly(signed.signed_at)) : '') + (names ? ' by <strong>' + cwEsc(names) + '</strong>' : '') + '. Deleting removes the ' + noun + ' from the app.</div>' +
+          '<div style="font-size:13px;color:var(--i2);margin-bottom:16px">The signed contract itself is <strong>kept permanently as a legal record</strong> — it stays in the Contracts panel, marked as deleted.</div>' +
+          '<div class="cw-modal-btns">' +
+            '<button class="btn btn-red" id="sig-del-go">Delete ' + noun + ' anyway</button>' +
+            '<button class="btn btn-outline" id="sig-del-cancel">Cancel</button>' +
+          '</div>' +
+        '</div></div>';
+      document.body.appendChild(wrap);
+      const done = v => { wrap.remove(); resolve(v); };
+      document.getElementById('sig-del-go').onclick = () => done(true);
+      document.getElementById('sig-del-cancel').onclick = () => done(false);
+    });
+    if (!ok) return false;
+    // rare: signed older version + a NEWER live link out — that link dies with the record too
+    if (active) { try { await sigRevokeRow(active.id); toast('Outstanding signing link revoked'); } catch (e) {} }
+    return true;
+  }
+  if (active) {
+    if (!confirm(ref + ' has a signing link out with the client (sent ' + sigDateOnly(active.sent_at) + ').\n\nDeleting this ' + noun + ' REVOKES the link — the client will no longer be able to sign. Continue?')) return false;
+    try { await sigRevokeRow(active.id); toast('Signing link revoked'); }
+    catch (e) { toast('Could not revoke the signing link: ' + e.message); return false; }
+    return true;
+  }
+  return confirm('Delete ' + noun + ' ' + ref + (label ? ' (' + label + ')' : '') + '? This cannot be undone.');
+}
 async function doGenerateContract(){
   const dref = cwDialogRef || g('in-ref');
   // Never-mutate rule (e-signing): a regenerated contract is a DIFFERENT document, so any
@@ -6982,6 +7029,14 @@ function removeContractsPanel() { const m = document.getElementById('sigp-dialog
 // designMode: the SAME panel filtered to the design arm (DC- refs), opened from the
 // Design tab — the two arms never mix (Neal's ruling), so the Saved Quotes panel
 // shows only QT- refs and this one only DC-.
+// Revoke a live link whose quote/design contract was deleted (panel urgent entry) —
+// there's no record to open a dialog for, so this is the direct action.
+async function sigOrphanRevoke(id, designMode) {
+  if (!confirm('Revoke this signing link? The deal was deleted — revoking stops the client signing it.')) return;
+  try { await sigRevokeRow(id); } catch (e) { toast('Revoke failed: ' + e.message); return; }
+  toast('Link revoked');
+  openContractsPanel(designMode);
+}
 async function openContractsPanel(designMode) {
   if (!USE_SUPABASE) { toast('Not connected to Supabase'); return; }
   const wantDesign = !!designMode;
@@ -7011,14 +7066,25 @@ async function openContractsPanel(designMode) {
   }
   Object.values(latest).forEach(r => {
     const sq = savedQuotes.find(q => q.ref === r.quote_ref);
+    // The record this row belongs to may have been DELETED — the signing row survives
+    // by design (legal record, no FK). Orphans render specially below.
+    const rec = wantDesign ? designContracts.find(d => d.ref === r.quote_ref) : sq;
+    const orphan = !rec;
     const dead = isDead(sq);
     const base = { ref: r.quote_ref, customer: r.customer || (sq && sq.customer) || '', r };
     if (r.status === 'signed') {
       // signed is a legal fact — always shown, quietly annotated if the deal died later
-      signedList.push({ ...base, when: r.signed_at, deadNote: dead ? ' (quote since ' + sq.status + ')' : '' });
+      signedList.push({ ...base, orphan, when: r.signed_at, deadNote: orphan ? ' — ' + (wantDesign ? 'design contract' : 'quote') + ' deleted, signed record kept' : (dead ? ' (quote since ' + sq.status + ')' : '') });
       return;
     }
     const active = sigIsActive(r);
+    if (orphan) {
+      // A deleted deal generates no to-dos — except the one hazard: a link the client
+      // could still sign. (sigDeleteGuard now revokes at delete time; this catches rows
+      // orphaned before the guard existed.)
+      if (active) attention.push({ ...base, urgent: true, orphanRevoke: true, when: r.sent_at, kind: (wantDesign ? 'Design contract' : 'Quote') + ' deleted — signing link still LIVE. Revoke it.' });
+      return;
+    }
     if (dead) {
       // The ONE dead-deal case that shouts: a live link the client could still sign.
       if (active) attention.push({ ...base, urgent: true, when: r.sent_at, kind: 'Quote ' + sq.status + ' — signing link still LIVE. Revoke it.' });
@@ -7071,7 +7137,12 @@ async function openContractsPanel(designMode) {
   const signedRow = e => {
     const sq = savedQuotes.find(q => q.ref === e.ref);
     const start = sq && sq.schedulePlan && sq.schedulePlan.startDate;
-    return rowHtml({ ...e, note: 'signed ' + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') + (e.deadNote || '') }, manageBtn(e.ref));
+    // Orphans can't open the send dialog (no record behind it) — but the signed
+    // document lives in the signing row itself, so View signed always works.
+    const actions = e.orphan
+      ? '<button class="btn btn-outline btn-sm" onclick="removeContractsPanel();sigViewSigned(' + e.r.id + ')">View signed</button>'
+      : manageBtn(e.ref);
+    return rowHtml({ ...e, note: 'signed ' + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') + (e.deadNote || '') }, actions);
   };
   const section = (title, colour, inner) =>
     '<div style="margin-bottom:14px"><div style="font-weight:700;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:' + colour + ';margin-bottom:4px">' + title + '</div>' +
@@ -7088,7 +7159,7 @@ async function openContractsPanel(designMode) {
       '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
         '<h3>✍ ' + (wantDesign ? 'Design contracts' : 'Contracts') + ' — e-signature overview</h3>' +
         '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No ' + (wantDesign ? 'design ' : '') + 'contracts sent for signature yet') + '</div>' +
-        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.live ? copyBtns(e.r) : '') + manageBtn(e.ref))).join('') : '') +
+        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.live ? copyBtns(e.r) : '') + (e.orphanRevoke ? '<button class="btn btn-red btn-sm" onclick="sigOrphanRevoke(' + e.r.id + ',' + wantDesign + ')">Revoke</button>' : manageBtn(e.ref)))).join('') : '') +
         section('✍ Out for signature', '#2563EB', out.length ? out.map(e => rowHtml(e, copyBtns(e.r) + manageBtn(e.ref))).join('') : '') +
         section('✓ Signed', '#15803D', (gWeek.length + gMonth.length + gOlder.length)
           ? fold('This week', gWeek, true) + fold('Earlier this month', gMonth, false) + fold('Earlier', gOlder, false) : '') +
@@ -7431,7 +7502,8 @@ function viewDesignContract(ref) {
 }
 async function dcDelete(ref) {
   const dc = designContracts.find(d => d.ref === ref);
-  if (!dc || !confirm('Delete design contract ' + ref + ' (' + (dc.customer || '') + ')? This cannot be undone.')) return;
+  if (!dc) return;
+  if (!(await sigDeleteGuard(ref, true, dc.customer || ''))) return;
   try { await sb('DELETE', 'design_contracts', null, '?ref=eq.' + encodeURIComponent(ref)); }
   catch (e) { toast('Delete failed: ' + e.message); return; }
   designContracts = designContracts.filter(d => d.ref !== ref);
@@ -7965,7 +8037,8 @@ function loadQuote(ref) {
   toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
 }
 async function deleteQuote(ref) {
-  if(!confirm('Delete quote '+ref+'?'))return;
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (!(await sigDeleteGuard(ref, false, sq && sq.customer))) return;
   savedQuotes=savedQuotes.filter(q=>q.ref!==ref);
   if (USE_SUPABASE) {
     try {
