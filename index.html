@@ -561,7 +561,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
     <div class="ch"><span class="ct">Quote Details</span></div>
     <div class="cb">
       <div class="g3">
-        <div class="fg"><label>Customer Name</label><input type="text" id="in-cust" placeholder="Customer name" oninput="syncH()"></div>
+        <div class="fg"><label style="display:flex;align-items:center;gap:8px">Customer Name <button type="button" class="no-print" onclick="crmOpenPicker('quote')" title="Pick the client from the CRM — fills name/address and links this quote to their card" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:11px;padding:1px 8px;color:var(--i2)">📇 Pick from CRM</button><span id="crm-chip"></span></label><input type="text" id="in-cust" placeholder="Customer name" oninput="syncH()"></div>
         <div class="fg"><label>Quote Reference</label><input type="text" id="in-ref" placeholder="Auto-assigned on save" oninput="syncH()" readonly style="background:var(--bg2);color:var(--i3);cursor:default"></div>
         <div class="fg"><label>Quote Date</label><input type="date" id="in-date" oninput="syncH()"></div>
         <div class="fg"><label>Address Line 1</label><input type="text" id="in-a1" placeholder="Address line 1" oninput="syncH()"></div>
@@ -2028,6 +2028,7 @@ function syncH() {
   const estChk = document.getElementById('in-estimate');
   const estBadge = document.getElementById('est-badge');
   if (estBadge) estBadge.style.display = (estChk && estChk.checked) ? 'inline-block' : 'none';
+  crmPaintChip();   // CRM-link chip follows every header sync (new/load/duplicate all route here)
 }
 
 // ── PILLS ──────────────────────────────────────────────────────────────────────
@@ -7393,7 +7394,7 @@ function dcOpenEditor(ref) {
       '<div class="cw-modal" style="width:680px;max-width:95vw;max-height:92vh;overflow:auto">' +
         '<h3>' + (isEdit ? 'Design contract — ' + cwEsc(dc.ref) : 'New design contract') + '</h3>' +
         (isEdit ? '<div class="cw-modal-sub">Editing regenerates the contract; the number stays ' + cwEsc(dc.ref) + '</div>' : '') +
-        '<div class="cw-row2"><div class="cw-fg"><label>Customer name</label><input type="text" id="dc-cust" value="' + (dc ? cwEsc(dc.customer || '') : '') + '" placeholder="e.g. Mrs Beverley Gaunt"></div>' +
+        '<div class="cw-row2"><div class="cw-fg"><label style="display:flex;align-items:center;gap:8px">Customer name <button type="button" onclick="crmOpenPicker(\'dc\')" title="Pick the client from the CRM — fills name/address and links this contract to their card" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:11px;padding:1px 8px;color:var(--i2)">📇 Pick from CRM</button><span id="dc-crm-chip"></span></label><input type="text" id="dc-cust" value="' + (dc ? cwEsc(dc.customer || '') : '') + '" placeholder="e.g. Mrs Beverley Gaunt"></div>' +
         '<div class="cw-fg"><label>Contract date</label><input type="date" id="dc-date" value="' + (isEdit ? (dc.date || '') : new Date().toISOString().split('T')[0]) + '"></div></div>' +
         '<div class="cw-row2"><div class="cw-fg"><label>Address line 1</label><input type="text" id="dc-a1" value="' + (dc ? cwEsc(dc.addr1 || '') : '') + '"></div>' +
         '<div class="cw-fg"><label>Town / City</label><input type="text" id="dc-city" value="' + (dc ? cwEsc(dc.city || '') : '') + '"></div></div>' +
@@ -7412,6 +7413,7 @@ function dcOpenEditor(ref) {
   dcPaintLines();
   if (dc && dc.contract_meta && dc.contract_meta.freeText) document.getElementById('dc-schedule').value = dc.contract_meta.freeText;
   dcRefreshTotals();
+  crmPaintChip();
   document.getElementById('dc-cust').focus();
 }
 function dcPaintLines() {
@@ -7832,6 +7834,132 @@ async function saveContractTerms(){
 }
 
 // ── SAVE / LOAD QUOTES ─────────────────────────────────────────────────────────
+// ── AIRTABLE CRM PICKER ────────────────────────────────────────────────────────
+// "📇 Pick from CRM" on the quote form AND the design-contract dialog: reads the
+// Airtable "Quote tool picker" view via the airtable-picker edge function (read-only
+// token, JWT-gated, tokens server-side only), fills name/address, and stores the
+// card's record id + email (crmLink / dcCrmLink → the airtable_card_id/client_email
+// columns). The view's filter decides who is listed — maintained in Airtable.
+let crmCards = null;   // session cache — refreshed via the dialog's ↻
+async function crmFetchCards(force) {
+  if (crmCards && !force) return crmCards;
+  if (typeof ensureFreshToken === 'function') await ensureFreshToken();
+  const res = await fetch(SUPABASE_URL + '/functions/v1/airtable-picker', {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
+    body: '{}'
+  });
+  let data; try { data = await res.json(); } catch (e) { data = {}; }
+  if (!res.ok || data.error) throw new Error(data.error || (res.status === 401 ? 'Login expired — refresh and log in again' : 'HTTP ' + res.status));
+  crmCards = data.cards || [];
+  return crmCards;
+}
+// Best-effort split of the card's Address blob (REAL data is newline-separated, the
+// odd one comma-separated — handle both): full-postcode pattern → post, the segment
+// before it → city (only when 2+ segments remain), the rest → addr1. ~25% of cards
+// have no postcode at all, so partial prefill is the expected outcome, not a failure.
+// Postcode District is NEVER used for post — it's the outward code only (LS17, not
+// LS17 8JZ) and would print an incomplete postcode on a contract.
+function crmSplitAddress(blob) {
+  const segs = String(blob || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+  const pcRe = /\b([A-Z]{1,2}\d[A-Z\d]?)[ ]*(\d[A-Z]{2})\b/i;
+  let post = '';
+  for (let i = segs.length - 1; i >= 0; i--) {
+    const m = segs[i].match(pcRe);
+    if (!m) continue;
+    post = (m[1] + ' ' + m[2]).toUpperCase();
+    segs[i] = segs[i].replace(m[0], '').replace(/[\s,]+$/, '').trim();
+    if (!segs[i]) segs.splice(i, 1);
+    break;
+  }
+  let city = '', addr1 = '';
+  if (segs.length >= 2) { city = segs[segs.length - 1]; addr1 = segs.slice(0, -1).join(', '); }
+  else addr1 = segs.join(', ');
+  return { addr1, city, post };
+}
+function crmRemovePicker() { const m = document.getElementById('crm-pick-dialog'); if (m) m.remove(); }
+function crmOpenPicker(target) {
+  crmRemovePicker();
+  const wrap = document.createElement('div');
+  wrap.id = 'crm-pick-dialog';
+  wrap.dataset.target = target;
+  wrap.innerHTML =
+    '<div class="cw-modal-back"><div class="cw-modal" style="width:520px;max-width:95vw">' +
+      '<h3 style="margin:0 0 4px">Pick a client from the CRM</h3>' +
+      '<div style="font-size:12px;color:var(--i2);margin-bottom:8px">Fills the name and address (best-effort — check the fields) and links this ' + (target === 'dc' ? 'design contract' : 'quote') + ' to the client\'s card.</div>' +
+      '<div style="display:flex;gap:6px;margin-bottom:8px"><input type="text" id="crm-pick-search" placeholder="Search by name…" oninput="crmPaintList()" style="flex:1;padding:7px 9px;border:1px solid var(--bd);border-radius:5px;font-size:13px">' +
+      '<button class="btn btn-outline btn-sm" onclick="crmReload()" title="Reload the list from the CRM">↻</button></div>' +
+      '<div id="crm-pick-list" style="max-height:50vh;overflow-y:auto;font-size:13px;color:var(--i2)">⏳ Loading clients…</div>' +
+      '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="crmRemovePicker()">Cancel</button></div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+  crmFetchCards().then(crmPaintList).catch(e => {
+    const el = document.getElementById('crm-pick-list');
+    if (el) el.innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ Could not load the client list: ' + cwEsc(e.message) + '</div>';
+  });
+  const s = document.getElementById('crm-pick-search');
+  if (s) s.focus();
+}
+function crmReload() {
+  const el = document.getElementById('crm-pick-list');
+  if (el) el.innerHTML = '⏳ Loading clients…';
+  crmFetchCards(true).then(crmPaintList).catch(e => { if (el) el.innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ ' + cwEsc(e.message) + '</div>'; });
+}
+function crmPaintList() {
+  const el = document.getElementById('crm-pick-list');
+  if (!el || !crmCards) return;
+  const q = ((document.getElementById('crm-pick-search') || {}).value || '').trim().toLowerCase();
+  const list = crmCards.filter(c => !q || (c.name || '').toLowerCase().includes(q));
+  if (!list.length) { el.innerHTML = '<div style="padding:8px 0">No matching clients.</div>'; return; }
+  el.innerHTML = list.map(c => {
+    const i = crmCards.indexOf(c);
+    const addr = (c.address || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean).join(', ');
+    return '<div onclick="crmApplyPick(' + i + ')" style="padding:7px 6px;border-bottom:1px solid var(--bd);cursor:pointer;border-radius:4px" onmouseover="this.style.background=\'#FAFAF9\'" onmouseout="this.style.background=\'\'">' +
+      '<div style="font-weight:600;color:var(--i1)">' + cwEsc(c.name || '(no name)') + '</div>' +
+      (addr ? '<div style="font-size:12px;color:var(--i3)">' + cwEsc(addr) + '</div>' : '') +
+    '</div>';
+  }).join('');
+}
+function crmApplyPick(i) {
+  const dlg = document.getElementById('crm-pick-dialog');
+  const target = (dlg && dlg.dataset.target) || 'quote';
+  const c = crmCards && crmCards[i];
+  if (!c) return;
+  const a = crmSplitAddress(c.address);
+  if (target === 'dc') {
+    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
+    set('dc-cust', c.name || ''); set('dc-a1', a.addr1); set('dc-city', a.city); set('dc-post', a.post);
+    dcCrmLink = { cardId: c.id, email: c.email || '' };
+  } else {
+    document.getElementById('in-cust').value = c.name || '';
+    document.getElementById('in-a1').value = a.addr1;
+    document.getElementById('in-city').value = a.city;
+    document.getElementById('in-post').value = a.post;
+    crmLink.cardId = c.id; crmLink.email = c.email || '';
+    isDirty = true;
+    syncH();
+  }
+  crmPaintChip();
+  crmRemovePicker();
+  toast('Linked to ' + (c.name || 'card') + (a.post ? '' : ' — no postcode on the card, fill it in'));
+}
+// Chip beside the customer label: shows the link, × unlinks (clears card+email only —
+// a captured supersedes pointer is about the QUOTE chain, not the card link).
+function crmPaintChip() {
+  const chipHtml = (linked, unlinkFn) => linked
+    ? '<span class="no-print" style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 6px;white-space:nowrap">🔗 CRM linked <a href="#" onclick="' + unlinkFn + ';return false" title="Unlink from the CRM card" style="color:#DC2626;text-decoration:none;font-weight:700">×</a></span>'
+    : '';
+  const q = document.getElementById('crm-chip');
+  if (q) q.innerHTML = chipHtml(!!crmLink.cardId, 'crmUnlink(\'quote\')');
+  const d = document.getElementById('dc-crm-chip');
+  if (d) d.innerHTML = chipHtml(!!dcCrmLink.cardId, 'crmUnlink(\'dc\')');
+}
+function crmUnlink(target) {
+  if (target === 'dc') dcCrmLink = { cardId: '', email: '' };
+  else { crmLink.cardId = ''; crmLink.email = ''; isDirty = true; }
+  crmPaintChip();
+}
+
 async function saveQuoteAsCopy() {
   if (!lines.length) { toast('Add some items first'); return; }
   // Plain-copy path (deliberately never asks the supersede question) — so the copy must
