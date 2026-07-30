@@ -7554,6 +7554,15 @@ async function dcCreate(existingRef) {
       generatedAt: new Date().toISOString(),
       contractDate: date,
       freeText: freeText || null, freeTextFull: true,
+      // Airtable Phase 2: machine-readable schedule beside the printed one. ALL design
+      // lines default to manual (Neal's ruling 30/07/26): the build keyword mapping
+      // misfires here ("completion of the survey" would read as job-end, "on acceptance"
+      // points at a build-pipeline list designs never enter), and the CRM's existing
+      // "Design fee split" automation creates all design milestones as Manual anyway —
+      // so this exactly matches current behaviour. Specific design triggers can come
+      // later once the DESIGNS list mapping is settled.
+      scheduleStructured: String(freeText || '').split(/\n/).map(lineAmount).filter(Boolean)
+        .map(a => ({ label: a.label, amount: a.value, trigger: 'manual', triggerList: null, terms: 'Standard', week: null })),
       termsVersion: (designTerms && designTerms.version) || 1,
       termsSnapshot: JSON.parse(JSON.stringify({ version: designTerms.version, numbering: 'sections', sections: designTerms.sections })),
       total: t.inc,
