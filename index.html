@@ -6322,6 +6322,49 @@ function readScheduleOpts(){
     stagedCount: parseInt((document.getElementById('cw-weeks')||{}).value) || 0
   };
 }
+// ── STRUCTURED PAYMENT SCHEDULE (Airtable Phase 2) ─────────────────────────────
+// contract_meta.scheduleStructured = [{label, amount, trigger, triggerList, terms, week}]
+// — sits BESIDE the free text (which still prints verbatim); Phase 3 pushes it to the
+// CRM's Payments table. `week` is REQUIRED on weekly lines (1-based order among the
+// weeklies): the Airtable automation stamps Trigger Date as job start +7/14/21 and
+// array position isn't reliable enough to infer which weekly is which.
+// Trigger vocabulary is the app-side enum; the pusher translates to Airtable's options.
+const CRM_TRIGGER_DEFS = {
+  onAcceptance: { triggerList: 'QUOTE ACCEPTED',     terms: 'Standard',   short: 'On acceptance' },
+  onStart:      { triggerList: 'JOBS > In Progress', terms: 'Immediate',  short: 'Start of works' },
+  weekly:       { triggerList: null,                 terms: 'Standard',   short: 'Weekly' },
+  onCompletion: { triggerList: null,                 terms: 'Completion', short: 'On completion' },
+  manual:       { triggerList: null,                 terms: 'Standard',   short: 'Manual' },
+};
+// Keyword default, in the field map's table order. Unrecognised → manual, NEVER a
+// guess — a person then decides when to invoice.
+function crmScheduleTrigger(label) {
+  const l = String(label || '').toLowerCase();
+  if (/deposit|acceptance/.test(l)) return 'onAcceptance';
+  if (/start of works/.test(l)) return 'onStart';
+  if (/week/.test(l)) return 'weekly';
+  if (/completion|final/.test(l)) return 'onCompletion';
+  return 'manual';
+}
+// rows (Standard mode's [{label, amount}]) wins; else the custom free text is parsed
+// with the same lineAmount() the preview/print use (no-amount note lines carry no
+// payment, so they don't become milestones). ov = per-label trigger overrides from
+// the dialog's dropdowns (custom mode) / a previously saved scheduleStructured.
+function crmBuildScheduleStructured(rows, freeText, ov) {
+  ov = ov || {};
+  const entries = rows
+    ? rows.map(r => ({ label: r.label, amount: r.amount }))
+    : String(freeText || '').split(/\n/).map(lineAmount).filter(Boolean).map(a => ({ label: a.label, amount: a.value }));
+  let wk = 0;
+  return entries.map(e => {
+    const t = (ov[e.label] && CRM_TRIGGER_DEFS[ov[e.label]]) ? ov[e.label] : crmScheduleTrigger(e.label);
+    const isW = t === 'weekly';
+    if (isW) wk++;
+    return { label: e.label, amount: e.amount, trigger: t, triggerList: CRM_TRIGGER_DEFS[t].triggerList, terms: CRM_TRIGGER_DEFS[t].terms, week: isW ? wk : null };
+  });
+}
+let cwTriggerOv = {};   // per-label trigger picks in the OPEN contract dialog (custom mode)
+function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
 // The amount on a payment line = the LAST number on it (optionally £-prefixed), label is the text before.
 // A line with no trailing number has no amount (e.g. a note). Used for both display and the ✓/⚠ check.
 function lineAmount(line){
@@ -6372,24 +6415,33 @@ function cdRefresh(){
     // Custom = the free text IS the whole schedule (Total is auto). Preview the lines as they'll
     // print and soft-check that the amounts add up to the contract total.
     const txt = (document.getElementById('cw-freetext')||{}).value || '';
+    // Each payment line gets an invoice-trigger dropdown (CRM only, never printed):
+    // defaults from the keyword mapping, remembered per label in cwTriggerOv.
     const lineRows = txt.split(/\n/).map(line => {
       const t = line.trim();
       if (!t) return '';
       const a = lineAmount(line);
-      if (a) return '<tr><td>' + cwEsc(a.label || '—') + '</td><td class="r">' + money(a.value) + '</td></tr>';
-      return '<tr><td colspan="2">' + cwEsc(t) + '</td></tr>';   // note line, no amount
+      if (a) {
+        const key = a.label || '—';
+        const cur = (cwTriggerOv[key] && CRM_TRIGGER_DEFS[cwTriggerOv[key]]) ? cwTriggerOv[key] : crmScheduleTrigger(key);
+        const sel = '<select data-label="' + cwEsc(key) + '" onchange="cwSetTrigger(this)" title="When the CRM should raise this invoice — goes to Airtable with the contract, never printed on the contract itself" style="font-size:10px;padding:1px 3px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);max-width:112px;background:white">' +
+          Object.keys(CRM_TRIGGER_DEFS).map(k => '<option value="' + k + '"' + (k === cur ? ' selected' : '') + '>' + CRM_TRIGGER_DEFS[k].short + '</option>').join('') + '</select>';
+        return '<tr><td>' + cwEsc(key) + '</td><td class="r">' + money(a.value) + '</td><td style="text-align:right;padding-left:8px">' + sel + '</td></tr>';
+      }
+      return '<tr><td colspan="3">' + cwEsc(t) + '</td></tr>';   // note line, no amount
     }).join('');
     const sum = round2(parseAmounts(txt).reduce((s,a)=>s+a,0));
     const diff = round2(total - sum), ok = Math.abs(diff) < 0.01;
     body.innerHTML =
       '<table class="cw-preview-tbl">' +
-      '<tr><td>Total</td><td class="r">' + money(total) + '</td></tr>' +
+      '<tr><td>Total</td><td class="r">' + money(total) + '</td><td></td></tr>' +
       lineRows +
       '</table>' +
       '<div style="margin-top:5px;font-size:11px;color:' + (ok ? '#15803D' : '#dc2626') + '">' +
         (ok ? '✓ Adds up — your lines total ' + money(sum) + ', matching the contract total'
             : '⚠ Your lines total ' + money(sum) + ' but the contract total is ' + money(total) + ' — off by ' + money(Math.abs(diff))) +
-      '</div>';
+      '</div>' +
+      '<div style="margin-top:3px;font-size:10px;color:var(--i3)">Invoice trigger column → CRM only, never printed. Unrecognised lines default to Manual.</div>';
     return;
   }
   const o = readScheduleOpts();
@@ -6432,6 +6484,9 @@ function openContractDialog(refArg){
   const total = loadedHere ? contractGrandTotal() : (sq ? round2(sqTotals(sq).inc) : 0);
   cwDialogRef = ref; cwDialogTotal = total;   // cdRefresh/fullScheduleText/doGenerateContract read these
   const cm = sq && sq.contractMeta;   // previously generated contract for this quote, if any
+  // Seed the trigger picks from the last generated contract so re-opening remembers them.
+  cwTriggerOv = {};
+  if (cm && Array.isArray(cm.scheduleStructured)) cm.scheduleStructured.forEach(e => { if (e && e.label && CRM_TRIGGER_DEFS[e.trigger]) cwTriggerOv[e.label] = e.trigger; });
   // Drift warning: the quote total changed since a contract was last generated from it.
   if (cm && Math.abs((cm.total||0) - total) > 0.005) {
     toast('⚠ Quote total changed since the last contract (' + money(cm.total||0) + ' → ' + money(total) + ')');
@@ -6646,6 +6701,10 @@ async function saveContractSnapshot(opts){
     depositPct: opts.depositPct, completionPct: opts.completionPct, stagedCount: opts.stagedCount,
     schedule: rows, freeText: (opts.freeText||'').trim() || null,
     freeTextFull: !!(opts.freeTextFull && (opts.freeText||'').trim()),   // new custom format: free text = whole schedule (legacy metas lack this → middle-only rendering)
+    // Airtable Phase 2: machine-readable schedule BESIDE the printed one (never replaces
+    // it). Standard mode maps the generated labels; custom mode parses the free text with
+    // the dialog's per-line trigger picks. Phase 3 pushes this to the CRM's Payments table.
+    scheduleStructured: crmBuildScheduleStructured(rows, rows ? null : opts.freeText, cwTriggerOv),
     termsVersion: (contractTerms && contractTerms.version) || CONTRACT_TERMS_VERSION,
     termsSnapshot: contractTerms ? JSON.parse(JSON.stringify({ version: contractTerms.version, sections: contractTerms.sections })) : null,
     total,
