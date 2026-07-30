@@ -1088,6 +1088,12 @@ let dels = DELIVERABLES.map(d => ({...d}));
 let mpl  = MASTER_PRICE_LIST.map(m => ({...m}));
 let lines = [], selDel = null, activeCat = 'ALL', uid = 0, isDirty = false;
 let savedQuotes = [];
+// Airtable CRM link — builder state with the SAME lifecycle as in-cust: cleared by
+// newQuote, restored by loadQuote, carried by duplicateQuote/saveQuoteAsCopy, written
+// by saveQuote. `supersedes` = the ref this quote replaces, captured at duplicate time
+// (the app previously recorded only that a quote WAS superseded, never by which —
+// Airtable's revision chain needs the pointer). Phase 3 pushes read these columns.
+let crmLink = { cardId: '', email: '', supersedes: '' };
 let ndMats = [];
 let miscComponents = [];
 let groupTemplates = [];
@@ -1618,6 +1624,10 @@ async function loadFromSupabase() {
       city: q.city, post: q.post, sign: q.sign, vno: q.vno,
       sum: q.sum, summaryHtml: q.summary_html, saved: q.saved,
       status: q.status || 'Draft',
+      statusChangedAt: q.status_changed_at || null,
+      airtableCardId: q.airtable_card_id || '',
+      clientEmail: q.client_email || '',
+      supersedesRef: q.supersedes_ref || '',
       contractMeta: q.contract_meta || null,
       schedulePlan: q.schedule_plan || null,
       lines: lineMap[q.ref] || []
@@ -7317,6 +7327,10 @@ async function dpArchive(id, flag) {
 // snapshot re-render trick and (D6) the e-signature flow are reused unchanged.
 let designContracts = [];
 let dcLines = [];             // working lines in the open editor
+// Airtable CRM link for the OPEN design-contract editor (design contracts get the
+// picker too — that's why the columns exist on design_contracts). Set by dcOpenEditor
+// (existing row's values, or blank for new), written by dcCreate.
+let dcCrmLink = { cardId: '', email: '' };
 let dcSchedTouched = false;   // schedule textarea: auto-derives from totals until hand-edited
 
 function dcTotals(lines) {
@@ -7369,6 +7383,7 @@ function dcOpenEditor(ref) {
   const isEdit = !!dc;
   if (!designPackages.filter(p => !p.is_archived).length && !dc) { toast('Add a design package first (Contracts tab)'); return; }
   dcLines = dc ? JSON.parse(JSON.stringify(dc.lines || [])) : [{ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }];
+  dcCrmLink = { cardId: (dc && dc.airtable_card_id) || '', email: (dc && dc.client_email) || '' };
   dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
   removeDcDialog();
   const wrap = document.createElement('div');
@@ -7497,6 +7512,8 @@ async function dcCreate(existingRef) {
       ref, customer: cust,
       addr1: meta.snapshot.addr1, city: meta.snapshot.city, post: meta.snapshot.post, date,
       lines, contract_meta: meta,
+      airtable_card_id: dcCrmLink.cardId || null,
+      client_email: dcCrmLink.email || null,
       created_by: (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || ''
     };
     if (prev) {
@@ -7817,6 +7834,10 @@ async function saveContractTerms(){
 // ── SAVE / LOAD QUOTES ─────────────────────────────────────────────────────────
 async function saveQuoteAsCopy() {
   if (!lines.length) { toast('Add some items first'); return; }
+  // Plain-copy path (deliberately never asks the supersede question) — so the copy must
+  // NOT inherit a supersedes pointer from whatever quote was loaded. Card link stays:
+  // it's the same client either way.
+  crmLink.supersedes = '';
   // Get a fresh QT number — never overwrites the existing quote
   document.getElementById('save-status').textContent = 'Getting quote number...';
   const newRef = USE_SUPABASE ? await generateQTRefFromSupabase() : generateQTRef();
@@ -7939,11 +7960,18 @@ async function duplicateQuote(ref) {
   if (!confirm('Duplicate ' + ref + ' (' + (sq.customer||'') + ') as a new quote?\n\nIt will open in the Quote Builder ready to edit. Save when ready to assign a new quote number.')) return;
   // Revised-version flow: the copy replaces the original for sales data, the original
   // is kept in full but marked Superseded so it drops out of the totals.
+  // The copy carries the card link either way (same client); `supersedes` is captured
+  // ONLY on the confirmed-revision path — it's what lets Airtable build the revision
+  // chain (the copy has no ref until saved, so this pointer is the only record of
+  // which quote it replaces). Written to quotes.supersedes_ref by saveQuote.
+  let _supersedes = '';
   if ((sq.status||'Draft') !== 'Superseded' && (sq.status||'Draft') !== 'Estimate') {
     if (confirm('Is this copy a REVISED VERSION replacing ' + ref + '?\n\nOK  = mark ' + ref + ' as Superseded (kept, but excluded from sales totals)\nCancel = plain copy, ' + ref + ' unchanged')) {
       await updateQuoteStatus(ref, 'Superseded', { autoRevoke: true });   // its own confirm just ran — no second question
+      _supersedes = ref;
     }
   }
+  crmLink = { cardId: sq.airtableCardId || '', email: sq.clientEmail || '', supersedes: _supersedes };
   // Load the quote data into lines — leave ref blank, assigned at save time
   lines = sq.lines.map(l => ({...l, id: ++uid}));
   document.getElementById('in-cust').value = sq.customer||'';
@@ -7981,25 +8009,38 @@ async function saveQuote() {
   }
   const ref = currentRef;
   const existing=savedQuotes.findIndex(q=>q.ref===ref);
-  let existingStatus = existing >= 0 ? (savedQuotes[existing].status || 'Draft') : 'Draft';
+  const prevStoredStatus = existing >= 0 ? (savedQuotes[existing].status || 'Draft') : null;
+  let existingStatus = prevStoredStatus || 'Draft';
   // Estimate checkbox drives status: ticked → Estimate; unticked on an Estimate → back to Draft.
   // Other statuses (Sent/Accepted/…) are never touched by a re-save.
   const _estChk = document.getElementById('in-estimate');
   if (_estChk && _estChk.checked) existingStatus = 'Estimate';
   else if (existingStatus === 'Estimate') existingStatus = 'Draft';
-  const q={ref,customer:g('in-cust'),date:g('in-date'),addr1:g('in-a1'),city:g('in-city'),post:g('in-post'),sign:g('in-sign'),vno:g('in-vno'),sum:g('in-sum'),summaryHtml:document.getElementById('qh-summary').innerHTML,lines:JSON.parse(JSON.stringify(lines)),saved:new Date().toISOString(),status:existingStatus,contractMeta:(existing>=0?savedQuotes[existing].contractMeta:undefined)};
+  // status_changed_at: stamped ONLY on a genuine change (first save counts — the quote
+  // became Draft now; Estimate-checkbox flips count too). Every save writes the status
+  // column, so an unconditional stamp would reset the date on each re-save and destroy
+  // the field's meaning (Airtable "Date Sent" reads it). Omitted from the upsert when
+  // unchanged — merge-duplicates only touches supplied columns.
+  const statusChanged = prevStoredStatus === null || existingStatus !== prevStoredStatus;
+  const statusStamp = statusChanged ? new Date().toISOString() : (existing >= 0 ? savedQuotes[existing].statusChangedAt : null);
+  const q={ref,customer:g('in-cust'),date:g('in-date'),addr1:g('in-a1'),city:g('in-city'),post:g('in-post'),sign:g('in-sign'),vno:g('in-vno'),sum:g('in-sum'),summaryHtml:document.getElementById('qh-summary').innerHTML,lines:JSON.parse(JSON.stringify(lines)),saved:new Date().toISOString(),status:existingStatus,statusChangedAt:statusStamp,airtableCardId:crmLink.cardId||'',clientEmail:crmLink.email||'',supersedesRef:crmLink.supersedes||'',contractMeta:(existing>=0?savedQuotes[existing].contractMeta:undefined)};
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
     try {
       document.getElementById('save-status').textContent='Saving...';
       // Upsert quote
-      await sb('POST', 'quotes', [{
+      const qRow = {
         ref:q.ref, customer:q.customer||'', date:q.date||'',
         addr1:q.addr1||'', city:q.city||'', post:q.post||'',
         sign:q.sign||'', vno:q.vno||'', sum:q.sum||'',
         summary_html:q.summaryHtml||'', saved:q.saved,
-        status: q.status || 'Draft'
-      }], '?on_conflict=ref', true);
+        status: q.status || 'Draft',
+        airtable_card_id: q.airtableCardId || null,
+        client_email: q.clientEmail || null,
+        supersedes_ref: q.supersedesRef || null
+      };
+      if (statusChanged) qRow.status_changed_at = q.statusChangedAt;
+      await sb('POST', 'quotes', [qRow], '?on_conflict=ref', true);
       // Delete existing lines and reinsert
       await sb('DELETE', 'quote_lines', null, '?quote_ref=eq.' + encodeURIComponent(q.ref));
       if (q.lines.length > 0) {
@@ -8059,6 +8100,8 @@ function loadQuote(ref) {
   document.getElementById('in-date').value=q.date||'';
   document.getElementById('in-estimate').checked = (q.status === 'Estimate');
   document.getElementById('qh-summary').innerHTML=q.summaryHtml||'';
+  // Restore the CRM link so a re-save doesn't wipe the stored card/supersede pointers
+  crmLink = { cardId: q.airtableCardId || '', email: q.clientEmail || '', supersedes: q.supersedesRef || '' };
   lines=q.lines.map(l=>({...l}));
   uid=lines.reduce((m,l)=>Math.max(m,l.id),uid);
   // Reconcile misc unit prices BEFORE group-header repair — unit price is always derived from
@@ -8196,10 +8239,16 @@ async function updateQuoteStatus(ref, status, opts) {
       toast('Signing link revoked');
     }
   }
+  // Stamp status_changed_at only on a GENUINE change — re-picking the current status
+  // from the dropdown must not reset the date (Airtable "Date Sent" reads it).
+  const statusChanged = (q.status || 'Draft') !== status;
   q.status = status;
+  if (statusChanged) q.statusChangedAt = new Date().toISOString();
   if (USE_SUPABASE) {
     try {
-      await sb('PATCH', 'quotes', { status: status }, '?ref=eq.' + encodeURIComponent(ref));
+      const patch = { status: status };
+      if (statusChanged) patch.status_changed_at = q.statusChangedAt;
+      await sb('PATCH', 'quotes', patch, '?ref=eq.' + encodeURIComponent(ref));
     } catch(e) { toast('Status save failed: ' + e.message); }
   }
   renderSaved();
@@ -8472,6 +8521,7 @@ async function newQuote() {
   lines=[]; isDirty=false;
   ['in-cust','in-ref','in-a1','in-city','in-post','in-sum','in-sign'].forEach(id=>{const el=document.getElementById(id);if(el)el.value=''});
   document.getElementById('in-estimate').checked = false;
+  crmLink = { cardId: '', email: '', supersedes: '' };
   schedulePlan = null; spDirty = false; spTicked.clear();
   miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
   document.getElementById('in-vno').value='242 6140 37';
