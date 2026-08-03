@@ -6365,6 +6365,22 @@ function crmBuildScheduleStructured(rows, freeText, ov) {
 }
 let cwTriggerOv = {};   // per-label trigger picks in the OPEN contract dialog (custom mode)
 function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
+// DESIGN-contract trigger mapping (Neal, 30/07 — unblocked once the completion column
+// existed in Trello/Airtable). Separate from the build map because the build keywords
+// misfire on design labels; list strings must match Airtable EXACTLY (case + spaces).
+// ORDER MATTERS: survey/topo before completion — "payable on completion of the survey"
+// must stay Manual (Neal's ruling: irregular third-party cost), not read as job-end.
+const CRM_DESIGN_TRIGGERS = [
+  { re: /survey|topo/i,      trigger: 'manual',       triggerList: null,                                                    terms: 'Standard' },
+  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'DESIGNS > Accepted',                                    terms: 'Immediate' },
+  { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'DESIGNS > Designs Presented, Awaiting Feedback',        terms: 'Standard' },
+  { re: /completion|final/i, trigger: 'onCompletion', triggerList: 'DESIGNS > Design Complete - Order Booklet and Invoice', terms: 'Standard' },
+];
+function crmDesignTrigger(label) {
+  const hit = CRM_DESIGN_TRIGGERS.find(t => t.re.test(String(label || '')));
+  return hit ? { trigger: hit.trigger, triggerList: hit.triggerList, terms: hit.terms }
+             : { trigger: 'manual', triggerList: null, terms: 'Standard' };   // unrecognised → a person decides
+}
 // The amount on a payment line = the LAST number on it (optionally £-prefixed), label is the text before.
 // A line with no trailing number has no amount (e.g. a note). Used for both display and the ✓/⚠ check.
 function lineAmount(line){
@@ -7554,15 +7570,16 @@ async function dcCreate(existingRef) {
       generatedAt: new Date().toISOString(),
       contractDate: date,
       freeText: freeText || null, freeTextFull: true,
-      // Airtable Phase 2: machine-readable schedule beside the printed one. ALL design
-      // lines default to manual (Neal's ruling 30/07/26): the build keyword mapping
-      // misfires here ("completion of the survey" would read as job-end, "on acceptance"
-      // points at a build-pipeline list designs never enter), and the CRM's existing
-      // "Design fee split" automation creates all design milestones as Manual anyway —
-      // so this exactly matches current behaviour. Specific design triggers can come
-      // later once the DESIGNS list mapping is settled.
+      // Airtable Phase 2: machine-readable schedule beside the printed one. Design lines
+      // use their OWN mapping (Neal unblocked it 30/07 — the completion column exists in
+      // Trello/Airtable) — the build keyword map would misfire here ("completion of the
+      // survey" would read as job-end). SURVEY CHECK MUST COME FIRST for that reason.
+      // Topo stays Manual by ruling (irregular third-party cost). Unrecognised → manual,
+      // never a guess. NB design completion is a CARD MOVE (unlike build completion), so
+      // it carries a triggerList; 'onConcepts' extends the trigger enum — pusher rule:
+      // non-null triggerList ⇒ "On Card Move" to that list.
       scheduleStructured: String(freeText || '').split(/\n/).map(lineAmount).filter(Boolean)
-        .map(a => ({ label: a.label, amount: a.value, trigger: 'manual', triggerList: null, terms: 'Standard', week: null })),
+        .map(a => ({ label: a.label, amount: a.value, ...crmDesignTrigger(a.label), week: null })),
       termsVersion: (designTerms && designTerms.version) || 1,
       termsSnapshot: JSON.parse(JSON.stringify({ version: designTerms.version, numbering: 'sections', sections: designTerms.sections })),
       total: t.inc,
