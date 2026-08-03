@@ -7988,28 +7988,35 @@ function crmPaintList() {
     '</div>';
   }).join('');
 }
+// TWO MODES (Neal, 30/07): an EMPTY form fills name/address (the point of the picker);
+// a form that already has client details gets LINK-ONLY — retro-linking a sent quote
+// must not make it differ from the PDF the client received. Refreshing the details is
+// a separate, deliberate OK; Cancel (or Esc) keeps them exactly as they are.
 function crmApplyPick(i) {
   const dlg = document.getElementById('crm-pick-dialog');
   const target = (dlg && dlg.dataset.target) || 'quote';
   const c = crmCards && crmCards[i];
   if (!c) return;
   const a = crmSplitAddress(c.address);
+  const ids = target === 'dc' ? ['dc-cust', 'dc-a1', 'dc-city', 'dc-post'] : ['in-cust', 'in-a1', 'in-city', 'in-post'];
+  const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
+  const fill = !hasDetails || confirm('This form already has client details.\n\nOK = ALSO REFRESH the name/address from the CRM card (overwrites the fields)\nCancel = link only — keep the details exactly as they are');
+  if (fill) {
+    const vals = [c.name || '', a.addr1, a.city, a.post];
+    ids.forEach((id, k) => { const el = document.getElementById(id); if (el) el.value = vals[k]; });
+  }
   if (target === 'dc') {
-    const set = (id, v) => { const el = document.getElementById(id); if (el) el.value = v; };
-    set('dc-cust', c.name || ''); set('dc-a1', a.addr1); set('dc-city', a.city); set('dc-post', a.post);
     dcCrmLink = { cardId: c.id, email: c.email || '' };
   } else {
-    document.getElementById('in-cust').value = c.name || '';
-    document.getElementById('in-a1').value = a.addr1;
-    document.getElementById('in-city').value = a.city;
-    document.getElementById('in-post').value = a.post;
     crmLink.cardId = c.id; crmLink.email = c.email || '';
     isDirty = true;
     syncH();
   }
   crmPaintChip();
   crmRemovePicker();
-  toast('Linked to ' + (c.name || 'card') + (a.post ? '' : ' — no postcode on the card, fill it in'));
+  toast(fill
+    ? 'Linked to ' + (c.name || 'card') + (a.post ? '' : ' — no postcode on the card, fill it in')
+    : 'Linked to ' + (c.name || 'card') + ' — client details kept as they are');
 }
 // Chip beside the customer label: shows the link, × unlinks (clears card+email only —
 // a captured supersedes pointer is about the QUOTE chain, not the card link).
