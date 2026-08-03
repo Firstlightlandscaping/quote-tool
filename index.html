@@ -8005,11 +8005,40 @@ function crmPaintList() {
     '</div>';
   }).join('');
 }
+// Three-way choice when the form already has client details: 'link' (keep the fields),
+// 'refresh' (overwrite them from the card), or null = do NOTHING — no link change
+// either. The null exit matters: mis-picking card B on a quote already linked to card
+// A must be abortable, because × on the chip deletes the link rather than restoring A.
+// Backdrop click = do nothing, same convention as the app's other modals.
+function crmPickModeDialog(cardName) {
+  return new Promise(resolve => {
+    const old = document.getElementById('crm-mode-dialog'); if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'crm-mode-dialog';
+    wrap.innerHTML =
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:470px;max-width:95vw">' +
+        '<h3 style="margin:0 0 6px">Link to ' + cwEsc(cardName || 'this card') + '?</h3>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:14px">This form already has client details. Linking connects it to the CRM card either way — the choice is what happens to the name and address fields on the form.</div>' +
+        '<div class="cw-modal-btns" style="flex-wrap:wrap;gap:8px">' +
+          '<button class="btn btn-primary" id="crm-mode-link" title="Store the card link; the name/address on the form stay exactly as they are — use this on quotes already sent">Link only — keep details</button>' +
+          '<button class="btn btn-outline" id="crm-mode-refresh" title="Store the card link AND overwrite the form\'s name/address with the card\'s details">Link + refresh details</button>' +
+          '<button class="btn btn-outline" id="crm-mode-cancel" title="Change nothing — no link, no field changes">Cancel — do nothing</button>' +
+        '</div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('crm-mode-link').onclick = () => done('link');
+    document.getElementById('crm-mode-refresh').onclick = () => done('refresh');
+    document.getElementById('crm-mode-cancel').onclick = () => done(null);
+    wrap.querySelector('.cw-modal-back').onmousedown = e => { if (e.target === e.currentTarget) done(null); };
+    document.getElementById('crm-mode-link').focus();
+  });
+}
 // TWO MODES (Neal, 30/07): an EMPTY form fills name/address (the point of the picker);
-// a form that already has client details gets LINK-ONLY — retro-linking a sent quote
-// must not make it differ from the PDF the client received. Refreshing the details is
-// a separate, deliberate OK; Cancel (or Esc) keeps them exactly as they are.
-function crmApplyPick(i) {
+// a form that already has client details gets the three-way dialog above — retro-linking
+// a sent quote must not make it differ from the PDF the client received, so overwriting
+// is always a deliberate, separate choice and never the default.
+async function crmApplyPick(i) {
   const dlg = document.getElementById('crm-pick-dialog');
   const target = (dlg && dlg.dataset.target) || 'quote';
   const c = crmCards && crmCards[i];
@@ -8017,7 +8046,12 @@ function crmApplyPick(i) {
   const a = crmSplitAddress(c.address);
   const ids = target === 'dc' ? ['dc-cust', 'dc-a1', 'dc-city', 'dc-post'] : ['in-cust', 'in-a1', 'in-city', 'in-post'];
   const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
-  const fill = !hasDetails || confirm('This form already has client details.\n\nOK = ALSO REFRESH the name/address from the CRM card (overwrites the fields)\nCancel = link only — keep the details exactly as they are');
+  let mode = 'refresh';
+  if (hasDetails) {
+    mode = await crmPickModeDialog(c.name);
+    if (!mode) return;   // do nothing — the picker stays open for a different card (or its own Cancel)
+  }
+  const fill = mode === 'refresh';
   if (fill) {
     const vals = [c.name || '', a.addr1, a.city, a.post];
     ids.forEach((id, k) => { const el = document.getElementById(id); if (el) el.value = vals[k]; });
