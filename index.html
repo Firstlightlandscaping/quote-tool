@@ -7993,14 +7993,27 @@ function crmReload() {
 function crmPaintList() {
   const el = document.getElementById('crm-pick-list');
   if (!el || !crmCards) return;
+  const dlg = document.getElementById('crm-pick-dialog');
+  const target = (dlg && dlg.dataset.target) || 'quote';
+  const linkedId = target === 'dc' ? dcCrmLink.cardId : crmLink.cardId;
   const q = ((document.getElementById('crm-pick-search') || {}).value || '').trim().toLowerCase();
-  const list = crmCards.filter(c => !q || (c.name || '').toLowerCase().includes(q));
+  let list = crmCards.filter(c => !q || (c.name || '').toLowerCase().includes(q));
+  // The currently-linked client PINS to the top of the UNFILTERED list (an in-place
+  // highlight can sit below the scroll); search results stay in plain order — pinning
+  // a non-match into "walton" results would be noise.
+  if (!q && linkedId) {
+    const li = list.findIndex(c => c.id === linkedId);
+    if (li > 0) list = [list[li], ...list.slice(0, li), ...list.slice(li + 1)];
+  }
   if (!list.length) { el.innerHTML = '<div style="padding:8px 0">No matching clients.</div>'; return; }
   el.innerHTML = list.map(c => {
     const i = crmCards.indexOf(c);
+    const isLinked = !!linkedId && c.id === linkedId;
     const addr = (c.address || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean).join(', ');
-    return '<div onclick="crmApplyPick(' + i + ')" style="padding:7px 6px;border-bottom:1px solid var(--bd);cursor:pointer;border-radius:4px" onmouseover="this.style.background=\'#FAFAF9\'" onmouseout="this.style.background=\'\'">' +
-      '<div style="font-weight:600;color:var(--i1)">' + cwEsc(c.name || '(no name)') + '</div>' +
+    const bg = isLinked ? '#F0FDF4' : '';
+    return '<div onclick="crmApplyPick(' + i + ')" style="padding:7px 6px;border-bottom:1px solid var(--bd);cursor:pointer;border-radius:4px;background:' + bg + '" onmouseover="this.style.background=\'#FAFAF9\'" onmouseout="this.style.background=\'' + bg + '\'">' +
+      '<div style="font-weight:600;color:var(--i1)">' + cwEsc(c.name || '(no name)') +
+      (isLinked ? ' <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 6px;font-weight:600">🔗 currently linked</span>' : '') + '</div>' +
       (addr ? '<div style="font-size:12px;color:var(--i3)">' + cwEsc(addr) + '</div>' : '') +
     '</div>';
   }).join('');
@@ -8010,14 +8023,16 @@ function crmPaintList() {
 // either. The null exit matters: mis-picking card B on a quote already linked to card
 // A must be abortable, because × on the chip deletes the link rather than restoring A.
 // Backdrop click = do nothing, same convention as the app's other modals.
-function crmPickModeDialog(cardName) {
+function crmPickModeDialog(cardName, alreadyLinked) {
   return new Promise(resolve => {
     const old = document.getElementById('crm-mode-dialog'); if (old) old.remove();
     const wrap = document.createElement('div');
     wrap.id = 'crm-mode-dialog';
     wrap.innerHTML =
       '<div class="cw-modal-back"><div class="cw-modal" style="width:470px;max-width:95vw">' +
-        '<h3 style="margin:0 0 6px">Link to ' + cwEsc(cardName || 'this card') + '?</h3>' +
+        // Re-picking the card it's ALREADY linked to isn't a change — the useful path
+        // there is "Link + refresh details" to re-pull a corrected address from the CRM.
+        '<h3 style="margin:0 0 6px">' + (alreadyLinked ? 'Already linked to ' + cwEsc(cardName || 'this card') : 'Link to ' + cwEsc(cardName || 'this card') + '?') + '</h3>' +
         '<div style="font-size:13px;color:var(--i2);margin-bottom:14px">This form already has client details. Linking connects it to the CRM card either way — the choice is what happens to the name and address fields on the form.</div>' +
         '<div class="cw-modal-btns" style="flex-wrap:wrap;gap:8px">' +
           '<button class="btn btn-primary" id="crm-mode-link" title="Store the card link; the name/address on the form stay exactly as they are — use this on quotes already sent">Link only — keep details</button>' +
@@ -8048,7 +8063,8 @@ async function crmApplyPick(i) {
   const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
   let mode = 'refresh';
   if (hasDetails) {
-    mode = await crmPickModeDialog(c.name);
+    const linkedId = target === 'dc' ? dcCrmLink.cardId : crmLink.cardId;
+    mode = await crmPickModeDialog(c.name, !!linkedId && c.id === linkedId);
     if (!mode) return;   // do nothing — the picker stays open for a different card (or its own Cancel)
   }
   const fill = mode === 'refresh';
