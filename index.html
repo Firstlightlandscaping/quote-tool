@@ -6350,6 +6350,20 @@ function crmScheduleTrigger(label) {
 // with the same lineAmount() the preview/print use (no-amount note lines carry no
 // payment, so they don't become milestones). ov = per-label trigger overrides from
 // the dialog's dropdowns (custom mode) / a previously saved scheduleStructured.
+// Week number FROM THE LABEL when it clearly carries one — "End of second week" → 2,
+// "week 3" / "3rd week" → 3 — else null (caller falls back to order). The label is what
+// the client reads on the printed contract, so it must win over position: a schedule
+// that SKIPS "first week" (stone delivery in that slot — Neal's QT-0065 case) means
+// "End of second week" is genuinely +14 days, not the first weekly's +7.
+function crmWeekFromLabel(label) {
+  const l = String(label || '').toLowerCase();
+  const words = ['first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth', 'eleventh', 'twelfth'];
+  const w = l.match(new RegExp('(' + words.join('|') + ')\\s+week'));
+  if (w) return words.indexOf(w[1]) + 1;
+  const d = l.match(/week\s*(\d{1,2})\b/) || l.match(/\b(\d{1,2})(?:st|nd|rd|th)?\s+week/);
+  if (d) { const n = parseInt(d[1]); if (n >= 1 && n <= 52) return n; }
+  return null;
+}
 function crmBuildScheduleStructured(rows, freeText, ov) {
   ov = ov || {};
   const entries = rows
@@ -6359,7 +6373,9 @@ function crmBuildScheduleStructured(rows, freeText, ov) {
   return entries.map(e => {
     const t = (ov[e.label] && CRM_TRIGGER_DEFS[ov[e.label]]) ? ov[e.label] : crmScheduleTrigger(e.label);
     const isW = t === 'weekly';
-    if (isW) wk++;
+    // label ordinal wins; order is the fallback, and the counter continues from
+    // whatever was last assigned so mixed schedules still number sensibly
+    if (isW) { const lw = crmWeekFromLabel(e.label); wk = lw != null ? lw : wk + 1; }
     return { label: e.label, amount: e.amount, trigger: t, triggerList: CRM_TRIGGER_DEFS[t].triggerList, terms: CRM_TRIGGER_DEFS[t].terms, week: isW ? wk : null };
   });
 }
