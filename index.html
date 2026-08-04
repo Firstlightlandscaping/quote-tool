@@ -7675,7 +7675,7 @@ function renderDesignContracts() {
     const cmStatus = (d.contract_meta && d.contract_meta.status) || 'Generated';
     return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">' +
       '<span style="font-family:\'DM Mono\',monospace;font-weight:600;flex:none;width:74px">' + cwEsc(d.ref) + '</span>' +
-      '<span style="flex:1;min-width:120px;color:var(--i1)">' + cwEsc(d.customer || '—') + '</span>' +
+      '<span style="flex:1;min-width:120px;color:var(--i1)">' + cwEsc(d.customer || '—') + (d.airtable_card_id ? crmLinkTagHtml(d.client_email) : '') + '</span>' +
       '<span style="color:var(--i3);flex:none">' + dt + '</span>' +
       '<span style="font-weight:600;flex:none;min-width:90px;text-align:right">' + money(t.inc) + '</span>' +
       '<button class="btn btn-outline btn-sm" onclick="viewDesignContract(\'' + d.ref + '\')">📄 View</button>' +
@@ -8100,6 +8100,12 @@ function crmUnlink(target) {
   if (target === 'dc') dcCrmLink = { cardId: '', email: '' };
   else { crmLink.cardId = ''; crmLink.email = ''; isDirty = true; }
   crmPaintChip();
+}
+// List-row 🔗 tag (Saved Quotes + Design Contracts): linked records show it, unlinked
+// show nothing — the ABSENCE is the retro-linking to-do signal. Tooltip carries the
+// card's email so which-card can be sanity-checked without opening the record.
+function crmLinkTagHtml(email) {
+  return ' <span class="no-print" title="Linked to the CRM card' + (email ? ' — ' + cwEsc(email) : '') + '" style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px;white-space:nowrap;cursor:help">🔗</span>';
 }
 
 async function saveQuoteAsCopy() {
@@ -8771,7 +8777,7 @@ function renderSaved() {
     return `<div class="sq-item" style="cursor:pointer" onclick="loadQuote('${sq.ref}')">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span class="sq-ref" style="font-family:'DM Mono',monospace;font-weight:600;min-width:80px">${sq.ref}</span>
-        <span class="sq-cust" style="flex:1;min-width:120px">${cwEsc(sq.customer||'—')}</span>
+        <span class="sq-cust" style="flex:1;min-width:120px">${cwEsc(sq.customer||'—')}${sq.airtableCardId ? crmLinkTagHtml(sq.clientEmail) : ''}</span>
         <span class="sq-date" style="color:var(--i3);font-size:12px;min-width:90px">${d}</span>
         <span style="font-weight:600;min-width:80px;text-align:right">£${total.toFixed(2)}</span>
         <select onclick="event.stopPropagation()" onchange="updateQuoteStatus('${sq.ref}',this.value)"
