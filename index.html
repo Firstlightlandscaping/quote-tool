@@ -6337,12 +6337,15 @@ const CRM_TRIGGER_DEFS = {
   manual:       { triggerList: null,                 terms: 'Standard',   short: 'Manual' },
 };
 // Keyword default, in the field map's table order. Unrecognised → manual, NEVER a
-// guess — a person then decides when to invoice.
+// guess — a person then decides when to invoice. Weekly is only ever assigned when
+// the label STATES its week ("End of second week", "week 3") — weekly means "date it
+// from job start by its week number", so a line that doesn't say which week (even
+// "Weekly payment: £X") defaults to manual rather than getting an invented number.
 function crmScheduleTrigger(label) {
   const l = String(label || '').toLowerCase();
   if (/deposit|acceptance/.test(l)) return 'onAcceptance';
   if (/start of works/.test(l)) return 'onStart';
-  if (/week/.test(l)) return 'weekly';
+  if (crmWeekFromLabel(l) != null) return 'weekly';
   if (/completion|final/.test(l)) return 'onCompletion';
   return 'manual';
 }
@@ -6369,14 +6372,13 @@ function crmBuildScheduleStructured(rows, freeText, ov) {
   const entries = rows
     ? rows.map(r => ({ label: r.label, amount: r.amount }))
     : String(freeText || '').split(/\n/).map(lineAmount).filter(Boolean).map(a => ({ label: a.label, amount: a.value }));
-  let wk = 0;
   return entries.map(e => {
-    const t = (ov[e.label] && CRM_TRIGGER_DEFS[ov[e.label]]) ? ov[e.label] : crmScheduleTrigger(e.label);
-    const isW = t === 'weekly';
-    // label ordinal wins; order is the fallback, and the counter continues from
-    // whatever was last assigned so mixed schedules still number sensibly
-    if (isW) { const lw = crmWeekFromLabel(e.label); wk = lw != null ? lw : wk + 1; }
-    return { label: e.label, amount: e.amount, trigger: t, triggerList: CRM_TRIGGER_DEFS[t].triggerList, terms: CRM_TRIGGER_DEFS[t].terms, week: isW ? wk : null };
+    const lw = crmWeekFromLabel(e.label);
+    let t = (ov[e.label] && CRM_TRIGGER_DEFS[ov[e.label]]) ? ov[e.label] : crmScheduleTrigger(e.label);
+    // weekly REQUIRES the label to state its week — no counter, no invented numbers.
+    // Covers stale overrides too (a saved weekly pick whose label was later reworded).
+    if (t === 'weekly' && lw == null) t = crmScheduleTrigger(e.label);
+    return { label: e.label, amount: e.amount, trigger: t, triggerList: CRM_TRIGGER_DEFS[t].triggerList, terms: CRM_TRIGGER_DEFS[t].terms, week: t === 'weekly' ? lw : null };
   });
 }
 let cwTriggerOv = {};   // per-label trigger picks in the OPEN contract dialog (custom mode)
@@ -6455,9 +6457,15 @@ function cdRefresh(){
       const a = lineAmount(line);
       if (a) {
         const key = a.label || '—';
-        const cur = (cwTriggerOv[key] && CRM_TRIGGER_DEFS[cwTriggerOv[key]]) ? cwTriggerOv[key] : crmScheduleTrigger(key);
-        const sel = '<select data-label="' + cwEsc(key) + '" onchange="cwSetTrigger(this)" title="When the CRM should raise this invoice — goes to Airtable with the contract, never printed on the contract itself" style="font-size:10px;padding:1px 3px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);max-width:112px;background:white">' +
-          Object.keys(CRM_TRIGGER_DEFS).map(k => '<option value="' + k + '"' + (k === cur ? ' selected' : '') + '>' + CRM_TRIGGER_DEFS[k].short + '</option>').join('') + '</select>';
+        // "Weekly" is offered ONLY when the label states its week ("End of second week",
+        // "week 3") — weekly dates the invoice by that number, so on any other line the
+        // choice would force an invented date. Want weekly? Put the week in the label
+        // (the client should see it on the printed schedule anyway).
+        const canWeekly = crmWeekFromLabel(key) != null;
+        let cur = (cwTriggerOv[key] && CRM_TRIGGER_DEFS[cwTriggerOv[key]]) ? cwTriggerOv[key] : crmScheduleTrigger(key);
+        if (cur === 'weekly' && !canWeekly) cur = crmScheduleTrigger(key);
+        const sel = '<select data-label="' + cwEsc(key) + '" onchange="cwSetTrigger(this)" title="When the CRM should raise this invoice — goes to Airtable with the contract, never printed on the contract itself' + (canWeekly ? '' : '. Weekly isn\'t offered here because the label doesn\'t say which week — put the week in the wording to use it') + '" style="font-size:10px;padding:1px 3px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);max-width:112px;background:white">' +
+          Object.keys(CRM_TRIGGER_DEFS).filter(k => k !== 'weekly' || canWeekly).map(k => '<option value="' + k + '"' + (k === cur ? ' selected' : '') + '>' + CRM_TRIGGER_DEFS[k].short + '</option>').join('') + '</select>';
         return '<tr><td>' + cwEsc(key) + '</td><td class="r">' + money(a.value) + '</td><td style="text-align:right;padding-left:8px">' + sel + '</td></tr>';
       }
       return '<tr><td colspan="3">' + cwEsc(t) + '</td></tr>';   // note line, no amount
