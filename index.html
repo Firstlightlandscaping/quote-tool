@@ -8013,7 +8013,7 @@ function crmPaintList() {
     const bg = isLinked ? '#F0FDF4' : '';
     return '<div onclick="crmApplyPick(' + i + ')" style="padding:7px 6px;border-bottom:1px solid var(--bd);cursor:pointer;border-radius:4px;background:' + bg + '" onmouseover="this.style.background=\'#FAFAF9\'" onmouseout="this.style.background=\'' + bg + '\'">' +
       '<div style="font-weight:600;color:var(--i1)">' + cwEsc(c.name || '(no name)') +
-      (isLinked ? ' <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 6px;font-weight:600">🔗 currently linked</span>' : '') + '</div>' +
+      (isLinked ? ' <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 6px;font-weight:600">📇 currently linked</span>' : '') + '</div>' +
       (addr ? '<div style="font-size:12px;color:var(--i3)">' + cwEsc(addr) + '</div>' : '') +
     '</div>';
   }).join('');
@@ -8089,7 +8089,7 @@ async function crmApplyPick(i) {
 // a captured supersedes pointer is about the QUOTE chain, not the card link).
 function crmPaintChip() {
   const chipHtml = (linked, unlinkFn) => linked
-    ? '<span class="no-print" style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 6px;white-space:nowrap">🔗 CRM linked <a href="#" onclick="' + unlinkFn + ';return false" title="Unlink from the CRM card" style="color:#DC2626;text-decoration:none;font-weight:700">×</a></span>'
+    ? '<span class="no-print" style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 6px;white-space:nowrap">📇 CRM linked <a href="#" onclick="' + unlinkFn + ';return false" title="Unlink from the CRM card" style="color:#DC2626;text-decoration:none;font-weight:700">×</a></span>'
     : '';
   const q = document.getElementById('crm-chip');
   if (q) q.innerHTML = chipHtml(!!crmLink.cardId, 'crmUnlink(\'quote\')');
@@ -8105,7 +8105,9 @@ function crmUnlink(target) {
 // show nothing — the ABSENCE is the retro-linking to-do signal. Tooltip carries the
 // card's email so which-card can be sanity-checked without opening the record.
 function crmLinkTagHtml(email) {
-  return ' <span class="no-print" title="Linked to the CRM card' + (email ? ' — ' + cwEsc(email) : '') + '" style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px;white-space:nowrap;cursor:help">🔗</span>';
+  // 📇 not 🔗 — the link emoji reads as a paperclip/attachment (Neal, 2026-08-04);
+  // 📇 is the app's established CRM symbol (the picker button) + the word makes it literal.
+  return ' <span class="no-print" title="Linked to the CRM card' + (email ? ' — ' + cwEsc(email) : '') + '" style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px;white-space:nowrap;cursor:help;font-weight:600">📇 CRM</span>';
 }
 
 async function saveQuoteAsCopy() {
