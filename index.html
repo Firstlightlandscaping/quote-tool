@@ -1473,6 +1473,47 @@ async function sbAllPages(table, query) {
   return all;
 }
 
+// ── Boot-time count tripwire (2026-08-05). sbAllPages makes today's fetches immune
+// to the silent 1000-row cap, but the July incident's CLASS survives it: any FUTURE
+// fetch that forgets paging truncates silently again, and the only symptom is wrong
+// prices weeks later. This asks PostgREST how many rows each big table REALLY holds
+// (HEAD + Prefer: count=exact — headers only, ~free) and compares against what the
+// boot load kept. Any shortfall = loud red banner naming the table; silence = healthy.
+// Fire-and-forget: must never block or break boot, every failure swallowed. A row
+// INSERTED between load and check reads as total>got for one boot — refresh clears
+// it; the banner only matters if it comes back.
+async function verifyLoadCounts(loaded) {
+  try {
+    if (!USE_SUPABASE) return;
+    const bad = [];
+    for (const [table, got] of Object.entries(loaded)) {
+      try {
+        const res = await fetch(SUPABASE_URL + '/rest/v1/' + table + '?limit=1', {
+          method: 'HEAD',
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) ? SESSION.access_token : SUPABASE_KEY),
+            Prefer: 'count=exact'
+          }
+        });
+        const total = parseInt((res.headers.get('content-range') || '').split('/')[1]);
+        if (!isNaN(total) && total > got) bad.push(table + ': loaded ' + got + ' of ' + total + ' rows');
+      } catch (e) { /* one table unreachable is not evidence of truncation */ }
+    }
+    if (bad.length) showDataLoadWarning(bad);
+  } catch (e) { /* the tripwire must never break boot */ }
+}
+function showDataLoadWarning(problems) {
+  if (document.getElementById('data-load-banner')) return;
+  const d = document.createElement('div');
+  d.id = 'data-load-banner';
+  d.className = 'no-print';
+  d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30001;background:#FEF2F2;border-bottom:2px solid #DC2626;color:#991B1B;font-size:13px;font-weight:600;padding:9px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
+  d.innerHTML = '<span>⚠ DATA LOAD INCOMPLETE — ' + cwEsc(problems.join(' · ')) + '. Prices may be wrong. Refresh now; if this banner comes back, stop quoting and get it looked at.</span>' +
+    '<button onclick="location.reload()" style="background:#DC2626;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">↻ Refresh</button>';
+  document.body.appendChild(d);
+}
+
 async function loadFromSupabase() {
   // Load all data in parallel (each table paged — see sbAllPages)
   const [delRows, matRows, mplRows, quoteRows, lineRows, templateRows, staffRows, settingsRows, dpRows, dcRows] = await Promise.all([
@@ -1490,6 +1531,8 @@ async function loadFromSupabase() {
     sbAllPages('design_packages', '?order=sort_order,id').catch(() => []),
     sbAllPages('design_contracts', '?order=saved.desc,ref').catch(() => [])
   ]);
+  // Tripwire: compare what we kept against what the DB really holds (async, non-blocking)
+  verifyLoadCounts({ deliverables: delRows.length, materials: matRows.length, mpl: mplRows.length, quotes: quoteRows.length, quote_lines: lineRows.length });
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
   designTerms = normalizeDesignTerms(companySettings && companySettings.design_terms);
