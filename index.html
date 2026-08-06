@@ -10488,6 +10488,19 @@ setTimeout(checkAppVersion, 15000);
 setInterval(checkAppVersion, 10 * 60 * 1000);
 window.addEventListener('focus', checkAppVersion);
 
+// ── Unsaved-changes guard (2026-08-05, after QT-0065: saved 14:47, kept editing,
+// printed the client PDF at 15:11, closed WITHOUT saving — the app and the client's
+// PDF silently diverged by £5,972.95). isDirty was already tracked; nothing ACTED
+// on it. This makes closing/refreshing/navigating away show the browser's native
+// "leave site?" dialog while the quote has unsaved changes. Deliberately ONLY
+// isDirty — spDirty flips true merely by OPENING the Schedule tab (sync
+// reconciliation marks it), so guarding it too would cry wolf on every visit.
+window.addEventListener('beforeunload', e => {
+  if (!isDirty) return;
+  e.preventDefault();
+  e.returnValue = '';   // some browsers need returnValue set for the dialog to show
+});
+
 recalc();
 
 
