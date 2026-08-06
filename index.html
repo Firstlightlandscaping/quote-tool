@@ -10500,6 +10500,16 @@ window.addEventListener('beforeunload', e => {
   e.preventDefault();
   e.returnValue = '';   // some browsers need returnValue set for the dialog to show
 });
+// Print nudge — the OTHER half of the QT-0065 pattern: the printed PDF captured work
+// the app never got. afterprint (fires as the print dialog closes, catching EVERY
+// route incl. Ctrl+P) shows a toast when the quote has unsaved changes. Never blocks
+// the print — the point is awareness, not friction. Contract/report printing is
+// excluded: those print different documents, so the quote's dirty flag is noise there.
+window.addEventListener('afterprint', () => {
+  if (!isDirty) return;
+  if (document.body.classList.contains('contract-mode') || document.body.classList.contains('report-mode')) return;
+  toast('⚠ That print includes UNSAVED changes — Save the quote to keep them');
+});
 
 recalc();
 
