@@ -10506,14 +10506,30 @@ window.addEventListener('beforeunload', e => {
 });
 // Print nudge — the OTHER half of the QT-0065 pattern: the printed PDF captured work
 // the app never got. afterprint (fires as the print dialog closes, catching EVERY
-// route incl. Ctrl+P) shows a toast when the quote has unsaved changes. Never blocks
-// the print — the point is awareness, not friction. Contract/report printing is
-// excluded: those print different documents, so the quote's dirty flag is noise there.
+// route incl. Ctrl+P) raises a PERSISTENT amber banner when the quote has unsaved
+// changes — a 2.6s toast was too easy to miss for a mistake this expensive (Neal,
+// 2026-08-06). The mismatch PERSISTS until saved, so the warning does too: the banner
+// self-clears the moment isDirty goes false by ANY route (save, load, new — a light
+// self-poll while it exists, no touch points in the save paths). Never blocks the
+// print. Contract/report printing excluded: different documents, quote flag is noise.
 window.addEventListener('afterprint', () => {
   if (!isDirty) return;
   if (document.body.classList.contains('contract-mode') || document.body.classList.contains('report-mode')) return;
-  toast('⚠ That print includes UNSAVED changes — Save the quote to keep them');
+  showUnsavedPrintBanner();
 });
+function showUnsavedPrintBanner() {
+  if (document.getElementById('unsaved-print-banner')) return;
+  const d = document.createElement('div');
+  d.id = 'unsaved-print-banner';
+  d.className = 'no-print';
+  d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:#FFFBEB;border-bottom:2px solid #F59E0B;color:#92400E;font-size:13px;font-weight:600;padding:9px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
+  d.innerHTML = `<span>⚠ That print included <u>unsaved changes</u> — the PDF has work the app hasn't saved yet.</span>
+    <button onclick="saveQuote()" style="background:#F59E0B;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">💾 Save now</button>
+    <button onclick="clearInterval(this.parentElement._t);this.parentElement.remove()" title="Hide — it comes back on the next unsaved print" style="background:none;border:1px solid #F59E0B;border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:#92400E">later</button>`;
+  document.body.appendChild(d);
+  // self-clearing: saved (or changes discarded via load/new) → banner goes by itself
+  d._t = setInterval(() => { if (!isDirty) { clearInterval(d._t); d.remove(); } }, 1000);
+}
 
 recalc();
 
