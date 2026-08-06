@@ -2111,7 +2111,24 @@ function openDD() {
   });
   ddl.innerHTML = html; ddl.style.display='block';
 }
-function filterDD() { if (document.getElementById('si').value || document.getElementById('si')===document.activeElement) openDD(); }
+// Any manual edit to the search text after a pick DESELECTS (2026-08-05, Neal: cleared
+// text left mat cost + description hanging with no selection visibly behind them — and
+// selDel actually survived, so "+ Add to Quote" would have added the invisible
+// deliverable). Deliverable-DERIVED fields clear (client description, mat-cost
+// override/display, unit hint); qty and labour stay — they're user-typed, never
+// auto-filled from the deliverable. Re-picking refills as always.
+function ddDeselectIfEdited() {
+  if (!selDel) return;
+  if (document.getElementById('si').value === `${selDel.code} — ${selDel.name}`) return;
+  selDel = null;
+  document.getElementById('add-xdesc').value = '';
+  const ov = document.getElementById('add-mat');
+  ov.value = ''; ov.style.display = 'none';
+  const link = document.getElementById('add-mat-override-link');
+  if (link) { link.style.display = 'inline'; link.textContent = 'override'; }
+  updateAddMatDisplay();
+}
+function filterDD() { ddDeselectIfEdited(); if (document.getElementById('si').value || document.getElementById('si')===document.activeElement) openDD(); }
 function closeDD() { hideT = setTimeout(() => document.getElementById('ddl').style.display='none', 200); }
 function pickDel(code) {
   selDel = dels.find(d => d.code === code); if (!selDel) return;
