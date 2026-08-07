@@ -105,6 +105,8 @@ async function handle(req: Request): Promise<Response> {
   // ── dry run: show the exact mapping, write nothing ──
   if (mode === "dry-run") {
     say("— DRY RUN (nothing written) —");
+    if (t.customerInfo && (t.customerInfo.addr1 || t.customerInfo.city || t.customerInfo.post))
+      say("  customer info note: " + [t.customerInfo.name, t.customerInfo.addr1, t.customerInfo.city, t.customerInfo.post].filter(Boolean).join(", "));
     t.tasks.forEach((k: any, i: number) => say(`  task ${i + 1}. ${k.name}  ${k.start || "?"} -> ${k.end || "?"}  (${k.days}d, ${k.men} men)`));
     t.deliveries.forEach((d: any) => {
       say(`  delivery: ${d.unassigned ? "⚠ " : ""}${d.name}  ${d.date || "no date"}  (${d.checklist.length} items${d.links.length ? ", " + d.links.length + " links" : ""})`);
@@ -144,6 +146,30 @@ async function handle(req: Request): Promise<Response> {
       say(`  deadline milestone -> ${t.deadline} (template placeholder missing; created new)`);
     }
     await sleep(150);
+  }
+
+  // ── 3b. Customer information: address as a note on the template's placeholder
+  // task (2026-08-06, Neal — the crew expect the client's address there; phone
+  // isn't in the app, so address only). Old plan.tg without customerInfo skips
+  // silently; a missing placeholder skips with a warning — never created, nothing
+  // else changes. Keep in step with scripts/push-to-teamgantt.js.
+  const ci = t.customerInfo;
+  if (ci && (ci.addr1 || ci.city || ci.post)) {
+    const ciTask = existing.find((x: any) => norm(x.name) === "customer information");
+    if (ciTask) {
+      const esc = (s: unknown) => String(s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+      const note = [ci.name, ci.addr1, ci.city, ci.post].filter(Boolean).map((v: string) => "<p>" + esc(v) + "</p>").join("");
+      try {
+        await tg("POST", `/tasks/${ciTask.id}/comments`, { type: "note", message: note });
+        say("  customer information note -> " + [ci.addr1, ci.city, ci.post].filter(Boolean).join(", "));
+      } catch (_e1) {
+        try { // field-name fallback — the blueprint is ambiguous between message/body
+          await tg("POST", `/tasks/${ciTask.id}/comments`, { type: "note", body: note });
+          say("  customer information note (body fallback)");
+        } catch (e2) { say("  ⚠ customer information note failed: " + (e2 as Error).message); }
+      }
+      await sleep(150);
+    } else say('  ⚠ "Customer information" placeholder not found — address note skipped');
   }
 
   // ── 4. Project Breakdown tasks (dates only, no dependencies — deliberate) ──

@@ -5783,6 +5783,12 @@ function spExportForPush() {
   return {
     ref: (document.getElementById('in-ref')||{value:''}).value.trim(),
     customer: g('in-cust') || '',
+    // Customer info for the template's "Customer information" placeholder task
+    // (2026-08-06, Neal — the crew expect the client's address there; phone number
+    // isn't in the app, so address only). DATA here; the pushers compose the note
+    // (presentation) — the app-serialises rule. Old saved plans lack this field;
+    // pushers skip silently until the plan is re-saved.
+    customerInfo: { name: g('in-cust') || '', addr1: g('in-a1') || '', city: g('in-city') || '', post: g('in-post') || '' },
     startDate: p.startDate || '',
     deadline: p.deadline || '',
     tasks: p.tasks.map((t, i) => ({
