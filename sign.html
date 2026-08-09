@@ -333,23 +333,43 @@ function printDoc() {
 }
 
 // ── signature pad (same approach as the app's Company Signature pad) ──────────
+// padFit sizes the drawing BITMAP to the pad's ACTUAL on-screen width. THE BUG
+// (2026-08-09, Kate Whelan couldn't sign on QT-0081): the old code measured
+// `c.clientWidth || 460` and, running before the panel's layout flushed, got 0 →
+// fell back to a 460px bitmap while CSS stretched the pad to the full width (838px
+// on a laptop). Drawing coordinates come from getBoundingClientRect (real CSS px),
+// so anything past x=460 mapped OFF the bitmap and vanished — the right ~45% of the
+// box was dead on wide screens. Phones (pad < 460) never hit it, which is why every
+// earlier signer, all on phones, was fine. getBoundingClientRect().width forces a
+// sync layout so it returns the true rendered width; re-fit on resize/rotate,
+// preserving any strokes already drawn.
+function padFit() {
+  var c = document.getElementById('pad');
+  var dpr = window.devicePixelRatio || 1;
+  var rect = c.getBoundingClientRect();
+  var cssW = Math.round(rect.width) || c.clientWidth || 460;
+  var cssH = Math.round(rect.height) || c.clientHeight || 170;
+  var prev = padDrawn ? c.toDataURL('image/png') : null;   // keep an in-progress signature across a resize
+  c.width = cssW * dpr; c.height = cssH * dpr;
+  var ctx = c.getContext('2d');
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1e2c3d';
+  padCtx = ctx;
+  if (prev) { var im = new Image(); im.onload = function () { ctx.drawImage(im, 0, 0, cssW, cssH); }; im.src = prev; }
+}
 function padInit() {
   var c = document.getElementById('pad');
   if (c._init) return;
   c._init = true;
-  var dpr = window.devicePixelRatio || 1;
-  var cssW = c.clientWidth || 460, cssH = c.clientHeight || 170;
-  c.width = cssW * dpr; c.height = cssH * dpr;
-  var ctx = c.getContext('2d');
-  ctx.scale(dpr, dpr);
-  ctx.lineWidth = 2.5; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#1e2c3d';
-  padCtx = ctx;
+  padFit();
   var drawing = false;
   function pos(e) { var r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
-  c.addEventListener('pointerdown', function (e) { e.preventDefault(); drawing = true; c.setPointerCapture(e.pointerId); var p = pos(e); ctx.beginPath(); ctx.moveTo(p[0], p[1]); });
-  c.addEventListener('pointermove', function (e) { if (!drawing) return; e.preventDefault(); var p = pos(e); ctx.lineTo(p[0], p[1]); ctx.stroke(); padDrawn = true; });
+  c.addEventListener('pointerdown', function (e) { e.preventDefault(); drawing = true; c.setPointerCapture(e.pointerId); var p = pos(e); padCtx.beginPath(); padCtx.moveTo(p[0], p[1]); });
+  c.addEventListener('pointermove', function (e) { if (!drawing) return; e.preventDefault(); var p = pos(e); padCtx.lineTo(p[0], p[1]); padCtx.stroke(); padDrawn = true; });
   c.addEventListener('pointerup', function () { drawing = false; });
   c.addEventListener('pointercancel', function () { drawing = false; });
+  var rt; window.addEventListener('resize', function () { clearTimeout(rt); rt = setTimeout(padFit, 200); });
 }
 function padClear() {
   var c = document.getElementById('pad');
