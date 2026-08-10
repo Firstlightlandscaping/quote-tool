@@ -8137,15 +8137,23 @@ function crmSplitAddress(blob) {
   return { addr1, city, post };
 }
 function crmRemovePicker() { const m = document.getElementById('crm-pick-dialog'); if (m) m.remove(); }
-function crmOpenPicker(target) {
+// target 'quote'|'dc' = the open builder/dialog (fills fields). target 'list' = link an
+// EXISTING saved quote straight from the Saved Quotes list (Neal, 2026-08-10): link-only
+// by construction — writes just the card id + email columns, never touches the printed
+// name/address, so there's no fill and no overwrite dialog. `ref` is the quote to link.
+function crmOpenPicker(target, ref) {
   crmRemovePicker();
+  const isList = target === 'list';
   const wrap = document.createElement('div');
   wrap.id = 'crm-pick-dialog';
   wrap.dataset.target = target;
+  if (ref) wrap.dataset.ref = ref;
   wrap.innerHTML =
     '<div class="cw-modal-back"><div class="cw-modal" style="width:520px;max-width:95vw">' +
-      '<h3 style="margin:0 0 4px">Pick a client from the CRM</h3>' +
-      '<div style="font-size:12px;color:var(--i2);margin-bottom:8px">Fills the name and address (best-effort — check the fields) and links this ' + (target === 'dc' ? 'design contract' : 'quote') + ' to the client\'s card.</div>' +
+      '<h3 style="margin:0 0 4px">' + (isList ? 'Link ' + cwEsc(ref || '') + ' to a client' : 'Pick a client from the CRM') + '</h3>' +
+      '<div style="font-size:12px;color:var(--i2);margin-bottom:8px">' + (isList
+        ? 'Attaches the client\'s CRM card to this quote. The quote\'s own name and address are <strong>not changed</strong>.'
+        : 'Fills the name and address (best-effort — check the fields) and links this ' + (target === 'dc' ? 'design contract' : 'quote') + ' to the client\'s card.') + '</div>' +
       '<div style="display:flex;gap:6px;margin-bottom:8px"><input type="text" id="crm-pick-search" placeholder="Search by name…" oninput="crmPaintList()" style="flex:1;padding:7px 9px;border:1px solid var(--bd);border-radius:5px;font-size:13px">' +
       '<button class="btn btn-outline btn-sm" onclick="crmReload()" title="Reload the list from the CRM">↻</button></div>' +
       '<div id="crm-pick-list" style="max-height:50vh;overflow-y:auto;font-size:13px;color:var(--i2)">⏳ Loading clients…</div>' +
@@ -8169,7 +8177,9 @@ function crmPaintList() {
   if (!el || !crmCards) return;
   const dlg = document.getElementById('crm-pick-dialog');
   const target = (dlg && dlg.dataset.target) || 'quote';
-  const linkedId = target === 'dc' ? dcCrmLink.cardId : crmLink.cardId;
+  const linkedId = target === 'dc' ? dcCrmLink.cardId
+    : target === 'list' ? ((savedQuotes.find(q => q.ref === (dlg && dlg.dataset.ref)) || {}).airtableCardId || '')
+    : crmLink.cardId;
   const q = ((document.getElementById('crm-pick-search') || {}).value || '').trim().toLowerCase();
   let list = crmCards.filter(c => !q || (c.name || '').toLowerCase().includes(q));
   // The currently-linked client PINS to the top of the UNFILTERED list (an in-place
@@ -8232,6 +8242,24 @@ async function crmApplyPick(i) {
   const target = (dlg && dlg.dataset.target) || 'quote';
   const c = crmCards && crmCards[i];
   if (!c) return;
+  // LIST mode: link-only, straight to the saved quote's row. No form fill, no overwrite
+  // dialog — it can't change any printed field, so it's risk-free by construction.
+  if (target === 'list') {
+    const ref = dlg && dlg.dataset.ref;
+    const sq = savedQuotes.find(q => q.ref === ref);
+    if (!sq) { crmRemovePicker(); return; }
+    sq.airtableCardId = c.id; sq.clientEmail = c.email || '';
+    if (USE_SUPABASE) {
+      try { await sb('PATCH', 'quotes', { airtable_card_id: c.id, client_email: c.email || '' }, '?ref=eq.' + encodeURIComponent(ref)); }
+      catch (e) { toast('Link failed: ' + e.message); return; }
+    }
+    // if that quote is the one loaded in the builder, keep its live link + chip in step
+    if (g('in-ref') === ref) { crmLink.cardId = c.id; crmLink.email = c.email || ''; crmPaintChip(); }
+    crmRemovePicker();
+    renderSaved();
+    toast(ref + ' linked to ' + (c.name || 'card'));
+    return;
+  }
   const a = crmSplitAddress(c.address);
   const ids = target === 'dc' ? ['dc-cust', 'dc-a1', 'dc-city', 'dc-post'] : ['in-cust', 'in-a1', 'in-city', 'in-post'];
   const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
@@ -8275,6 +8303,9 @@ function crmUnlink(target) {
   else { crmLink.cardId = ''; crmLink.email = ''; isDirty = true; }
   crmPaintChip();
 }
+// Retro-link an existing saved quote to a CRM card straight from the Saved Quotes list —
+// no builder load, link-only (see crmApplyPick's 'list' branch).
+function crmListLink(ref) { crmOpenPicker('list', ref); }
 // List-row 🔗 tag (Saved Quotes + Design Contracts): linked records show it, unlinked
 // show nothing — the ABSENCE is the retro-linking to-do signal. Tooltip carries the
 // card's email so which-card can be sanity-checked without opening the record.
@@ -8953,7 +8984,7 @@ function renderSaved() {
     return `<div class="sq-item" style="cursor:pointer" onclick="loadQuote('${sq.ref}')">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
         <span class="sq-ref" style="font-family:'DM Mono',monospace;font-weight:600;min-width:80px">${sq.ref}</span>
-        <span class="sq-cust" style="flex:1;min-width:120px">${cwEsc(sq.customer||'—')}${sq.airtableCardId ? crmLinkTagHtml(sq.clientEmail) : ''}</span>
+        <span class="sq-cust" style="flex:1;min-width:120px">${cwEsc(sq.customer||'—')}${sq.airtableCardId ? crmLinkTagHtml(sq.clientEmail) : `<button class="no-print" onclick="event.stopPropagation();crmListLink('${sq.ref}')" title="Link this quote to a CRM card (doesn't change the name or address)" style="margin-left:8px;font-size:10px;color:var(--i3);background:none;border:1px solid var(--bd);border-radius:8px;padding:0 6px;cursor:pointer">📇 Link</button>`}</span>
         <span class="sq-date" style="color:var(--i3);font-size:12px;min-width:90px">${d}</span>
         <span style="font-weight:600;min-width:80px;text-align:right">£${total.toFixed(2)}</span>
         <select onclick="event.stopPropagation()" onchange="updateQuoteStatus('${sq.ref}',this.value)"
@@ -10604,23 +10635,50 @@ window.addEventListener('beforeunload', e => {
 // self-clears the moment isDirty goes false by ANY route (save, load, new — a light
 // self-poll while it exists, no touch points in the save paths). Never blocks the
 // print. Contract/report printing excluded: different documents, quote flag is noise.
+// After a QUOTE print (not contract/report), offer the two things a print usually
+// implies: (a) SAVE if there are unsaved changes (the QT-0065 divergence guard), and
+// (b) MARK AS SENT if the printed quote is a saved Draft — printing a quote normally
+// means it's going to the client (Neal, 2026-08-10). Both are OFFERS, never automatic:
+// plenty of prints are review/reprints, and post-Phase-3 marking Sent will fire a CRM
+// push, so a deliberate click is right. Mark-as-Sent saves first if dirty, so the
+// recorded-Sent version matches the PDF that went out.
 window.addEventListener('afterprint', () => {
-  if (!isDirty) return;
   if (document.body.classList.contains('contract-mode') || document.body.classList.contains('report-mode')) return;
-  showUnsavedPrintBanner();
+  const ref = g('in-ref');
+  const sq = ref ? savedQuotes.find(q => q.ref === ref) : null;
+  const canMarkSent = !!sq && (sq.status || 'Draft') === 'Draft';
+  if (!isDirty && !canMarkSent) return;      // nothing worth saying
+  showAfterPrintBanner(ref);
 });
-function showUnsavedPrintBanner() {
-  if (document.getElementById('unsaved-print-banner')) return;
+async function afterPrintMarkSent(ref) {
+  if (isDirty) { try { await saveQuote(); } catch (e) { toast('Save failed: ' + e.message); return; } }
+  await updateQuoteStatus(ref, 'Sent');      // stamps status_changed_at; toast handled there
+  const b = document.getElementById('after-print-banner');
+  if (b) { clearInterval(b._t); b.remove(); }
+}
+function showAfterPrintBanner(ref) {
+  if (document.getElementById('after-print-banner')) return;
   const d = document.createElement('div');
-  d.id = 'unsaved-print-banner';
+  d.id = 'after-print-banner';
   d.className = 'no-print';
   d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:#FFFBEB;border-bottom:2px solid #F59E0B;color:#92400E;font-size:13px;font-weight:600;padding:9px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
-  d.innerHTML = `<span>⚠ That print included <u>unsaved changes</u> — the PDF has work the app hasn't saved yet.</span>
-    <button onclick="saveQuote()" style="background:#F59E0B;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">💾 Save now</button>
-    <button onclick="clearInterval(this.parentElement._t);this.parentElement.remove()" title="Hide — it comes back on the next unsaved print" style="background:none;border:1px solid #F59E0B;border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:#92400E">later</button>`;
+  const sqNow = ref ? savedQuotes.find(q => q.ref === ref) : null;
+  const canMarkSent = !!sqNow && (sqNow.status || 'Draft') === 'Draft';   // only a Draft can move to Sent
+  const dirtyBtn = isDirty ? '<button onclick="saveQuote()" style="background:#F59E0B;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">💾 Save now</button>' : '';
+  const sentBtn = canMarkSent ? '<button onclick="afterPrintMarkSent(\'' + ref + '\')" style="background:#2563EB;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">✓ Mark as Sent</button>' : '';
+  const msg = isDirty
+    ? '⚠ That print included <u>unsaved changes</u> — the PDF has work the app hasn\'t saved yet.'
+    : '🖨 Printed. If you\'ve sent this to the client, mark it as Sent.';
+  d.innerHTML = '<span>' + msg + '</span>' + dirtyBtn + sentBtn +
+    '<button onclick="clearInterval(this.parentElement._t);this.parentElement.remove()" title="Hide — it comes back on the next print that needs it" style="background:none;border:1px solid #F59E0B;border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:#92400E">later</button>';
   document.body.appendChild(d);
-  // self-clearing: saved (or changes discarded via load/new) → banner goes by itself
-  d._t = setInterval(() => { if (!isDirty) { clearInterval(d._t); d.remove(); } }, 1000);
+  // Self-clearing: once nothing it offered still applies (saved AND no longer a Draft
+  // to send — by any route), the banner removes itself.
+  d._t = setInterval(() => {
+    const sq = ref ? savedQuotes.find(q => q.ref === ref) : null;
+    const stillDraft = !!sq && (sq.status || 'Draft') === 'Draft';
+    if (!isDirty && !stillDraft) { clearInterval(d._t); d.remove(); }
+  }, 1000);
 }
 
 recalc();
