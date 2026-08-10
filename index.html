@@ -6943,6 +6943,64 @@ async function sigReopenNew(ref) {   // "send the new version" from the signed s
   try { rows = await sigFetchRows(ref); } catch (e) {}
   if (a) sigRenderDialog(a, rows, true);
 }
+// ── Paper (wet) signature ──────────────────────────────────────────────────────
+// Records a contract signed on a PRINTED copy. Deliberately NOT an e-signature: the
+// e-sign evidence trail (frozen HTML, hash, IP, "signed electronically") must stay
+// honest — signing electronically on the client's behalf would fabricate their
+// signature. Instead cm.paperSigned = {date, recordedBy, recordedAt} records the fact
+// (shown as a distinct "Signed (paper)" state), revokes any live online link so the
+// contract can't also be e-signed, and leaves the actual signed copy in OneDrive.
+function sigPaperDialog(ref) {
+  return new Promise(resolve => {
+    const old = document.getElementById('sig-paper-dialog'); if (old) old.remove();
+    const today = new Date().toISOString().split('T')[0];
+    const wrap = document.createElement('div');
+    wrap.id = 'sig-paper-dialog';
+    wrap.innerHTML =
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:470px;max-width:95vw">' +
+        '<h3 style="margin:0 0 6px">Record a paper signature — ' + cwEsc(ref) + '</h3>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:10px">Use this when the client signed a <strong>printed</strong> copy instead of the online link. It records the contract as signed on paper (shown separately from an electronic signature) and revokes any live signing link so it can\'t also be e-signed.</div>' +
+        '<div style="font-size:12px;color:var(--i3);margin-bottom:12px">Keep the signed copy in the client\'s OneDrive folder — it isn\'t stored here.</div>' +
+        '<div class="cw-fg" style="max-width:200px"><label>Date signed</label><input type="date" id="sig-paper-date" value="' + today + '" max="' + today + '"></div>' +
+        '<div class="cw-modal-btns">' +
+          '<button class="btn btn-primary" id="sig-paper-go">Record paper signature</button>' +
+          '<button class="btn btn-outline" id="sig-paper-cancel">Cancel</button>' +
+        '</div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('sig-paper-go').onclick = () => done((document.getElementById('sig-paper-date').value || today));
+    document.getElementById('sig-paper-cancel').onclick = () => done(null);
+  });
+}
+async function sigMarkPaperSigned(ref) {
+  const a = sigRecordFor(ref);
+  if (!a || !a.cm) return;
+  const date = await sigPaperDialog(ref);
+  if (!date) return;
+  // Kill any live online link — a paper-signed contract must not also be signable online.
+  try { const rows = await sigFetchRows(ref); const act = rows.find(sigIsActive); if (act) await sigRevokeRow(act.id); }
+  catch (e) { /* signing table unreachable — nothing to revoke */ }
+  a.cm.paperSigned = { date, recordedBy: (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || '', recordedAt: new Date().toISOString() };
+  a.cm.status = 'Signed';
+  try { await sigPersistCm(a); }
+  catch (e) { toast('Could not save: ' + e.message); return; }
+  removeSigDialog();
+  await sigRefreshStatuses();   // repaints badges + the Contracts panel; paperSigned wins the derivation
+  toast('✓ ' + ref + ' recorded as signed on paper');
+}
+async function sigUnmarkPaper(ref) {
+  const a = sigRecordFor(ref);
+  if (!a || !a.cm || !a.cm.paperSigned) return;
+  if (!confirm('Remove the paper-signed mark from ' + ref + '?\n\nThis does NOT restore any revoked online link.')) return;
+  delete a.cm.paperSigned;
+  a.cm.status = 'Generated';   // sigRefreshStatuses re-derives from any signing rows
+  try { await sigPersistCm(a); }
+  catch (e) { toast('Could not save: ' + e.message); return; }
+  removeSigDialog();
+  await sigRefreshStatuses();
+  toast(ref + ' — paper-signed mark removed');
+}
 async function sigOpenSendDialog(refArg) {
   const ref = refArg || g('in-ref');
   if (!ref) { toast('Save the quote first'); return; }
@@ -6969,7 +7027,18 @@ function sigRenderDialog(a, rows, forceNew) {
   const drift = Math.abs((cm.total || 0) - savedTotal) > 0.005;
 
   let body;
-  if (signed && !active) {
+  if (cm.paperSigned && !forceNew) {
+    const ps = cm.paperSigned;
+    const viewFn = a.isDesign ? 'viewDesignContract' : 'viewSavedContract';
+    body = '<div style="font-size:13px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px">✓ <strong>Signed on paper</strong> on ' +
+      sigDateOnly(ps.date + 'T00:00:00') + (ps.recordedBy ? ' · recorded by ' + cwEsc(ps.recordedBy) : '') + '.</div>' +
+      '<div style="font-size:12px;color:var(--i2);margin-top:8px">This contract was signed on a printed copy, not the online link. The signed copy is kept in the client\'s OneDrive folder — it isn\'t stored in the app.</div>' +
+      '<div class="cw-modal-btns">' +
+        '<button class="btn btn-primary" onclick="removeSigDialog();' + viewFn + '(\'' + ref + '\')">📄 View contract</button>' +
+        '<button class="btn btn-outline" onclick="removeSigDialog()">Close</button>' +
+      '</div>' +
+      '<div style="font-size:11px;color:var(--i3);margin-top:10px">Recorded in error? <a href="#" onclick="sigUnmarkPaper(\'' + ref + '\');return false;">Undo — remove the paper-signed mark</a>.</div>';
+  } else if (signed && !active) {
     // Full trail, not just the signed date — answers "when did you send it?" and
     // "when did they open it?" months later, without digging in the database.
     const trail =
@@ -7013,7 +7082,10 @@ function sigRenderDialog(a, rows, forceNew) {
       '<div class="cw-modal-btns">' +
         '<button class="btn btn-red" onclick="sigRevoke(' + active.id + ',\'' + ref + '\')">Revoke links</button>' +
         '<button class="btn btn-outline" onclick="removeSigDialog()">Close</button>' +
-      '</div>';
+      '</div>' +
+      // The client signed the printed copy instead of the online link — record it and
+      // revoke the live link in one motion (the common older-client / dead-laptop case).
+      '<div style="font-size:11px;color:var(--i3);margin-top:10px">Client signed a printed copy instead? <a href="#" onclick="sigMarkPaperSigned(\'' + ref + '\');return false;">Record a paper signature</a> (this revokes the online link).</div>';
   } else {
     const lastSigId = parseInt(localStorage.getItem('fl_countersig_last') || '', 10);
     const defSig = companySigns.find(s => s.id === lastSigId) || companySigns[0];
@@ -7033,7 +7105,8 @@ function sigRenderDialog(a, rows, forceNew) {
       '<div class="cw-row2"><div class="cw-fg"><label>Signer name</label><input type="text" id="sig-name-1" placeholder="e.g. Jane Smith"></div>' +
       '<div class="cw-fg"><label>Client\'s email</label><input type="text" id="sig-email-1" placeholder="optional"></div></div>' +
       '<div class="cw-modal-btns"><button class="btn btn-primary" id="sig-send-btn" onclick="sigDoSend(\'' + ref + '\')">✍ Freeze contract &amp; create link</button>' +
-      '<button class="btn btn-outline" onclick="removeSigDialog()">Cancel</button></div>';
+      '<button class="btn btn-outline" onclick="removeSigDialog()">Cancel</button></div>' +
+      '<div style="font-size:11px;color:var(--i3);margin-top:10px">Client signed a printed copy instead of using the online link? <a href="#" onclick="sigMarkPaperSigned(\'' + ref + '\');return false;">Record a paper signature</a>.</div>';
   }
 
   const wrap = document.createElement('div');
@@ -7137,6 +7210,10 @@ let sigStatusMap = {};
 // and a live link on one is a hazard to revoke (see updateQuoteStatus + the panel).
 const SIG_DEAD_STATUSES = ['Declined', 'Superseded'];
 function sigBadge(ref) {
+  // Paper signature wins and needs NO signing row (a contract can be paper-signed
+  // without ever being sent online). Shown distinctly — never dressed up as e-signed.
+  const rec = sigRecordFor(ref);
+  if (rec && rec.cm && rec.cm.paperSigned) return { label: '✓ Signed (paper)', col: '#15803D' };
   const r = sigStatusMap[ref];
   if (!r) return null;
   if (r.status === 'signed') return { label: '✓ Signed', col: '#15803D' };
@@ -7164,7 +7241,8 @@ async function sigRefreshStatuses() {
   for (const ref in sigStatusMap) {
     const r = sigStatusMap[ref], a = sigRecordFor(ref);
     if (!a || !a.cm) continue;
-    const want = r.status === 'signed' ? 'Signed' : (r.status === 'revoked' ? 'Generated' : 'Sent');
+    // Paper signature is the truth over whatever the (now-revoked) e-sign row says.
+    const want = a.cm.paperSigned ? 'Signed' : (r.status === 'signed' ? 'Signed' : (r.status === 'revoked' ? 'Generated' : 'Sent'));
     if (a.cm.status !== want) {
       a.cm.status = want;
       try { await sigPersistCm(a); } catch (e) {}
@@ -7277,15 +7355,17 @@ async function openContractsPanel(designMode) {
   // contracts generated but with NO signing request at all — the forgotten ones
   if (wantDesign) {
     designContracts.forEach(dc => {
-      if (dc.contract_meta && !latest[dc.ref] && dc.contract_meta.status !== 'Signed') {
-        attention.push({ kind: 'Never sent for signature', ref: dc.ref, customer: dc.customer || '', when: dc.contract_meta.generatedAt, note: 'contract generated ' + sigDateOnly(dc.contract_meta.generatedAt) });
-      }
+      const cmd = dc.contract_meta;
+      if (!cmd || latest[dc.ref]) return;
+      if (cmd.paperSigned) { signedList.push({ ref: dc.ref, customer: dc.customer || '', when: cmd.paperSigned.date + 'T00:00:00', paper: true }); return; }
+      if (cmd.status !== 'Signed') attention.push({ kind: 'Never sent for signature', ref: dc.ref, customer: dc.customer || '', when: cmd.generatedAt, note: 'contract generated ' + sigDateOnly(cmd.generatedAt) });
     });
   } else {
     savedQuotes.forEach(sq => {
-      if (sq.contractMeta && !latest[sq.ref] && sq.contractMeta.status !== 'Signed' && !isDead(sq)) {
-        attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: sq.contractMeta.generatedAt, note: 'contract generated ' + sigDateOnly(sq.contractMeta.generatedAt) });
-      }
+      const cmq = sq.contractMeta;
+      if (!cmq || latest[sq.ref]) return;
+      if (cmq.paperSigned) { signedList.push({ ref: sq.ref, customer: sq.customer || '', when: cmq.paperSigned.date + 'T00:00:00', paper: true }); return; }
+      if (cmq.status !== 'Signed' && !isDead(sq)) attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: cmq.generatedAt, note: 'contract generated ' + sigDateOnly(cmq.generatedAt) });
     });
   }
   Object.values(latest).forEach(r => {
@@ -7296,6 +7376,10 @@ async function openContractsPanel(designMode) {
     const orphan = !rec;
     const dead = isDead(sq);
     const base = { ref: r.quote_ref, customer: r.customer || (sq && sq.customer) || '', r };
+    // Paper signature wins even when a (now-revoked) online row exists — otherwise the
+    // revoked row would wrongly list it as "send new links, or decline".
+    const cmRec = rec && (wantDesign ? rec.contract_meta : rec.contractMeta);
+    if (cmRec && cmRec.paperSigned) { signedList.push({ ...base, when: cmRec.paperSigned.date + 'T00:00:00', paper: true }); return; }
     if (r.status === 'signed') {
       // signed is a legal fact — always shown, quietly annotated if the deal died later
       signedList.push({ ...base, orphan, when: r.signed_at, deadNote: orphan ? ' — ' + (wantDesign ? 'design contract' : 'quote') + ' deleted, signed record kept' : (dead ? ' (quote since ' + sq.status + ')' : '') });
@@ -7363,10 +7447,12 @@ async function openContractsPanel(designMode) {
     const start = sq && sq.schedulePlan && sq.schedulePlan.startDate;
     // Orphans can't open the send dialog (no record behind it) — but the signed
     // document lives in the signing row itself, so View signed always works.
-    const actions = e.orphan
+    // Paper-signed rows have no frozen online doc; Manage opens their paper state.
+    const actions = (e.orphan && e.r)
       ? '<button class="btn btn-outline btn-sm" onclick="removeContractsPanel();sigViewSigned(' + e.r.id + ')">View signed</button>'
       : manageBtn(e.ref);
-    return rowHtml({ ...e, note: 'signed ' + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') + (e.deadNote || '') }, actions);
+    const how = e.paper ? 'signed on paper ' : 'signed ';
+    return rowHtml({ ...e, note: how + sigDateOnly(e.when) + (start ? ' · job starts ' + sigDateOnly(start + 'T00:00:00') : '') + (e.deadNote || '') }, actions);
   };
   const section = (title, colour, inner) =>
     '<div style="margin-bottom:14px"><div style="font-weight:700;font-size:12px;letter-spacing:.4px;text-transform:uppercase;color:' + colour + ';margin-bottom:4px">' + title + '</div>' +
