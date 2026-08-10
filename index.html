@@ -10651,10 +10651,14 @@ window.addEventListener('afterprint', () => {
   showAfterPrintBanner(ref);
 });
 async function afterPrintMarkSent(ref) {
+  const wasDirty = isDirty;
   if (isDirty) { try { await saveQuote(); } catch (e) { toast('Save failed: ' + e.message); return; } }
-  await updateQuoteStatus(ref, 'Sent');      // stamps status_changed_at; toast handled there
+  await updateQuoteStatus(ref, 'Sent');      // stamps status_changed_at
   const b = document.getElementById('after-print-banner');
   if (b) { clearInterval(b._t); b.remove(); }
+  // Single clear confirmation — the save + status toasts fired back-to-back and the
+  // second buried the first, so it wasn't obvious the save happened (Neal, QT-0053).
+  toast(wasDirty ? '✓ ' + ref + ' saved and marked as Sent' : '✓ ' + ref + ' marked as Sent');
 }
 function showAfterPrintBanner(ref) {
   if (document.getElementById('after-print-banner')) return;
