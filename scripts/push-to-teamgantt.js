@@ -47,6 +47,10 @@ const flag = f => args.includes(f);
 const ref = args.find(a => !a.startsWith('--'));
 const norm = s => (s || '').trim().toLowerCase();
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Labour-note rounding: UP to the nearest half (Neal's pick), with a small tolerance
+// so float noise never bumps a clean figure (27.0000001 stays 27, not 27.5).
+const upHalf = x => Math.ceil(x * 2 - 0.001) / 2;
+const halfFmt = v => (v * 2) % 2 ? v.toFixed(1) : String(v);
 
 async function tg(method, p, body) {
   const res = await fetch(TG + p, {
@@ -122,6 +126,10 @@ async function main() {
     console.log('\n— DRY RUN (nothing written) —');
     if (t.customerInfo && (t.customerInfo.addr1 || t.customerInfo.city || t.customerInfo.post))
       console.log('  customer info note: ' + [t.customerInfo.name, t.customerInfo.addr1, t.customerInfo.city, t.customerInfo.post].filter(Boolean).join(', '));
+    if (t.labour && t.labour.manDays > 0) {
+      const team = Math.max(1, t.labour.teamSize || 1);
+      console.log(`  labour note: ${halfFmt(upHalf(t.labour.manDays))} man-days ≈ ${halfFmt(upHalf(t.labour.manDays / team))} days, team of ${team}`);
+    }
     if ((t.actions || []).length) {
       console.log('  things to action (' + t.actions.length + '):');
       t.actions.forEach(a => console.log('      ☐ ' + a));
@@ -165,6 +173,33 @@ async function main() {
       console.log(`  deadline milestone -> ${t.deadline} (template placeholder missing; created new)`);
     }
     await sleep(150);
+  }
+
+  // ── 3a. Quoted labour: two-line note on the deadline milestone (2026-08-11, Neal —
+  // the crew see the man-days the quote pays for; deliberately NO £ figure and NO
+  // £/man-day rate, either would give the labour value away). Rounding up to the
+  // nearest half + the wording are presentation, so they live here (same rule as the
+  // delivery colour). Old plan.tg without labour skips silently; a missing milestone
+  // warns + skips. Keep in step with the edge function.
+  const lb = t.labour;
+  if (lb && lb.manDays > 0) {
+    const msTask = existing.find(x => x.type === 'milestone' && norm(x.name).includes(DEADLINE_MILESTONE));
+    if (msTask) {
+      const team = Math.max(1, lb.teamSize || 1);
+      const md = upHalf(lb.manDays), days = upHalf(lb.manDays / team);
+      const note = `<p><strong>Quoted labour: ${halfFmt(md)} man-day${md !== 1 ? 's' : ''} on site</strong></p>`
+                 + `<p>≈ ${halfFmt(days)} working day${days !== 1 ? 's' : ''} as a team of ${team}</p>`;
+      try {
+        await tg('POST', `/tasks/${msTask.id}/comments`, { type: 'note', message: note });
+        console.log(`  labour note -> ${halfFmt(md)} man-days ≈ ${halfFmt(days)} days, team of ${team}`);
+      } catch (e1) {
+        try { // field-name fallback — the blueprint is ambiguous between message/body
+          await tg('POST', `/tasks/${msTask.id}/comments`, { type: 'note', body: note });
+          console.log('  labour note (body fallback)');
+        } catch (e2) { console.log('  ⚠ labour note failed: ' + e2.message); }
+      }
+      await sleep(150);
+    } else console.log('  ⚠ "Allocated days and deadline" milestone not found — labour note skipped');
   }
 
   // ── 3b. Customer information: address as a note on the template's placeholder

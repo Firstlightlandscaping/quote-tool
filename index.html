@@ -5860,6 +5860,13 @@ function spExportForPush() {
     // pushed as CHECKLIST items on the template's "Things to action" placeholder so
     // the outstanding count shows (0/3).
     actions: (Array.isArray(p.actionNotes) ? p.actionNotes : String(p.actionNotes || '').split(/\n/)).map(s => String(s).trim()).filter(Boolean),
+    // Quoted labour for a note on the "Allocated days and deadline" milestone
+    // (2026-08-11, Neal — the crew should see the man-days the quote pays for, but
+    // NO money: the £ figure and the £/man-day rate stay app-side, since man-days ×
+    // rate would give the labour value away). DATA here (raw figures); the pushers
+    // round up to the nearest half + compose the two-line note (presentation).
+    // Old saved plans lack this field; pushers skip silently until re-saved.
+    labour: { manDays: spQuoteLabour().manDays, teamSize: crew },
     startDate: p.startDate || '',
     deadline: p.deadline || '',
     tasks: p.tasks.map((t, i) => ({
