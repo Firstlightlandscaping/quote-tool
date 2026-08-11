@@ -376,6 +376,16 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 .sp-insert:hover,body.sp-dragging .sp-insert{opacity:1}
 .sp-insert-pill{position:relative;background:white;border:1px solid var(--bd);border-radius:10px;font-size:10px;padding:0 9px;color:var(--i2);cursor:pointer;line-height:17px;font-weight:600}
 .sp-insert-pill:hover{border-color:#16A34A;color:#15803D}
+/* Sticky "On the quote" tray (2026-08-11, Neal: on a long Project Breakdown the drag
+   SOURCE was five screens up — you can't drop what you can't see). The column follows
+   the viewport like the Plan-dates rail already does; its list flexes to the window
+   height with its own scrollbar. ONLY when the columns are side by side — in the
+   narrow stacked layout a sticky tray would smother the plan beneath it. */
+.sp-tray-list{max-height:460px}
+@media (min-width: 900px) {
+  .sp-tray-col{position:sticky;top:10px;max-height:calc(100vh - 20px);display:flex;flex-direction:column}
+  .sp-tray-col .sp-tray-list{max-height:none;flex:1 1 auto;min-height:0}
+}
 /* Things-to-action rows: quiet list lines, not five form fields — border appears
    only on hover/focus so the amber box stays one calm block. */
 .sp-act-in{flex:1;min-width:0;font-size:13px;font-family:inherit;color:var(--i1);padding:4px 7px;border:1px solid transparent;background:transparent;border-radius:5px;transition:border-color .12s ease,background .12s ease}
@@ -5464,9 +5474,9 @@ function renderSchedule() {
         })()}
       </div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
-        <div style="flex:0 1 330px;min-width:290px">
+        <div class="sp-tray-col" style="flex:0 1 330px;min-width:290px">
           <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick to combine or attach</span></div>
-          <div style="max-height:460px;overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
+          <div class="sp-tray-list" style="overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
           ${quoteListHtml ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
             <button class="btn btn-outline btn-sm" onclick="spSeedSelected()" title="Combine the ticked lines into ONE task (their labour summed ÷ team)">⊕ One combined task</button>
             <button class="btn btn-outline btn-sm" onclick="spSeedSeparate()" title="Add each ticked line as its OWN task, in quote order">➕ Separate tasks</button>
