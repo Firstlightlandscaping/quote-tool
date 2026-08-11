@@ -376,6 +376,11 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 .sp-insert:hover,body.sp-dragging .sp-insert{opacity:1}
 .sp-insert-pill{position:relative;background:white;border:1px solid var(--bd);border-radius:10px;font-size:10px;padding:0 9px;color:var(--i2);cursor:pointer;line-height:17px;font-weight:600}
 .sp-insert-pill:hover{border-color:#16A34A;color:#15803D}
+/* Things-to-action rows: quiet list lines, not five form fields — border appears
+   only on hover/focus so the amber box stays one calm block. */
+.sp-act-in{flex:1;min-width:0;font-size:13px;font-family:inherit;color:var(--i1);padding:4px 7px;border:1px solid transparent;background:transparent;border-radius:5px;transition:border-color .12s ease,background .12s ease}
+.sp-act-in:hover{border-color:#FDE68A;background:rgba(255,255,255,.6)}
+.sp-act-in:focus{border-color:#F59E0B;background:white;outline:none}
 </style>
 </head>
 <body>
@@ -5440,11 +5445,23 @@ function renderSchedule() {
       <!-- Things to action (2026-08-11, Neal): planning-time to-dos that must survive
            months until the job runs — e.g. "drawings need updating to match contract".
            Saved WITH the plan (the in-app reminder on return) and pushed as CHECKLIST
-           items on the template's "Things to action" task (outstanding count visible
-           in TeamGantt, ticked off there — the app deliberately has no ticking). -->
+           items on the template's "Things to action" task. Entered as checklist ROWS
+           (Neal rejected the textarea as messy): one input per action, Enter adds the
+           next, × removes. The ☐ is deliberately NOT tickable here — the app is the
+           planning pad, TeamGantt owns done/not-done after push. -->
       <div style="margin-bottom:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 12px">
-        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#92400E;margin-bottom:4px">📌 Things to action <span style="font-weight:400;text-transform:none;font-size:11px;color:#B45309">— one per line · saves with the plan · pushed to TeamGantt as a tick-list</span></div>
-        <textarea id="sp-action-notes" rows="2" placeholder="e.g. Drawings need updating — contract doesn't reflect the drawing" oninput="spActionNotes(this.value)" style="width:100%;box-sizing:border-box;font-size:13px;padding:7px 9px;border:1px solid #FDE68A;border-radius:6px;font-family:inherit;line-height:1.45;resize:vertical;background:white;color:var(--i1)">${cwEsc(p.actionNotes||'')}</textarea>
+        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#92400E;margin-bottom:2px">📌 Things to action <span style="font-weight:400;text-transform:none;font-size:11px;color:#B45309">— saves with the plan · becomes the tick-list on TeamGantt's "Things to action"</span></div>
+        ${(() => {
+          const arr = spActionsNorm();
+          const rows = arr.length ? arr : [''];
+          return rows.map((v, i) => `
+          <div style="display:flex;align-items:center;gap:7px;padding:1px 0">
+            <span title="Ticked off in TeamGantt after the push — not here" style="color:#D6BF8E;cursor:default;font-size:14px;flex-shrink:0">☐</span>
+            <input type="text" id="sp-action-${i}" class="sp-act-in" value="${cwEsc(v)}" ${i === 0 && rows.length === 1 && !v ? 'placeholder="type an action…"' : ''} oninput="spActionEdit(${i},this.value)" onkeydown="spActionKey(event,${i})">
+            ${rows.length > 1 || v ? `<button onclick="spActionRemove(${i})" title="Remove this action" style="background:none;border:none;cursor:pointer;font-size:13px;color:#D6BF8E;padding:0 4px;flex-shrink:0">×</button>` : ''}
+          </div>`).join('') +
+          `<div style="margin-top:2px"><a href="#" onclick="spActionAdd();return false;" style="font-size:11px;color:#B45309;text-decoration:none;font-weight:600">＋ add another</a><span style="font-size:11px;color:#D6BF8E;margin-left:8px">(or press Enter on a line)</span></div>`;
+        })()}
       </div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:0 1 330px;min-width:290px">
@@ -5517,9 +5534,37 @@ function renderSchedule() {
 }
 
 function spSetField(k, v) { spEnsurePlan()[k] = v; spMark(); renderSchedule(); }
-// Things-to-action box: no re-render on input (would drop the caret mid-typing);
-// nothing else displays the text live, so spMark alone is enough.
-function spActionNotes(v) { spEnsurePlan().actionNotes = v; spMark(); }
+// Things-to-action rows. actionNotes is an ARRAY of strings (one per action); the
+// brief textarea era stored a string — normalize in place so old data arrives as rows.
+function spActionsNorm() {
+  const p = spEnsurePlan();
+  if (!Array.isArray(p.actionNotes)) p.actionNotes = String(p.actionNotes || '').split(/\n/).filter(s => s.trim());
+  return p.actionNotes;
+}
+// Typing edits in place with NO re-render (would drop the caret); add/remove re-render.
+function spActionEdit(i, v) { const a = spActionsNorm(); a[i] = v; spMark(); }
+function spActionKey(e, i) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const a = spActionsNorm();
+  if (!a.length) a.push(e.target.value);     // sole placeholder row not yet in the array
+  a.splice(i + 1, 0, '');
+  spMark(); renderSchedule();
+  const el = document.getElementById('sp-action-' + (i + 1));
+  if (el) el.focus();
+}
+function spActionAdd() {
+  const a = spActionsNorm();
+  a.push('');
+  spMark(); renderSchedule();
+  const el = document.getElementById('sp-action-' + (a.length - 1));
+  if (el) el.focus();
+}
+function spActionRemove(i) {
+  const a = spActionsNorm();
+  a.splice(i, 1);
+  spMark(); renderSchedule();
+}
 function spAddTaskGo() {
   const inp = document.getElementById('sp-new-task');
   const daysEl = document.getElementById('sp-new-days');
@@ -5801,9 +5846,10 @@ function spExportForPush() {
     // (presentation) — the app-serialises rule. Old saved plans lack this field;
     // pushers skip silently until the plan is re-saved.
     customerInfo: { name: g('in-cust') || '', addr1: g('in-a1') || '', city: g('in-city') || '', post: g('in-post') || '' },
-    // Things to action — one per line in the box; pushed as CHECKLIST items on the
-    // template's "Things to action" placeholder so the outstanding count shows (0/3).
-    actions: String(p.actionNotes || '').split(/\n/).map(s => s.trim()).filter(Boolean),
+    // Things to action — the box's rows (array; legacy string splits on newlines);
+    // pushed as CHECKLIST items on the template's "Things to action" placeholder so
+    // the outstanding count shows (0/3).
+    actions: (Array.isArray(p.actionNotes) ? p.actionNotes : String(p.actionNotes || '').split(/\n/)).map(s => String(s).trim()).filter(Boolean),
     startDate: p.startDate || '',
     deadline: p.deadline || '',
     tasks: p.tasks.map((t, i) => ({
@@ -5834,6 +5880,9 @@ async function saveSchedulePlan() {
   if (!ref) { toast('Save the quote first (it needs a QT number), then save the schedule'); return; }
   if (!schedulePlan) { toast('Nothing to save yet'); return; }
   (schedulePlan.deliveries||[]).forEach(d => { delete d._drift; }); // transient render flag, not data
+  // Compact the action rows at save: trims + drops empties (a blank row left behind
+  // by Enter/add is scaffolding, not data), and migrates any legacy string to rows.
+  schedulePlan.actionNotes = (Array.isArray(schedulePlan.actionNotes) ? schedulePlan.actionNotes : String(schedulePlan.actionNotes || '').split(/\n/)).map(s => String(s).trim()).filter(Boolean);
   schedulePlan.tg = spExportForPush();
   schedulePlan.updatedAt = new Date().toISOString();
   const sq = savedQuotes.find(q => q.ref === ref);
