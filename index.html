@@ -5437,6 +5437,15 @@ function renderSchedule() {
           })()}
         </div>
       </div>
+      <!-- Things to action (2026-08-11, Neal): planning-time to-dos that must survive
+           months until the job runs — e.g. "drawings need updating to match contract".
+           Saved WITH the plan (the in-app reminder on return) and pushed as CHECKLIST
+           items on the template's "Things to action" task (outstanding count visible
+           in TeamGantt, ticked off there — the app deliberately has no ticking). -->
+      <div style="margin-bottom:12px;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:8px 12px">
+        <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:#92400E;margin-bottom:4px">📌 Things to action <span style="font-weight:400;text-transform:none;font-size:11px;color:#B45309">— one per line · saves with the plan · pushed to TeamGantt as a tick-list</span></div>
+        <textarea id="sp-action-notes" rows="2" placeholder="e.g. Drawings need updating — contract doesn't reflect the drawing" oninput="spActionNotes(this.value)" style="width:100%;box-sizing:border-box;font-size:13px;padding:7px 9px;border:1px solid #FDE68A;border-radius:6px;font-family:inherit;line-height:1.45;resize:vertical;background:white;color:var(--i1)">${cwEsc(p.actionNotes||'')}</textarea>
+      </div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
         <div style="flex:0 1 330px;min-width:290px">
           <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick to combine or attach</span></div>
@@ -5508,6 +5517,9 @@ function renderSchedule() {
 }
 
 function spSetField(k, v) { spEnsurePlan()[k] = v; spMark(); renderSchedule(); }
+// Things-to-action box: no re-render on input (would drop the caret mid-typing);
+// nothing else displays the text live, so spMark alone is enough.
+function spActionNotes(v) { spEnsurePlan().actionNotes = v; spMark(); }
 function spAddTaskGo() {
   const inp = document.getElementById('sp-new-task');
   const daysEl = document.getElementById('sp-new-days');
@@ -5789,6 +5801,9 @@ function spExportForPush() {
     // (presentation) — the app-serialises rule. Old saved plans lack this field;
     // pushers skip silently until the plan is re-saved.
     customerInfo: { name: g('in-cust') || '', addr1: g('in-a1') || '', city: g('in-city') || '', post: g('in-post') || '' },
+    // Things to action — one per line in the box; pushed as CHECKLIST items on the
+    // template's "Things to action" placeholder so the outstanding count shows (0/3).
+    actions: String(p.actionNotes || '').split(/\n/).map(s => s.trim()).filter(Boolean),
     startDate: p.startDate || '',
     deadline: p.deadline || '',
     tasks: p.tasks.map((t, i) => ({

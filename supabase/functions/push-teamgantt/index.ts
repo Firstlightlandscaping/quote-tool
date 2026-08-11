@@ -107,6 +107,10 @@ async function handle(req: Request): Promise<Response> {
     say("— DRY RUN (nothing written) —");
     if (t.customerInfo && (t.customerInfo.addr1 || t.customerInfo.city || t.customerInfo.post))
       say("  customer info note: " + [t.customerInfo.name, t.customerInfo.addr1, t.customerInfo.city, t.customerInfo.post].filter(Boolean).join(", "));
+    if ((t.actions || []).length) {
+      say("  things to action (" + t.actions.length + "):");
+      t.actions.forEach((a: string) => say("      ☐ " + a));
+    }
     t.tasks.forEach((k: any, i: number) => say(`  task ${i + 1}. ${k.name}  ${k.start || "?"} -> ${k.end || "?"}  (${k.days}d, ${k.men} men)`));
     t.deliveries.forEach((d: any) => {
       say(`  delivery: ${d.unassigned ? "⚠ " : ""}${d.name}  ${d.date || "no date"}  (${d.checklist.length} items${d.links.length ? ", " + d.links.length + " links" : ""})`);
@@ -170,6 +174,23 @@ async function handle(req: Request): Promise<Response> {
       }
       await sleep(150);
     } else say('  ⚠ "Customer information" placeholder not found — address note skipped');
+  }
+
+  // ── 3c. Things to action: planning-time to-dos → CHECKLIST items on the template's
+  // "Things to action" placeholder, so TeamGantt shows the outstanding count and the
+  // crew tick them off (Neal, 2026-08-11). Old plan.tg without the field skips
+  // silently; placeholder missing skips with a warning — never created. Keep in step
+  // with scripts/push-to-teamgantt.js.
+  const acts: string[] = t.actions || [];
+  if (acts.length) {
+    const atTask = existing.find((x: any) => norm(x.name) === "things to action");
+    if (atTask) {
+      for (const line of acts) {
+        await tg("POST", `/tasks/${atTask.id}/checklist_items`, { name: line, is_complete: false });
+        await sleep(100);
+      }
+      say("  things to action: " + acts.length + " checklist item(s)");
+    } else say('  ⚠ "Things to action" placeholder not found — actions skipped');
   }
 
   // ── 4. Project Breakdown tasks (dates only, no dependencies — deliberate) ──
