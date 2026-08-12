@@ -5551,8 +5551,8 @@ function renderSchedule() {
             <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Excavations)…" onkeydown="spAddTaskKey(event)" style="flex:1;padding:9px 10px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;color:var(--i1);box-sizing:border-box">
             <input type="number" id="sp-new-days" value="1" min="0.25" step="0.25" onkeydown="spAddTaskKey(event)" title="Working days (quarter days allowed)" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
             <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
-            <button class="btn btn-outline btn-sm" onclick="spAddReminder()" title="Add a 📌 reminder — a note pinned to a day (e.g. Take boards to protect the lawn): no days, no men, never moves other tasks" style="border-color:#F59E0B;color:#92400E">📌 Reminder</button>
           </div>
+          <div onclick="spAddReminder()" title="A note pinned to a day (e.g. Take boards to protect the lawn) — no days, no men, never moves other tasks" style="border:2px dashed #FDE68A;background:#FFFBEB;border-radius:6px;padding:7px;text-align:center;font-size:12px;color:#92400E;margin-top:6px;cursor:pointer;font-weight:600">📌 Add a reminder — a note on a day, doesn't touch the schedule</div>
         </div>
       </div>
       <div style="margin-top:16px">
