@@ -5284,8 +5284,16 @@ function spNewReminder(at) {
   if (at == null || at < 0 || at >= ts.length) { ts.push(t); return ts.length - 1; }
   ts.splice(at, 0, t); return at;
 }
-function spAddReminder() {
-  const idx = spNewReminder();
+// 📌 button on a task card: reminder inserted DIRECTLY BELOW that task, pre-dated to
+// the task's first day (2026-08-12, Neal — one click does position + date, you just
+// type the name). An explicit one-off copy of the date the user clicked for — if the
+// task moves later the reminder stays put (the no-auto-follow ruling holds).
+function spReminderForTask(i) {
+  const p = spEnsurePlan();
+  const dates = spCascade(p.startDate, p.tasks);
+  const start = dates[i] ? dates[i].start : '';
+  const idx = spNewReminder(i + 1);
+  if (start) p.tasks[idx].startISO = start;
   spMark(); renderSchedule();
   const inp = document.getElementById('sp-task-name-' + idx);
   if (inp) inp.focus();
@@ -5418,6 +5426,7 @@ function renderSchedule() {
         <input type="date" value="${t.startISO || (d ? d.start : '')}" onchange="spTaskDate(${i},this.value)" title="${t.startISO ? 'Manual start date — click auto to re-cascade from the previous task' : 'Automatic (follows the previous task) — pick a date to override; same date as another task = working in parallel'}" style="width:122px;padding:3px 4px;border:1px ${t.startISO ? 'solid #B45309' : 'dashed var(--bd)'};border-radius:4px;font-size:11px;font-family:'DM Mono',monospace;color:${t.startISO ? '#92400E' : 'var(--i2)'}">
         ${t.startISO ? `<button onclick="spTaskDate(${i},'')" title="Back to automatic — cascade from the previous task" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 4px;color:var(--i3)">auto</button>` : ''}
         <span style="min-width:62px;font-size:11px;color:var(--i3);font-family:'DM Mono',monospace">${d && d.end !== d.start ? '→ ' + spNice(d.end) : ''}</span>
+        <button onclick="spReminderForTask(${i})" title="Add a 📌 reminder below this task, dated to its first day — a note on a day: no days, no men, never moves other tasks" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px">📌</button>
         <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▲</button>
         <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:var(--i2)">▼</button>
         <button onclick="spDelTask(${i})" title="Remove the task (what it covered goes back to unassigned)" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 6px;color:#DC2626">×</button>
@@ -5552,7 +5561,6 @@ function renderSchedule() {
             <input type="number" id="sp-new-days" value="1" min="0.25" step="0.25" onkeydown="spAddTaskKey(event)" title="Working days (quarter days allowed)" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
             <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
           </div>
-          <div onclick="spAddReminder()" title="A note pinned to a day (e.g. Take boards to protect the lawn) — no days, no men, never moves other tasks" style="border:2px dashed #FDE68A;background:#FFFBEB;border-radius:6px;padding:7px;text-align:center;font-size:12px;color:#92400E;margin-top:6px;cursor:pointer;font-weight:600">📌 Add a reminder — a note on a day, doesn't touch the schedule</div>
         </div>
       </div>
       <div style="margin-top:16px">
