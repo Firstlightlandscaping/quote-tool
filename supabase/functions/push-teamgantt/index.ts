@@ -119,7 +119,9 @@ async function handle(req: Request): Promise<Response> {
       say("  things to action (" + t.actions.length + "):");
       t.actions.forEach((a: string) => say("      ☐ " + a));
     }
-    t.tasks.forEach((k: any, i: number) => say(`  task ${i + 1}. ${k.name}  ${k.start || "?"} -> ${k.end || "?"}  (${k.days}d, ${k.men} men)`));
+    t.tasks.forEach((k: any, i: number) => say(k.reminder
+      ? `  reminder ${i + 1}. ${k.name}  ${k.start || "⚠ no date — will be skipped"}`
+      : `  task ${i + 1}. ${k.name}  ${k.start || "?"} -> ${k.end || "?"}  (${k.days}d, ${k.men} men)`));
     t.deliveries.forEach((d: any) => {
       say(`  delivery: ${d.unassigned ? "⚠ " : ""}${d.name}  ${d.date || "no date"}  (${d.checklist.length} items${d.links.length ? ", " + d.links.length + " links" : ""})`);
       d.checklist.forEach((c: string) => say(`      · ${c}`));
@@ -229,11 +231,18 @@ async function handle(req: Request): Promise<Response> {
   }
 
   // ── 4. Project Breakdown tasks (dates only, no dependencies — deliberate) ──
+  // 📌 Reminders (2026-08-12, Neal): one-day tasks in GREY so they read differently
+  // from work bars (colour = presentation, so it lives here — the delivery-red rule).
+  // A reminder without a date can't land on a chart: warn + skip, never guess.
   for (const k of t.tasks) {
+    if (k.reminder && !k.start) { say(`  ⚠ reminder "${k.name}" has no date — skipped`); continue; }
     const tb: any = { project_id: pid, parent_group_id: pb.id, name: k.name, type: "task" };
+    if (k.reminder) tb.color = "grey1";
     if (k.start) { tb.start_date = k.start; tb.end_date = k.end || k.start; }
     await tg("POST", "/tasks", tb);
-    say(`  + task: ${k.name} ${k.start ? `(${k.start} -> ${k.end})` : "(no dates)"}`);
+    say(k.reminder
+      ? `  + reminder: ${k.name} (${k.start})`
+      : `  + task: ${k.name} ${k.start ? `(${k.start} -> ${k.end})` : "(no dates)"}`);
     await sleep(150);
   }
 

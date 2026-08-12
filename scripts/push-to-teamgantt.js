@@ -134,7 +134,9 @@ async function main() {
       console.log('  things to action (' + t.actions.length + '):');
       t.actions.forEach(a => console.log('      ☐ ' + a));
     }
-    t.tasks.forEach((k, i) => console.log(`  task ${i + 1}. ${k.name}  ${k.start || '?'} -> ${k.end || '?'}  (${k.days}d, ${k.men} men)`));
+    t.tasks.forEach((k, i) => console.log(k.reminder
+      ? `  reminder ${i + 1}. ${k.name}  ${k.start || '⚠ no date — will be skipped'}`
+      : `  task ${i + 1}. ${k.name}  ${k.start || '?'} -> ${k.end || '?'}  (${k.days}d, ${k.men} men)`));
     t.deliveries.forEach(d => {
       console.log(`  delivery: ${d.unassigned ? '⚠ ' : ''}${d.name}  ${d.date || 'no date'}  (${d.checklist.length} items${d.links.length ? ', ' + d.links.length + ' links' : ''})`);
       d.checklist.forEach(c => console.log(`      · ${c}`));
@@ -245,11 +247,18 @@ async function main() {
   }
 
   // ── 4. Project Breakdown tasks (dates only, no dependencies — deliberate) ──
+  // 📌 Reminders (2026-08-12, Neal): one-day tasks in GREY so they read differently
+  // from work bars (colour = presentation, so it lives here — the delivery-red rule).
+  // A reminder without a date can't land on a chart: warn + skip, never guess.
   for (const k of t.tasks) {
+    if (k.reminder && !k.start) { console.log(`  ⚠ reminder "${k.name}" has no date — skipped`); continue; }
     const body = { project_id: pid, parent_group_id: pb.id, name: k.name, type: 'task' };
+    if (k.reminder) body.color = 'grey1';
     if (k.start) { body.start_date = k.start; body.end_date = k.end || k.start; }
     await tg('POST', '/tasks', body);
-    console.log(`  + task: ${k.name} ${k.start ? `(${k.start} -> ${k.end})` : '(no dates)'}`);
+    console.log(k.reminder
+      ? `  + reminder: ${k.name} (${k.start})`
+      : `  + task: ${k.name} ${k.start ? `(${k.start} -> ${k.end})` : '(no dates)'}`);
     await sleep(150);
   }
 

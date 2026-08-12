@@ -4277,6 +4277,10 @@ function spCascade(startISO, tasks) {
     : (() => { const nd = new Date(pos.d); nd.setDate(nd.getDate() + 1); return { d: spNextWorkday(nd), half: 0 }; })();
   let cur = { d: spNextWorkday(new Date(startISO + 'T00:00:00')), half: 0 };
   return tasks.map(t => {
+    // 📌 Reminders (2026-08-12, Neal — "take boards to protect the lawn") sit ON a day
+    // without existing to the cascade: no halves consumed, cursor untouched, so nothing
+    // downstream ever moves. Date = exactly what was typed (or null until it is).
+    if (t.reminder) return t.startISO ? { start: t.startISO, end: t.startISO } : null;
     const halves = Math.max(1, Math.round((t.days || 1) * 2));
     let pos = t.startISO
       ? { d: spNextWorkday(new Date(t.startISO + 'T00:00:00')), half: 0 }
@@ -5267,6 +5271,35 @@ function spDropInsertTask(ev, idx, el) {
   spNewTask(first ? first.name : 'New task', Math.max(0.5, Math.round(spLabDaysFor(ids) / crew * 2) / 2), [], idx);
   spAssignToTask(idx, ids);
 }
+// 📌 Reminders (2026-08-12, Neal): a task-list row with a name and a date and NOTHING
+// else — no days, no men, no labour. Skipped by the cascade/labour check/span by TYPE,
+// so there is no zero-value field to guard (the days||1 lesson that killed the 0-day
+// task idea). Lives in p.tasks so reorder/insert/push order all work unchanged.
+function spNewReminder(at) {
+  const ts = spEnsurePlan().tasks;
+  const t = { id: Date.now() + Math.floor(Math.random()*1000), reminder: true, name: '' };
+  if (at == null || at < 0 || at >= ts.length) { ts.push(t); return ts.length - 1; }
+  ts.splice(at, 0, t); return at;
+}
+function spAddReminder() {
+  const idx = spNewReminder();
+  spMark(); renderSchedule();
+  const inp = document.getElementById('sp-task-name-' + idx);
+  if (inp) inp.focus();
+}
+function spInsertReminderAt(idx) {
+  spNewReminder(idx);
+  spMark(); renderSchedule();
+  const inp = document.getElementById('sp-task-name-' + idx);
+  if (inp) inp.focus();
+}
+// 📅 same day as… — sets the reminder's date to the chosen task's START day. A one-off
+// COPY the user clicked (the delivery before…-picker pattern); nothing follows tasks.
+function spRemDateFromTask(i, sel) {
+  const v = sel.value;
+  sel.value = '';
+  if (v) spTaskDate(i, v);
+}
 function spMark() { spDirty = true; const el = document.getElementById('sp-status'); if (el) { el.textContent = '● unsaved changes'; el.style.color = '#B45309'; } }
 
 function renderSchedule() {
@@ -5283,8 +5316,9 @@ function renderSchedule() {
   const lab = spQuoteLabour();
   const crew = Math.max(1, p.crewSize || 1);
   // Elapsed span, not Σ days — manual dates and half-day sharing mean tasks can overlap,
-  // and a manually-dated task mid-list can end LATER than the last task.
-  const spans = dates.filter(Boolean);
+  // and a manually-dated task mid-list can end LATER than the last task. Reminders are
+  // excluded: a 📌 on a date is not work, so it never stretches the span or the deadline check.
+  const spans = dates.filter((d, i) => d && !p.tasks[i].reminder);
   const firstStart = spans.length ? spans.reduce((m,d) => d.start < m ? d.start : m, spans[0].start) : null;
   const lastEnd = spans.length ? spans.reduce((m,d) => d.end > m ? d.end : m, spans[0].end) : null;
   const schedDays = firstStart && lastEnd ? spWorkdayDiff(firstStart, lastEnd) + 1 : 0;
@@ -5331,6 +5365,30 @@ function renderSchedule() {
   // The card lists what it covers; "quoted ≈" shows the covered labour, days stay yours.
   const taskRows = p.tasks.map((t, i) => {
     const d = dates[i];
+    // Insert strip above every row: add a task OR a 📌 reminder at this position
+    // (the strip is also a drop target — dropping a deliverable creates a task here).
+    const strip = `<div class="sp-insert" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropInsertTask(event,${i},this)"><span class="sp-insert-pill" onclick="spInsertTaskAt(${i})" title="Insert a new task here (or drop a deliverable on this line)">＋ add task here</span><span class="sp-insert-pill" onclick="spInsertReminderAt(${i})" title="Insert a 📌 reminder here — a note pinned to a day: no days, no men, never moves other tasks" style="margin-left:6px">📌 reminder</span></div>`;
+    // 📌 Reminder row (2026-08-12, Neal — "take boards to protect the lawn", "call
+    // electrician about first fix"): a name + a date, nothing else. Skipped by the
+    // cascade and the Labour check by TYPE (no days/men fields exist to guard), pushed
+    // to TeamGantt as a grey one-day task among the work. Blank date = red nag + the
+    // push skips it with a warning — it never guesses a date.
+    if (t.reminder) {
+      const sameDayOpts = p.tasks.map((x, ti) => (!x.reminder && dates[ti]) ? `<option value="${dates[ti].start}">${ti+1}. ${cwEsc((x.name||'').slice(0,18))} (${spNice(dates[ti].start)})</option>` : '').join('');
+      return `${strip}
+    <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:5px 8px;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span style="width:18px;text-align:right;font-size:12px" title="Reminder — a note on a day. Doesn't move any task, counts no labour.">📌</span>
+        <input type="text" id="sp-task-name-${i}" value="${cwEsc(t.name||'')}" placeholder="Reminder — e.g. Take boards to protect the lawn…" onchange="spTaskName(${i},this.value)" style="flex:1 1 auto;min-width:180px;max-width:100%;padding:5px 8px;border:1px solid #FDE68A;border-radius:4px;font-size:13px;color:#92400E;background:white">
+        <input type="date" value="${t.startISO || ''}" ${!t.startISO && spPickerMin(30) ? `min="${spPickerMin(30)}"` : ''} onchange="spTaskDate(${i},this.value)" title="The day this reminder sits on in TeamGantt — never affects other tasks or the labour check" style="width:122px;padding:3px 4px;border:1px solid ${t.startISO ? '#F59E0B' : '#DC2626'};border-radius:4px;font-size:11px;font-family:'DM Mono',monospace;color:#92400E">
+        ${sameDayOpts ? `<select onchange="spRemDateFromTask(${i},this)" title="Set the date to the same day a task starts — a one-off copy, nothing follows automatically" style="font-size:11px;padding:3px 4px;border:1px solid #FDE68A;border-radius:4px;color:#92400E;background:white;max-width:130px;cursor:pointer"><option value="">📅 same day as…</option>${sameDayOpts}</select>` : ''}
+        ${!t.startISO ? `<span style="font-size:11px;color:#DC2626;font-weight:600">needs a date — the push skips it</span>` : ''}
+        <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid #FDE68A;border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:#B45309">▲</button>
+        <button onclick="spMoveTask(${i},1)" title="Move down" style="background:none;border:1px solid #FDE68A;border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:#B45309">▼</button>
+        <button onclick="spDelTask(${i})" title="Remove this reminder" style="background:none;border:1px solid #FDE68A;border-radius:3px;cursor:pointer;font-size:11px;padding:2px 6px;color:#DC2626">×</button>
+      </div>
+    </div>`;
+    }
     const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
     const linked = t.srcLineIds || [];
     const men = spMenOf(t, crew);
@@ -5346,7 +5404,7 @@ function renderSchedule() {
         <button onclick="spUnassignLine(${i},${id})" title="Take out of this task" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:0 6px;color:#DC2626">×</button>
       </div>`;
     }).join('');
-    return `<div class="sp-insert" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropInsertTask(event,${i},this)"><span class="sp-insert-pill" onclick="spInsertTaskAt(${i})" title="Insert a new task here (or drop a deliverable on this line)">＋ add task here</span></div>
+    return `${strip}
     <div class="sp-task-card" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropOnTask(event,${i},this)" style="background:white;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
@@ -5404,9 +5462,9 @@ function renderSchedule() {
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
         <input type="text" value="${cwEsc(row.label)}" onchange="spDelivLabel(${i},this.value)" title="Delivery name (shown as the TeamGantt task)" style="flex:1 1 120px;min-width:110px;padding:4px 7px;border:1px solid ${isUn ? '#F59E0B' : 'var(--bd)'};border-radius:4px;font-size:14px;font-weight:600;${isUn ? 'color:#92400E;background:white;' : 'color:var(--i1);'}">
         <input type="date" value="${row.date||''}" ${!row.date && spPickerMin(7) ? `min="${spPickerMin(7)}"` : ''} onchange="spDelivDate(${i},this.value)" title="Delivery date — the calendar opens at the job start month" style="width:126px;padding:3px 5px;border:1px solid var(--bd);border-radius:4px;font-size:12px;color:var(--i1)">
-        ${p.tasks.some((t,ti) => dates[ti]) ? `<select onchange="spDelivDateFromTask(${i},this)" title="Set the date to the working day before a task starts — a one-off shortcut, nothing auto-fills" style="font-size:11px;padding:3px 4px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);background:white;max-width:118px;cursor:pointer">
+        ${p.tasks.some((t,ti) => !t.reminder && dates[ti]) ? `<select onchange="spDelivDateFromTask(${i},this)" title="Set the date to the working day before a task starts — a one-off shortcut, nothing auto-fills" style="font-size:11px;padding:3px 4px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);background:white;max-width:118px;cursor:pointer">
           <option value="">📅 before…</option>
-          ${p.tasks.map((t,ti) => { const d = dates[ti]; return d ? `<option value="${d.start}">${ti+1}. ${cwEsc((t.name||'').slice(0,18))} (${spNice(d.start)})</option>` : ''; }).join('')}
+          ${p.tasks.map((t,ti) => { const d = !t.reminder && dates[ti]; return d ? `<option value="${d.start}">${ti+1}. ${cwEsc((t.name||'').slice(0,18))} (${spNice(d.start)})</option>` : ''; }).join('')}
         </select>` : ''}
         ${isUn ? '' : `<button onclick="spToggleCollect(${i})" title="${row.collect ? 'WE collect this — pushed to TeamGantt as “Collect — …”. Click for delivered.' : 'Delivered by the supplier. Click if we COLLECT it instead.'}" style="background:${row.collect ? '#FFFBEB' : 'none'};border:1px solid ${row.collect ? '#F59E0B' : 'var(--bd)'};border-radius:4px;cursor:pointer;font-size:12px;padding:3px 8px;color:${row.collect ? '#92400E' : 'var(--i3)'};font-weight:${row.collect ? '600' : '400'}">${row.collect ? '🚗 collect' : '🚚'}</button>`}
         <span style="font-size:12px;color:var(--i2);white-space:nowrap">${items.length} · <strong>£${Math.round(tot).toLocaleString('en-GB')}</strong></span>
@@ -5440,7 +5498,7 @@ function renderSchedule() {
         <div style="font-size:13px;color:var(--i2);padding-bottom:8px">
           ${(() => {
             // Labour check — same verdict-at-the-end pattern as the materials check strip.
-            const capacity = p.tasks.reduce((s,t) => s + Math.max(0.5, Math.round((t.days||1)*2)/2) * spMenOf(t, crew), 0);
+            const capacity = p.tasks.reduce((s,t) => t.reminder ? s : s + Math.max(0.5, Math.round((t.days||1)*2)/2) * spMenOf(t, crew), 0);
             const diff = capacity - lab.manDays;
             let verdict;
             if (!p.tasks.length) verdict = '<span style="color:var(--i3)">no tasks yet</span>';
@@ -5490,6 +5548,7 @@ function renderSchedule() {
             <input type="text" id="sp-new-task" placeholder="Type a task (e.g. Excavations)…" onkeydown="spAddTaskKey(event)" style="flex:1;padding:9px 10px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;color:var(--i1);box-sizing:border-box">
             <input type="number" id="sp-new-days" value="1" min="0.5" step="0.5" onkeydown="spAddTaskKey(event)" title="Working days" style="width:58px;padding:9px 4px;border:1px dashed var(--bd);border-radius:5px;font-size:14px;font-weight:600;text-align:center;color:var(--i1)">
             <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
+            <button class="btn btn-outline btn-sm" onclick="spAddReminder()" title="Add a 📌 reminder — a note pinned to a day (e.g. Take boards to protect the lawn): no days, no men, never moves other tasks" style="border-color:#F59E0B;color:#92400E">📌 Reminder</button>
           </div>
         </div>
       </div>
@@ -5518,7 +5577,7 @@ function renderSchedule() {
             <div style="font-size:12px;color:var(--i2);padding:1px 0">Start · <strong style="color:var(--i1)">${p.startDate ? spNice(p.startDate) : '—'}</strong></div>
             ${p.tasks.map((t,ti) => { const d = dates[ti]; const when = d ? (d.start === d.end ? spNice(d.start) : spNice(d.start) + ' → ' + spNice(d.end)) : '—';
               return `<div style="padding:3px 0;border-bottom:1px solid var(--bd)">
-                <div style="font-size:12px;color:var(--i1);line-height:1.25"><span style="color:var(--i3)">${ti+1}.</span> ${cwEsc(t.name||'')}</div>
+                <div style="font-size:12px;color:var(--i1);line-height:1.25"><span style="color:var(--i3)">${ti+1}.</span> ${t.reminder ? '📌 ' : ''}${cwEsc(t.name||'')}</div>
                 <div style="font-family:'DM Mono',monospace;font-size:11px;color:var(--i2);padding-left:16px">${when}</div>
               </div>`; }).join('') || '<div style="font-size:12px;color:var(--i3);padding:2px 0">No tasks yet</div>'}
             ${p.deadline ? `<div style="font-size:12px;padding-top:3px;margin-top:3px;border-top:1px dashed var(--bd);color:${overDeadline ? '#DC2626' : 'var(--i2)'}">⚑ Deadline <strong>${spNice(p.deadline)}</strong></div>` : ''}
@@ -5869,13 +5928,25 @@ function spExportForPush() {
     labour: { manDays: spQuoteLabour().manDays, teamSize: crew },
     startDate: p.startDate || '',
     deadline: p.deadline || '',
-    tasks: p.tasks.map((t, i) => ({
-      name: (t.name || '').trim() || ('Task ' + (i + 1)),
-      days: Math.max(0.5, Math.round((t.days || 1) * 2) / 2),
-      men: spMenOf(t, crew),
-      start: dates[i] ? dates[i].start : '',
-      end: dates[i] ? dates[i].end : ''
-    })),
+    tasks: p.tasks.map((t, i) => {
+      // 📌 Reminders push as one-day tasks on their date (grey colour = pusher-side
+      // presentation, like the delivery red). Name carries the 📌 so the crew see what
+      // it is without opening anything — the 🚗 Collect naming rule. Undated reminders
+      // are exported so the pushers can WARN + skip (never guess a date); a fully blank
+      // scaffold row (no name, no date) is dropped here as not worth a warning.
+      if (t.reminder) {
+        const nm = (t.name || '').trim();
+        if (!nm && !t.startISO) return null;
+        return { name: '📌 ' + (nm || 'Reminder'), reminder: true, start: t.startISO || '', end: t.startISO || '' };
+      }
+      return {
+        name: (t.name || '').trim() || ('Task ' + (i + 1)),
+        days: Math.max(0.5, Math.round((t.days || 1) * 2) / 2),
+        men: spMenOf(t, crew),
+        start: dates[i] ? dates[i].start : '',
+        end: dates[i] ? dates[i].end : ''
+      };
+    }).filter(Boolean),
     deliveries: p.deliveries.map(row => {
       const items = spRowItems(row, meta);
       return {
