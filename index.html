@@ -4313,7 +4313,29 @@ function spTaskDate(i, v) {
   const t = spEnsurePlan().tasks[i];
   if (!t) return;
   if (v) t.startISO = v; else delete t.startISO;
+  if (t.reminder && v) spPlaceReminder(i);
   spMark(); renderSchedule();
+}
+// The MOMENT a reminder gets a date it jumps to its slot in the list — after the last
+// dated row (task start or reminder date) on or before that day, top if none (2026-08-12,
+// Neal — an 11th sitting under a 14th reads wrong). One-off placement at date-set time,
+// NOT a live sort: after this it sits still (▲▼ fine-tunes; cascade shifts never
+// reshuffle it silently) — the deliveries' sort-on-date pattern. The 📌-on-a-task path
+// deliberately skips this: "below THIS task" is the position the user clicked for.
+function spPlaceReminder(idx) {
+  const p = spEnsurePlan();
+  const r = p.tasks[idx];
+  if (!r || !r.reminder || !r.startISO) return;
+  const dates = spCascade(p.startDate, p.tasks);
+  let target = 0;
+  p.tasks.forEach((t, j) => {
+    if (j === idx) return;
+    const d = t.reminder ? t.startISO : (dates[j] && dates[j].start);
+    if (d && d <= r.startISO) target = Math.max(target, j + 1);
+  });
+  if (target === idx || target === idx + 1) return; // already in place
+  p.tasks.splice(idx, 1);
+  p.tasks.splice(target > idx ? target - 1 : target, 0, r);
 }
 // Changing the JOB START DATE slides the whole plan: cascaded tasks move by definition,
 // and manually-typed task dates shift by the same number of working days — so a plan
