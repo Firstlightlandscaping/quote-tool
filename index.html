@@ -5416,22 +5416,30 @@ function spChartHtml(p, dates, crew) {
     if (e && e > max) max = e;
   });
   if (p.deadline && p.deadline > max) max = p.deadline;
-  const d0 = new Date(min + 'T00:00:00'); d0.setDate(d0.getDate() - 1);
-  const dEnd = new Date(max + 'T00:00:00'); dEnd.setDate(dEnd.getDate() + 1);
-  const N = Math.round((dEnd - d0) / 86400000) + 1;
-  const idxOf = iso => Math.round((new Date(iso + 'T00:00:00') - d0) / 86400000);
+  // WORKDAYS-ONLY axis (2026-08-13, Neal — segmented weekend gaps "looked terrible"):
+  // Sat/Sun simply aren't columns, exactly like TeamGantt's Mon–Fri chart days, so
+  // bars are solid and bar length = working days. A weekend-dated ISO (a Saturday 📌,
+  // a Sunday deadline) maps to the NEXT workday's column; tooltips keep the true date.
+  let d0 = new Date(min + 'T00:00:00'); do { d0.setDate(d0.getDate() - 1); } while (!spIsWorkday(d0));
+  const dEnd = new Date(max + 'T00:00:00'); do { dEnd.setDate(dEnd.getDate() + 1); } while (!spIsWorkday(dEnd));
+  const idxMap = {}, days = [];
+  for (const d = new Date(d0); d <= dEnd; d.setDate(d.getDate() + 1)) {
+    idxMap[spISO(d)] = days.length;
+    if (spIsWorkday(d)) days.push(new Date(d));
+  }
+  const N = days.length;
+  const idxOf = iso => { const i = idxMap[iso]; return i == null ? null : Math.min(i, N - 1); };
   const pct = k => (k / N * 100).toFixed(3) + '%';
   const wOf = n => (n / N * 100).toFixed(3) + '%';
-  // Weekend stripes + a real DAY-grid axis: month band on top, every day number below,
-  // Mondays bold — 26px/day floor with the lane area h-scrolling on long jobs.
+  // Month band on top, every day number below, Mondays bold with a thin week-break
+  // line before them — 26px/day floor with the lane area h-scrolling on long jobs.
   const axisH = 28;
-  let stripes = '', axis = '';
+  let weekLines = '', axis = '';
   for (let k = 0; k < N; k++) {
-    const d = new Date(d0); d.setDate(d0.getDate() + k);
-    const dow = d.getDay();
-    if (dow === 0 || dow === 6) stripes += `<div style="position:absolute;top:0;bottom:0;left:${pct(k)};width:${wOf(1)};background:#EFEEF1"></div>`;
-    if (k === 0 || d.getDate() === 1) axis += `<div style="position:absolute;left:${pct(k)};top:0;font-size:9px;font-weight:700;color:var(--i2);white-space:nowrap;padding-left:2px">${d.toLocaleDateString('en-GB', { month: 'long' })}</div>`;
-    axis += `<div style="position:absolute;left:${pct(k)};width:${wOf(1)};top:13px;font-size:9px;font-family:'DM Mono',monospace;color:${dow === 1 ? 'var(--i1)' : (dow === 0 || dow === 6 ? 'var(--i4)' : 'var(--i3)')};font-weight:${dow === 1 ? '700' : '400'};text-align:center">${d.getDate()}</div>`;
+    const d = days[k];
+    if (d.getDay() === 1 && k > 0) weekLines += `<div style="position:absolute;top:0;bottom:0;left:${pct(k)};width:0;border-left:1px solid var(--bd)"></div>`;
+    if (k === 0 || d.getMonth() !== days[k - 1].getMonth()) axis += `<div style="position:absolute;left:${pct(k)};top:0;font-size:9px;font-weight:700;color:var(--i2);white-space:nowrap;padding-left:2px">${d.toLocaleDateString('en-GB', { month: 'long' })}</div>`;
+    axis += `<div style="position:absolute;left:${pct(k)};width:${wOf(1)};top:13px;font-size:9px;font-family:'DM Mono',monospace;color:${d.getDay() === 1 ? 'var(--i1)' : 'var(--i3)'};font-weight:${d.getDay() === 1 ? '700' : '400'};text-align:center">${d.getDate()}</div>`;
   }
   const startLine = `<div title="Job start ${spNice(p.startDate)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.startDate))};width:0;border-left:1px dashed var(--i3);z-index:2"></div>`;
   const deadLine = p.deadline ? `<div title="⚑ Deadline ${spNice(p.deadline)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.deadline) + 1)};width:0;border-left:2px solid #DC2626;z-index:2"></div>` : '';
@@ -5452,26 +5460,16 @@ function spChartHtml(p, dates, crew) {
         const manual = !!t.startISO;
         const men = spMenOf(t, crew);
         const tip = `${i + 1}. ${t.name || ''} — ${spNice(s)}${e !== s ? ' → ' + spNice(e) : ''} (${spDaysFmt(t.days || 1)}d · ${men} men${manual ? ' · typed date' : ''})`;
-        // SEGMENTED over weekends (2026-08-13, Neal): one solid Fri→Tue bar read as
-        // weekend work — the dates were right, the picture lied. One segment per
-        // contiguous run of workdays; the weekend gap shows nobody works it.
-        const ei = idxOf(e || s);
-        let k = idxOf(s);
-        while (k <= ei) {
-          const day = new Date(d0); day.setDate(d0.getDate() + k);
-          if (!spIsWorkday(day)) { k++; continue; }
-          let j = k;
-          while (j < ei) { const nx = new Date(d0); nx.setDate(d0.getDate() + j + 1); if (spIsWorkday(nx)) j++; else break; }
-          bar += `<div title="${cwEsc(tip)}" style="position:absolute;left:${pct(k)};width:${wOf(j - k + 1)};min-width:5px;top:4px;bottom:4px;border-radius:3px;background:${manual ? '#F59E0B' : '#7FB5E6'}"></div>`;
-          k = j + 1;
-        }
+        // Solid bar on the workdays-only grid: width in columns = working days exactly.
+        const si = idxOf(s), ei = idxOf(e || s);
+        if (si != null && ei != null) bar = `<div title="${cwEsc(tip)}" style="position:absolute;left:${pct(si)};width:${wOf(ei - si + 1)};min-width:5px;top:4px;bottom:4px;border-radius:3px;background:${manual ? '#F59E0B' : '#7FB5E6'}"></div>`;
       }
     }
     lanes += `<div style="position:relative;height:${ROW}px">${bar}</div>`;
   });
   // The lane area scrolls horizontally on long jobs (26px/day floor) while the label
   // column stays put.
-  const inner = `${stripes}${startLine}${deadLine}${lanes}`;
+  const inner = `${weekLines}${startLine}${deadLine}${lanes}`;
   const right = `<div style="flex:1;overflow-x:auto;min-width:0"><div style="position:relative;min-width:${N * 26}px">${inner}</div></div>`;
   return `<div style="display:flex">
     <div style="flex:0 0 ${labelW}px;min-width:0">${labels}</div>
