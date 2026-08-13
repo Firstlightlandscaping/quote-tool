@@ -4277,6 +4277,10 @@ let spDirty = false;
 
 function spISO(d) { return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); }
 function spNice(iso) { if (!iso) return ''; const d = new Date(iso + 'T00:00:00'); return d.toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short' }); }
+// Weekday alone ("Thu") — shown in grey beside date inputs so "13/11" means something
+// (2026-08-13, Neal). Task rows pass the CASCADED start, so a typed Saturday shows the
+// Monday it really lands on.
+function spDow(iso) { if (!iso) return ''; return new Date(iso + 'T00:00:00').toLocaleDateString('en-GB', { weekday: 'short' }); }
 function spIsWorkday(d) { return d.getDay() !== 0 && d.getDay() !== 6; }
 function spNextWorkday(d) { const x = new Date(d); while (!spIsWorkday(x)) x.setDate(x.getDate()+1); return x; }
 // Sequential cascade at HALF-DAY resolution (2026-07-15): each task starts the first
@@ -5589,6 +5593,7 @@ function renderSchedule() {
         <span style="width:18px;text-align:right;font-size:12px" title="Reminder — a note on a day. Doesn't move any task, counts no labour.">📌</span>
         <input type="text" id="sp-task-name-${i}" value="${cwEsc(t.name||'')}" placeholder="Reminder — e.g. Take boards to protect the lawn…" onchange="spTaskName(${i},this.value)" style="flex:1 1 auto;min-width:180px;max-width:100%;padding:5px 8px;border:1px solid #FDE68A;border-radius:4px;font-size:13px;color:#92400E;background:white">
         <input type="date" value="${t.startISO || ''}" ${!t.startISO && spPickerMin(30) ? `min="${spPickerMin(30)}"` : ''} onchange="spTaskDate(${i},this.value)" title="The day this reminder sits on in TeamGantt — never affects other tasks or the labour check" style="width:122px;padding:3px 4px;border:1px solid ${t.startISO ? '#F59E0B' : '#DC2626'};border-radius:4px;font-size:11px;font-family:'DM Mono',monospace;color:#92400E">
+        ${t.startISO ? `<span style="font-size:10px;color:#B45309;font-family:'DM Mono',monospace">${spDow(t.startISO)}</span>` : ''}
         ${sameDayOpts ? `<select onchange="spRemDateFromTask(${i},this)" title="Set the date to the same day a task starts — a one-off copy, nothing follows automatically" style="font-size:11px;padding:3px 4px;border:1px solid #FDE68A;border-radius:4px;color:#92400E;background:white;max-width:130px;cursor:pointer"><option value="">📅 same day as…</option>${sameDayOpts}</select>` : ''}
         ${!t.startISO ? `<span title="A reminder without a date won't be pushed to TeamGantt" style="font-size:11px;color:#DC2626;font-weight:600;cursor:help">needs a date</span>` : ''}
         <button onclick="spMoveTask(${i},-1)" title="Move up" style="background:none;border:1px solid #FDE68A;border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px;color:#B45309">▲</button>
@@ -5622,6 +5627,7 @@ function renderSchedule() {
         <input type="number" value="${Math.max(0.25, Math.round((t.days||1)*4)/4)}" min="0.25" step="0.25" onchange="spTaskDays(${i},this.value)" title="Working days (quarter days allowed — 0.25 ≈ a 2-hour job)" style="width:52px;padding:5px 4px;border:1px solid var(--bd);border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)">
         <span style="display:inline-flex;align-items:center;gap:2px;font-size:12px;color:var(--i2)" title="How many of YOUR team are on this task (default: team size). 0 = subcontractor day: stays on the schedule and in TeamGantt, but counts no team labour. Affects the quoted ≈ comparison and capacity only — never the dates.">👤<input type="number" value="${men}" min="0" step="1" onchange="spTaskMen(${i},this.value)" style="width:38px;padding:5px 2px;border:1px solid ${t.men != null ? 'var(--i3)' : 'var(--bd)'};border-radius:4px;font-size:13px;font-weight:600;text-align:center;color:var(--i1)"></span>
         <input type="date" value="${t.startISO || (d ? d.start : '')}" onchange="spTaskDate(${i},this.value)" title="${t.startISO ? 'Manual start date — click auto to re-cascade from the previous task' : 'Automatic (follows the previous task) — pick a date to override; same date as another task = working in parallel'}" style="width:122px;padding:3px 4px;border:1px ${t.startISO ? 'solid #B45309' : 'dashed var(--bd)'};border-radius:4px;font-size:11px;font-family:'DM Mono',monospace;color:${t.startISO ? '#92400E' : 'var(--i2)'}">
+        ${d ? `<span title="The day this task starts${d.end !== d.start ? '' : ' (and ends)'}" style="font-size:10px;color:var(--i3);font-family:'DM Mono',monospace">${spDow(d.start)}</span>` : ''}
         ${t.startISO ? `<button onclick="spTaskDate(${i},'')" title="Back to automatic — cascade from the previous task" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 4px;color:var(--i3)">auto</button>` : ''}
         <span style="min-width:62px;font-size:11px;color:var(--i3);font-family:'DM Mono',monospace">${d && d.end !== d.start ? '→ ' + spNice(d.end) : ''}</span>
         <button onclick="spReminderForTask(${i})" title="Add a 📌 reminder below this task, dated to its first day — a note on a day: no days, no men, never moves other tasks" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:11px;padding:2px 5px">📌</button>
