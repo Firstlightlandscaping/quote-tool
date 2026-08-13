@@ -4461,11 +4461,16 @@ function spRollup() {
     }
     return sup;
   };
-  // 1. supplier overrides: move items out of the Unassigned bucket
-  const un = rollup.find(s => s.unassigned);
-  if (un && Object.keys(ov).length) {
+  // 1. supplier overrides: move items to their overridden supplier. Originally this
+  //    only lifted items OUT of the Unassigned bucket; since 2026-08-13 (the ✎
+  //    dialog's Supplier dropdown) an override moves an item from ANY bucket — "this
+  //    job the ballast comes from Myers, not GH Brooks" — so it now sweeps every
+  //    supplier. An item already sitting under its overridden name stays put.
+  if (Object.keys(ov).length) {
     const moved = [];
-    un.items = un.items.filter(it => { const t = (ov[it.key]||'').trim(); if (t) { moved.push({ it, t }); return false; } return true; });
+    rollup.forEach(s => {
+      s.items = s.items.filter(it => { const t = (ov[it.key]||'').trim(); if (t && t !== s.name) { moved.push({ it, t }); return false; } return true; });
+    });
     moved.forEach(({ it, t }) => {
       const sup = getSup(t);
       const dup = sup.items.find(x => x.key === it.key);
@@ -4784,6 +4789,7 @@ function spMatEditDialog(key, rowId) {
   panel.id = 'sp-mat-dialog';
   panel.dataset.key = key;
   if (rowMode) panel.dataset.rowId = row.id;
+  panel.dataset.sup = sup ? sup.name : '';
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:460px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
@@ -4795,6 +4801,7 @@ function spMatEditDialog(key, rowId) {
         <div class="fg"><label>Quantity${rowMode ? ' (this drop)' : ''}</label><input type="number" id="sp-me-qty" value="${rowMode ? rowHeld : Math.round(it.totalQty*1000)/1000}" min="0" step="any" style="width:100%"></div>
         <div class="fg"><label>Unit</label><input type="text" id="sp-me-unit" value="${cwEsc(it.unit||'')}" placeholder="e.g. length, kg, pack" style="width:100%"></div>
       </div>
+      <div class="fg" style="margin-bottom:10px"><label>Supplier — who this is ordered from on THIS plan (moves every drop of it; set it in the Price Manager to change future quotes too)</label><select id="sp-me-sup" onchange="supplierSelResolve(this)" style="width:100%">${supplierOptionsHtml(sup && sup.name !== SUP_UNASSIGNED ? sup.name : '', spKnownSuppliers(), '— unassigned —')}</select></div>
       <div class="fg" style="margin-bottom:16px"><label>Supplier link (URL) — shown on the item and pushed to the TeamGantt note</label><input type="text" id="sp-me-url" value="${cwEsc(it.url||'')}" placeholder="https://... (e.g. the substitute product if the specified one is out of stock)" style="width:100%"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         ${it.edited ? '<button class="btn btn-outline" onclick="spResetMatEdit()" title="Back to the formula quantity and wording" style="margin-right:auto">↺ Reset to formula</button>' : ''}
@@ -4804,6 +4811,33 @@ function spMatEditDialog(key, rowId) {
     </div>`;
   document.body.appendChild(panel);
   document.getElementById('sp-me-qty').focus();
+}
+// Supplier change from the ✎ dialog (2026-08-13, Neal — "ballast normally GH Brooks,
+// this job I'll get it from Myers"): moves the WHOLE item to another supplier's
+// delivery, plan-only (the Price Manager keeps the normal source — the same override
+// mechanism as assigning an Unassigned item, so future quotes are untouched). The
+// item keeps its price-list cost; Neal's ruling: the small £ difference doesn't
+// matter, the logistics do. Extras just change their own supplier field. Allocations:
+// stripped from every row, then handed to the target's FIRST drop when the target
+// already has rows (the assign-to-split rule); otherwise the sync creates a fresh
+// row from atoms on the same render. Blank selection = no move (never "unassigns").
+function spApplySupplierMove(key, panel) {
+  const sel = document.getElementById('sp-me-sup');
+  if (!sel) return;
+  const to = sel.value;
+  const was = panel.dataset.sup || '';
+  if (!to || to === was) return;
+  const p = spEnsurePlan();
+  if (key.indexOf('extra:') === 0) {
+    const ex = (p.extraItems||[]).find(e => 'extra:' + e.id === key);
+    if (ex) ex.supplier = to;
+    if (p.supplierOverrides) delete p.supplierOverrides[key];
+  } else {
+    (p.supplierOverrides = p.supplierOverrides || {})[key] = to;
+  }
+  (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
+  const destRows = spRowsOf(to);
+  if (destRows.length) destRows[0].alloc = (destRows[0].alloc||[]).concat(spKeyTruthAtoms(key));
 }
 // Scale a previous edit's per-source memory onto a new total (whole-order edits and
 // the ⏫ chip on a key that had a row-scoped edit): every drop keeps its ratio.
@@ -4850,6 +4884,7 @@ function spSaveMatEdit() {
       let total = 0;
       Object.keys(truth).forEach(lid => { const v = truth[lid]; if (v > 0.0005) { srcQtys[lid] = v; total += v; } });
       (p.matEdits = p.matEdits || {})[key] = { qty: Math.round(total * 1000) / 1000, desc, unit, url, srcQtys };
+      spApplySupplierMove(key, panel);
       panel.remove(); spMark(); renderSchedule();
       return;
     }
@@ -4862,6 +4897,7 @@ function spSaveMatEdit() {
     (p.matEdits = p.matEdits || {})[key] = sq ? { qty, desc, unit, url, srcQtys: sq } : { qty, desc, unit, url };
   }
   spReconcileKeyAllocs(key, supName, cur, qty);
+  spApplySupplierMove(key, panel);
   panel.remove(); spMark(); renderSchedule();
 }
 // SPLIT suppliers: reconcile the rows' allocations to the NEW per-source truth after a
@@ -5204,7 +5240,11 @@ function spSyncDeliveries(p) {
   // an empty row can go.
   p.deliveries = p.deliveries.filter(row => {
     const a = atoms[row.supplier];
-    if (!a || a.length) return true;
+    // Supplier absent from the rollup entirely (e.g. its only item moved to another
+    // supplier via the ✎ dialog): an EMPTY row of it is a shell — drop it. One still
+    // HOLDING allocations is kept for the stale-flag below, never silently deleted.
+    if (!a) { if (row.alloc.length) return true; spDirty = true; return false; }
+    if (a.length) return true;
     spDirty = true;
     return false;
   });
