@@ -16,6 +16,11 @@
   --br:#E8692A;--brd:#C4501A;--brp:#FDF0E8;
   --ink:#18181B;--i2:#52525B;--i3:#A1A1AA;--i4:#D4D4D8;
   --bg:#F4F4F5;--sf:#fff;--bd:#E4E4E7;
+  /* Aliases: --i1/--bg2 are referenced all over the schedule code but were never
+     defined — color:var(--i1) accidentally worked via inheritance (body is --ink),
+     background:var(--bg2) silently rendered TRANSPARENT (found 2026-08-13: the
+     timeline's weekend shading was invisible). Defined so both mean what they say. */
+  --i1:#18181B;--bg2:#F4F4F5;
   --gr:#16A34A;--re:#DC2626;--bl:#2563EB;
   --sh:0 1px 3px rgba(0,0,0,.06),0 4px 12px rgba(0,0,0,.04);
 }
@@ -5424,9 +5429,9 @@ function spChartHtml(p, dates, crew) {
   for (let k = 0; k < N; k++) {
     const d = new Date(d0); d.setDate(d0.getDate() + k);
     const dow = d.getDay();
-    if (dow === 0 || dow === 6) stripes += `<div style="position:absolute;top:0;bottom:0;left:${pct(k)};width:${wOf(1)};background:var(--bg2)"></div>`;
+    if (dow === 0 || dow === 6) stripes += `<div style="position:absolute;top:0;bottom:0;left:${pct(k)};width:${wOf(1)};background:#EFEEF1"></div>`;
     if (k === 0 || d.getDate() === 1) axis += `<div style="position:absolute;left:${pct(k)};top:0;font-size:9px;font-weight:700;color:var(--i2);white-space:nowrap;padding-left:2px">${d.toLocaleDateString('en-GB', { month: 'long' })}</div>`;
-    axis += `<div style="position:absolute;left:${pct(k)};width:${wOf(1)};top:13px;font-size:9px;font-family:'DM Mono',monospace;color:${dow === 1 ? 'var(--i1)' : 'var(--i3)'};font-weight:${dow === 1 ? '700' : '400'};text-align:center">${d.getDate()}</div>`;
+    axis += `<div style="position:absolute;left:${pct(k)};width:${wOf(1)};top:13px;font-size:9px;font-family:'DM Mono',monospace;color:${dow === 1 ? 'var(--i1)' : (dow === 0 || dow === 6 ? 'var(--i4)' : 'var(--i3)')};font-weight:${dow === 1 ? '700' : '400'};text-align:center">${d.getDate()}</div>`;
   }
   const startLine = `<div title="Job start ${spNice(p.startDate)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.startDate))};width:0;border-left:1px dashed var(--i3);z-index:2"></div>`;
   const deadLine = p.deadline ? `<div title="⚑ Deadline ${spNice(p.deadline)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.deadline) + 1)};width:0;border-left:2px solid #DC2626;z-index:2"></div>` : '';
@@ -5447,7 +5452,19 @@ function spChartHtml(p, dates, crew) {
         const manual = !!t.startISO;
         const men = spMenOf(t, crew);
         const tip = `${i + 1}. ${t.name || ''} — ${spNice(s)}${e !== s ? ' → ' + spNice(e) : ''} (${spDaysFmt(t.days || 1)}d · ${men} men${manual ? ' · typed date' : ''})`;
-        bar = `<div title="${cwEsc(tip)}" style="position:absolute;left:${pct(idxOf(s))};width:${wOf(idxOf(e || s) - idxOf(s) + 1)};min-width:5px;top:4px;bottom:4px;border-radius:3px;background:${manual ? '#F59E0B' : '#7FB5E6'}"></div>`;
+        // SEGMENTED over weekends (2026-08-13, Neal): one solid Fri→Tue bar read as
+        // weekend work — the dates were right, the picture lied. One segment per
+        // contiguous run of workdays; the weekend gap shows nobody works it.
+        const ei = idxOf(e || s);
+        let k = idxOf(s);
+        while (k <= ei) {
+          const day = new Date(d0); day.setDate(d0.getDate() + k);
+          if (!spIsWorkday(day)) { k++; continue; }
+          let j = k;
+          while (j < ei) { const nx = new Date(d0); nx.setDate(d0.getDate() + j + 1); if (spIsWorkday(nx)) j++; else break; }
+          bar += `<div title="${cwEsc(tip)}" style="position:absolute;left:${pct(k)};width:${wOf(j - k + 1)};min-width:5px;top:4px;bottom:4px;border-radius:3px;background:${manual ? '#F59E0B' : '#7FB5E6'}"></div>`;
+          k = j + 1;
+        }
       }
     }
     lanes += `<div style="position:relative;height:${ROW}px">${bar}</div>`;
