@@ -4905,11 +4905,16 @@ function spResetMatEdit() {
   const supName = spSupplierOfKey(key);
   const supNow = spRollup().find(x => x.name === supName);
   const it = supNow && supNow.items.find(i => i.key === key);
+  const cur = it ? it.totalQty : 0;   // the edited total, read BEFORE the edit is deleted
   if (p.matEdits) delete p.matEdits[key];
-  if (it && it.rawQty > 0 && it.totalQty > 0 && it.rawQty !== it.totalQty && supName) {
-    const rows = spRowsOf(supName);
-    if (rows.length > 1) { const f = it.rawQty / it.totalQty; rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key) a.qty = Math.round(a.qty*f*1000)/1000; })); }
-  }
+  // Reconcile split rows against the RESTORED per-source truth (2026-08-13, Neal's
+  // QT-0055 case): the old proportional rescale couldn't invert a greedy edit — a
+  // source the edit had drained to 0 stayed 0 (0 × anything), other sources came back
+  // inflated, and every row of the supplier drift-flagged. spReconcileKeyAllocs fixes
+  // per source and pushes a zero-held source's quantity back onto the first row.
+  const supAfter = spRollup().find(x => x.name === supName);
+  const raw = supAfter ? ((supAfter.items.find(i => i.key === key) || {}).totalQty || 0) : 0;
+  spReconcileKeyAllocs(key, supName, cur, raw);
   panel.remove(); spMark(); renderSchedule();
 }
 // + add item — order-only lines that exist ONLY in this plan (never on the quote).
