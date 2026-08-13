@@ -386,6 +386,13 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
   .sp-tray-col{position:sticky;top:10px;max-height:calc(100vh - 20px);display:flex;flex-direction:column}
   .sp-tray-col .sp-tray-list{max-height:none;flex:1 1 auto;min-height:0}
 }
+/* 📊 Timeline column (2026-08-13, Neal): read-only mini gantt BESIDE the task cards so
+   an edit and its bar move in the same paint. Third flex column; on narrower windows
+   flex-wrap drops it below the cards, and it goes sticky only when truly side by side. */
+.sp-chart-col{flex:1 1 440px;min-width:360px;background:white;border:1px solid var(--bd);border-radius:6px;padding:8px 10px;align-self:flex-start}
+@media (min-width: 1400px) {
+  .sp-chart-col{position:sticky;top:10px;max-height:calc(100vh - 20px);overflow-y:auto}
+}
 /* Things-to-action rows: quiet list lines, not five form fields — border appears
    only on hover/focus so the amber box stays one calm block. */
 .sp-act-in{flex:1;min-width:0;font-size:13px;font-family:inherit;color:var(--i1);padding:4px 7px;border:1px solid transparent;background:transparent;border-radius:5px;transition:border-color .12s ease,background .12s ease}
@@ -5372,6 +5379,87 @@ function spRemDateFromTask(i, sel) {
 }
 function spMark() { spDirty = true; const el = document.getElementById('sp-status'); if (el) { el.textContent = '● unsaved changes'; el.style.color = '#B45309'; } }
 
+// ── 📊 Timeline (2026-08-13, Neal — "hard on bigger jobs to have context of how long
+// things are running"): a read-only mini gantt in a sticky column beside the task
+// cards. Drawn fresh from the SAME spCascade output every renderSchedule, so any edit
+// moves its bar in the same paint — never stored, never stale. Tasks + 📌 reminders
+// only (no deliveries/materials, Neal's rule); amber bar = manually-dated task (the
+// ones that DON'T follow a reorder — exactly what needs eyeballing after one), blue =
+// cascade. Read-only by design: dragging bars to change dates is TeamGantt's job —
+// this partially revisits the "no chart here" ruling but only as a mirror, not an editor.
+function spChartHidden() { return localStorage.getItem('fl_sp_chart_hidden') === '1'; }
+function spToggleChart() {
+  if (spChartHidden()) localStorage.removeItem('fl_sp_chart_hidden');
+  else localStorage.setItem('fl_sp_chart_hidden', '1');
+  renderSchedule();
+}
+function spChartHtml(p, dates, crew) {
+  if (!p.startDate) return '<div style="font-size:12px;color:var(--i3);padding:6px 0">Set a job start date to draw the timeline.</div>';
+  if (!p.tasks.length) return '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet.</div>';
+  // Span = everything dated: cascaded tasks, reminder dates, the deadline. One day's
+  // padding each side so first/last bars don't kiss the frame.
+  let min = p.startDate, max = p.startDate;
+  p.tasks.forEach((t, i) => {
+    const s = t.reminder ? t.startISO : (dates[i] && dates[i].start);
+    const e = t.reminder ? t.startISO : (dates[i] && dates[i].end);
+    if (s && s < min) min = s;
+    if (e && e > max) max = e;
+  });
+  if (p.deadline && p.deadline > max) max = p.deadline;
+  const d0 = new Date(min + 'T00:00:00'); d0.setDate(d0.getDate() - 1);
+  const dEnd = new Date(max + 'T00:00:00'); dEnd.setDate(dEnd.getDate() + 1);
+  const N = Math.round((dEnd - d0) / 86400000) + 1;
+  const idxOf = iso => Math.round((new Date(iso + 'T00:00:00') - d0) / 86400000);
+  const pct = k => (k / N * 100).toFixed(3) + '%';
+  const wOf = n => (n / N * 100).toFixed(3) + '%';
+  // Weekend stripes + date axis. Fit-to-width, so label density adapts: every Monday
+  // on short jobs, alternate Mondays on medium, month firsts on long ones.
+  const lblEvery = N <= 60 ? 1 : (N <= 130 ? 2 : 0);
+  let stripes = '', axis = '';
+  for (let k = 0; k < N; k++) {
+    const d = new Date(d0); d.setDate(d0.getDate() + k);
+    const dow = d.getDay();
+    if (dow === 0 || dow === 6) stripes += `<div style="position:absolute;top:0;bottom:0;left:${pct(k)};width:${wOf(1)};background:var(--bg2)"></div>`;
+    let lbl = '';
+    if (lblEvery && dow === 1 && (lblEvery === 1 || Math.floor(k / 7) % 2 === 0)) lbl = d.getDate() + '/' + (d.getMonth() + 1);
+    if (!lblEvery && d.getDate() === 1) lbl = d.toLocaleDateString('en-GB', { month: 'short' });
+    if (lbl) axis += `<div style="position:absolute;left:${pct(k)};top:1px;font-size:9px;font-family:'DM Mono',monospace;color:var(--i3);white-space:nowrap">${lbl}</div>`;
+  }
+  const startLine = `<div title="Job start ${spNice(p.startDate)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.startDate))};width:0;border-left:1px dashed var(--i3);z-index:2"></div>`;
+  const deadLine = p.deadline ? `<div title="⚑ Deadline ${spNice(p.deadline)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.deadline) + 1)};width:0;border-left:2px solid #DC2626;z-index:2"></div>` : '';
+  const ROW = 20;
+  let labels = `<div style="height:16px"></div>`, lanes = `<div style="position:relative;height:16px">${axis}</div>`;
+  p.tasks.forEach((t, i) => {
+    const isRem = !!t.reminder;
+    const s = isRem ? t.startISO : (dates[i] && dates[i].start);
+    const e = isRem ? t.startISO : (dates[i] && dates[i].end);
+    const label = (isRem ? '📌 ' : (i + 1) + '. ') + (t.name || (isRem ? '' : 'Task ' + (i + 1)));
+    labels += `<div title="${cwEsc(label)}" style="height:${ROW}px;line-height:${ROW}px;font-size:10px;color:${isRem ? '#92400E' : 'var(--i2)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:5px">${cwEsc(label)}</div>`;
+    let bar = '';
+    if (s) {
+      if (isRem) {
+        bar = `<span title="${cwEsc('📌 ' + (t.name || 'Reminder') + ' — ' + spNice(s))}" style="position:absolute;left:${pct(idxOf(s))};width:${wOf(1)};top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:10px;min-width:10px">📌</span>`;
+      } else {
+        const manual = !!t.startISO;
+        const men = spMenOf(t, crew);
+        const tip = `${i + 1}. ${t.name || ''} — ${spNice(s)}${e !== s ? ' → ' + spNice(e) : ''} (${spDaysFmt(t.days || 1)}d · ${men} men${manual ? ' · typed date' : ''})`;
+        bar = `<div title="${cwEsc(tip)}" style="position:absolute;left:${pct(idxOf(s))};width:${wOf(idxOf(e || s) - idxOf(s) + 1)};min-width:5px;top:4px;bottom:4px;border-radius:3px;background:${manual ? '#F59E0B' : '#7FB5E6'}"></div>`;
+      }
+    }
+    lanes += `<div style="position:relative;height:${ROW}px">${bar}</div>`;
+  });
+  return `<div style="display:flex">
+    <div style="flex:0 0 112px;min-width:0">${labels}</div>
+    <div style="flex:1;position:relative;min-width:0">${stripes}${startLine}${deadLine}${lanes}</div>
+  </div>
+  <div style="font-size:10px;color:var(--i3);margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">
+    <span><span style="display:inline-block;width:14px;height:8px;background:#7FB5E6;border-radius:2px"></span> auto</span>
+    <span><span style="display:inline-block;width:14px;height:8px;background:#F59E0B;border-radius:2px"></span> typed date</span>
+    <span>📌 reminder</span>
+    ${p.deadline ? '<span><span style="display:inline-block;width:2px;height:9px;background:#DC2626;vertical-align:middle"></span> deadline</span>' : ''}
+  </div>`;
+}
+
 function renderSchedule() {
   const el = document.getElementById('schedule-content');
   if (!el) return;
@@ -5614,7 +5702,7 @@ function renderSchedule() {
           </div>${spTicked.size ? `<div style="font-size:11px;color:#15803D;font-weight:600;margin-top:5px">${spTicked.size} ticked — use the buttons above, or ⇤ on a task to attach them to it</div>` : ''}` : ''}
         </div>
         <div style="flex:1;min-width:380px">
-          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Project Breakdown <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— dates cascade automatically, weekends skipped</span></div>
+          <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">Project Breakdown <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— dates cascade automatically, weekends skipped</span>${spChartHidden() ? ` <button onclick="spToggleChart()" title="Show the timeline — a read-only chart of the tasks beside the list" style="background:none;border:1px solid var(--bd);border-radius:10px;cursor:pointer;font-size:10px;padding:1px 9px;color:var(--i2);text-transform:none;letter-spacing:normal;font-weight:600">📊 timeline</button>` : ''}</div>
           ${taskRows || '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet — type below, or drag a deliverable into the zone underneath.</div>'}
           <div class="sp-newtask-zone" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropNewTask(event,this)" style="border:2px dashed var(--bd);border-radius:6px;padding:9px;text-align:center;font-size:12px;color:var(--i3);margin-top:6px">⟵ drag a deliverable (or a whole group) here to start a NEW task</div>
           <div style="display:flex;gap:6px;margin-top:8px;align-items:center">
@@ -5623,6 +5711,13 @@ function renderSchedule() {
             <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
           </div>
         </div>
+        ${spChartHidden() ? '' : `<div class="sp-chart-col">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <span style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📊 Timeline <span style="font-weight:400;text-transform:none;letter-spacing:normal">— read-only, TeamGantt owns it after push</span></span>
+            <button onclick="spToggleChart()" title="Hide the timeline" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 7px;color:var(--i3)">hide</button>
+          </div>
+          ${spChartHtml(p, dates, crew)}
+        </div>`}
       </div>
       <div style="margin-top:16px">
         <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:3px">Deliveries <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— one TeamGantt task each, materials become its checklist</span></div>
