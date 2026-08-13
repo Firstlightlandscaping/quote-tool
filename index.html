@@ -4324,11 +4324,37 @@ function spCascade(startISO, tasks) {
 }
 // Manual task start date (empty = back to automatic cascade).
 function spTaskDate(i, v) {
-  const t = spEnsurePlan().tasks[i];
+  const p = spEnsurePlan();
+  const t = p.tasks[i];
   if (!t) return;
+  const endBefore = t.reminder ? null : (spCascade(p.startDate, p.tasks)[i] || {}).end;
   if (v) t.startISO = v; else delete t.startISO;
   if (t.reminder && v) spPlaceReminder(i);
+  if (!t.reminder) spShiftFollowersOffer(i, endBefore);
   spMark(); renderSchedule();
+}
+// Offer-to-shift (2026-08-13, Neal's QT-0055 case — priced 4 days for Shane, wanted to
+// add one, but every typed date below was stranded and needed re-typing): when an edit
+// moves task i's END date, the auto tasks below re-cascade by themselves but typed
+// dates never follow (by design — they pin parallel working). ONE confirm offers to
+// slide every later typed date — 📌 reminders included, they're pinned to the flow —
+// by the SAME working-day delta the edit caused (not the number typed: a bump that
+// doesn't move the end prompts nothing). Works both ways (shorten = pull forward).
+// Deliveries NEVER move (often already agreed with a supplier). Cancel = old behaviour.
+function spShiftFollowersOffer(i, endBefore) {
+  const p = spEnsurePlan();
+  const endAfter = (spCascade(p.startDate, p.tasks)[i] || {}).end;
+  if (!endBefore || !endAfter || endBefore === endAfter) return;
+  const delta = spWorkdayDiff(endBefore, endAfter);
+  if (!delta) return;
+  const followers = p.tasks.filter((t, j) => j > i && t.startISO);
+  if (!followers.length) return;
+  const n = Math.abs(delta), s = n !== 1 ? 's' : '';
+  if (!confirm(`This task now ends ${n} working day${s} ${delta > 0 ? 'LATER' : 'EARLIER'}.\n\n` +
+    `${delta > 0 ? 'Push' : 'Pull'} the typed dates of the ${followers.length} later task${followers.length !== 1 ? 's' : ''}/reminder${followers.length !== 1 ? 's' : ''} ` +
+    `${delta > 0 ? 'back' : 'forward'} by ${n} working day${s} too?\n\n` +
+    `(Deliveries keep their dates. Cancel leaves the typed dates where they are.)`)) return;
+  followers.forEach(t => { t.startISO = spAddWorkdays(t.startISO, delta); });
 }
 // The MOMENT a reminder gets a date it jumps to its slot in the list — after the last
 // dated row (task start or reminder date) on or before that day, top if none (2026-08-12,
@@ -5840,7 +5866,15 @@ function spAddTaskKey(e) {
   spAddTaskGo();
 }
 function spTaskName(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.name = v.trim(); spMark(); renderSchedule(); } } // re-render: tray "→ task" tags + the dates rail show the name
-function spTaskDays(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { t.days = Math.max(0.25, Math.round((parseFloat(v)||1)*4)/4); spMark(); renderSchedule(); } }
+function spTaskDays(i, v) {
+  const p = spEnsurePlan();
+  const t = p.tasks[i];
+  if (!t) return;
+  const endBefore = (spCascade(p.startDate, p.tasks)[i] || {}).end;
+  t.days = Math.max(0.25, Math.round((parseFloat(v) || 1) * 4) / 4);
+  spShiftFollowersOffer(i, endBefore);
+  spMark(); renderSchedule();
+}
 // Per-task headcount — defaults to the team size (undefined = follow the team box);
 // only affects the labour comparisons, never the date cascade (2 days is 2 days).
 function spTaskMen(i, v) { const t = spEnsurePlan().tasks[i]; if (t) { const n = Math.round(parseFloat(v)); t.men = (n >= 0 ? n : undefined); spMark(); renderSchedule(); } }
