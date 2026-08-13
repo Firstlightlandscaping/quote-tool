@@ -357,7 +357,7 @@ body.contract-mode #contract-view .group-header-row{background:#fff!important;bo
 .sp-drag-row{position:relative;border-radius:5px;transition:background .15s ease,box-shadow .15s ease,transform .15s ease}
 .sp-drag-row:hover{background:#FAFAF9;box-shadow:0 1px 4px rgba(0,0,0,.08);transform:translateY(-1px)}
 .sp-grip{opacity:0;color:var(--i4);font-size:10px;letter-spacing:-1px;cursor:grab;user-select:none;flex-shrink:0;width:12px;text-align:center;transition:opacity .15s ease}
-.sp-drag-row:hover .sp-grip{opacity:1}
+.sp-drag-row:hover .sp-grip,.sp-task-card:hover .sp-grip,.sp-rem-row:hover .sp-grip{opacity:1}
 .sp-task-card{transition:border-color .2s ease,background .2s ease,box-shadow .2s ease}
 body.sp-dragging .sp-task-card{border-color:#BBF7D0;background:#FDFEFB}
 body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:sp-pulse 1.2s ease-in-out infinite}
@@ -5257,6 +5257,37 @@ function spDragLine(ev, ids) {
   document.body.classList.add('sp-dragging');
 }
 function spDragEnd() { document.body.classList.remove('sp-dragging'); }
+// ── card reorder by drag (2026-08-13, Neal — ▲▼ too slow with many tasks): the ⋮⋮
+// grip on a task card / reminder row drags the CARD ({taskMove:i} payload, distinct
+// from the tray's line-id arrays so spDragIds ignores it). Targets: an insert strip
+// (drop in that gap), another card (take its place, it shifts down), or the bottom
+// new-task zone (move to end). Grip-only drag — the card body stays a deliverable
+// drop target and its inputs keep normal text selection.
+function spDragTask(ev, i) {
+  ev.dataTransfer.setData('text/plain', JSON.stringify({ taskMove: i }));
+  ev.dataTransfer.effectAllowed = 'move';
+  const t = spEnsurePlan().tasks[i];
+  const ghost = document.createElement('div');
+  ghost.className = 'sp-drag-ghost';
+  ghost.textContent = (t && t.reminder ? '📌 ' : '') + ((t && t.name) || ('Task ' + (i + 1)));
+  document.body.appendChild(ghost);
+  if (ev.dataTransfer.setDragImage) ev.dataTransfer.setDragImage(ghost, 18, 16);
+  setTimeout(() => ghost.remove(), 0);
+  document.body.classList.add('sp-dragging');
+}
+function spDragTaskIdx(ev) {
+  try { const d = JSON.parse(ev.dataTransfer.getData('text/plain')); return (d && typeof d.taskMove === 'number') ? d.taskMove : null; }
+  catch(e) { return null; }
+}
+// to = insertion index in the CURRENT array (strip idx / card idx / length for end).
+function spMoveTaskTo(from, to) {
+  const ts = spEnsurePlan().tasks;
+  if (from == null || from < 0 || from >= ts.length) return;
+  if (to === from || to === from + 1) return; // dropped where it already sits
+  const [t] = ts.splice(from, 1);
+  ts.splice(to > from ? to - 1 : to, 0, t);
+  spMark(); renderSchedule();
+}
 function spDragIds(ev) {
   try { const ids = JSON.parse(ev.dataTransfer.getData('text/plain')); return Array.isArray(ids) ? ids.filter(id => lines.some(l => l.id === id)) : []; }
   catch(e) { return []; }
@@ -5265,11 +5296,15 @@ function spDragOver(ev, el) { ev.preventDefault(); el.classList.add('sp-drop-hov
 function spDragLeave(el) { el.classList.remove('sp-drop-hover'); }
 function spDropOnTask(ev, taskIdx, el) {
   ev.preventDefault(); spDragLeave(el); spDragEnd();
+  const mv = spDragTaskIdx(ev);
+  if (mv != null) { spMoveTaskTo(mv, taskIdx); return; } // card drop = take this card's place
   const ids = spDragIds(ev);
   if (ids.length) spAssignToTask(taskIdx, ids);
 }
 function spDropNewTask(ev, el) {
   ev.preventDefault(); spDragLeave(el); spDragEnd();
+  const mv = spDragTaskIdx(ev);
+  if (mv != null) { spMoveTaskTo(mv, spEnsurePlan().tasks.length); return; } // card drop = move to end
   const ids = spDragIds(ev);
   if (!ids.length) return;
   const first = lines.find(l => l.id === ids[0]);
@@ -5289,6 +5324,8 @@ function spInsertTaskAt(idx) {
 }
 function spDropInsertTask(ev, idx, el) {
   ev.preventDefault(); spDragLeave(el); spDragEnd();
+  const mv = spDragTaskIdx(ev);
+  if (mv != null) { spMoveTaskTo(mv, idx); return; } // card drop on a gap = move into it
   const ids = spDragIds(ev);
   if (!ids.length) return;
   const first = lines.find(l => l.id === ids[0]);
@@ -5409,8 +5446,9 @@ function renderSchedule() {
     if (t.reminder) {
       const sameDayOpts = p.tasks.map((x, ti) => (!x.reminder && dates[ti]) ? `<option value="${dates[ti].start}">${ti+1}. ${cwEsc((x.name||'').slice(0,18))} (${spNice(dates[ti].start)})</option>` : '').join('');
       return `${strip}
-    <div style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:5px 8px;margin-bottom:6px">
+    <div class="sp-rem-row" style="background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:5px 8px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span class="sp-grip" draggable="true" ondragstart="spDragTask(event,${i})" ondragend="spDragEnd()" title="Drag to reorder — drop on a gap, a card, or the zone at the bottom">⋮⋮</span>
         <span style="width:18px;text-align:right;font-size:12px" title="Reminder — a note on a day. Doesn't move any task, counts no labour.">📌</span>
         <input type="text" id="sp-task-name-${i}" value="${cwEsc(t.name||'')}" placeholder="Reminder — e.g. Take boards to protect the lawn…" onchange="spTaskName(${i},this.value)" style="flex:1 1 auto;min-width:180px;max-width:100%;padding:5px 8px;border:1px solid #FDE68A;border-radius:4px;font-size:13px;color:#92400E;background:white">
         <input type="date" value="${t.startISO || ''}" ${!t.startISO && spPickerMin(30) ? `min="${spPickerMin(30)}"` : ''} onchange="spTaskDate(${i},this.value)" title="The day this reminder sits on in TeamGantt — never affects other tasks or the labour check" style="width:122px;padding:3px 4px;border:1px solid ${t.startISO ? '#F59E0B' : '#DC2626'};border-radius:4px;font-size:11px;font-family:'DM Mono',monospace;color:#92400E">
@@ -5440,6 +5478,7 @@ function renderSchedule() {
     return `${strip}
     <div class="sp-task-card" ondragover="spDragOver(event,this)" ondragleave="spDragLeave(this)" ondrop="spDropOnTask(event,${i},this)" style="background:white;border:1px solid var(--bd);border-radius:6px;padding:6px 8px;margin-bottom:6px">
       <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span class="sp-grip" draggable="true" ondragstart="spDragTask(event,${i})" ondragend="spDragEnd()" title="Drag to reorder — drop on a gap, a card, or the zone at the bottom">⋮⋮</span>
         <span style="width:18px;text-align:right;font-size:12px;color:var(--i3)">${i+1}.</span>
         <input type="text" id="sp-task-name-${i}" value="${cwEsc(t.name)}" placeholder="Task name…" onchange="spTaskName(${i},this.value)" size="${Math.max(15, (t.name||'').length)}" oninput="this.size=Math.max(15,this.value.length)" style="flex:1 1 auto;min-width:130px;max-width:100%;padding:5px 8px;border:1px solid var(--bd);border-radius:4px;font-size:14px;color:var(--i1)">
         ${attach}${quoted}
