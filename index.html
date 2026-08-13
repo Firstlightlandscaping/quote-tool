@@ -4722,6 +4722,49 @@ function spToggleRemoved(key) {
   }
   spMark(); renderSchedule();
 }
+// 📦/🗑 manager (2026-08-13, Neal's Shane Webster case): stocked/removed items were
+// only reachable through THEIR supplier row's ☰ dialog — but a supplier whose every
+// item is stocked/removed loses its delivery row (empty rows self-drop), orphaning
+// the items with no way back to restore or edit them. This dialog lists every stocked
+// and removed item plan-wide, with ✎ edit and ↺ restore; opened from the
+// materials-check strip ("stock £X" / "N removed"). Restoring an orphan works because
+// the sync re-creates a row for any supplier with live atoms on the next render.
+function spStockDialog() {
+  const existing = document.getElementById('sp-stock-dialog');
+  if (existing) existing.remove();
+  const stocked = [], removed = [];
+  spRollup().forEach(s => s.items.forEach(it => {
+    if (it.removed) removed.push({ sup: s.name, it });
+    else if (it.stock) stocked.push({ sup: s.name, it });
+  }));
+  if (!stocked.length && !removed.length) { toast('Nothing is marked as stock or removed on this plan'); return; }
+  const money = v => '£' + Math.round(v).toLocaleString('en-GB');
+  const rowHtml = (g, isStock) => `
+    <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">
+      <span style="flex:1;min-width:220px;font-size:13px;color:${isStock ? 'var(--i1)' : 'var(--i3)'};${isStock ? '' : 'text-decoration:line-through;'}line-height:1.3"><strong>${spQtyDisp(g.it.totalQty)}</strong> × ${cwEsc(g.it.description)}${g.it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(g.it.unit) + ')</span>' : ''}${spEditedTagHtml(g.it)} <span style="color:var(--i3);font-size:11px">— ${cwEsc(g.sup)}</span></span>
+      <span style="font-size:12px;color:var(--i2);font-family:'DM Mono',monospace;white-space:nowrap">${money(g.it.supCost || 0)}</span>
+      <span style="display:inline-flex;gap:5px;flex-shrink:0">
+        <button data-key="${cwEsc(g.it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the quantity/wording — e.g. only 3 of the 4 days are needed" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
+        <button data-key="${cwEsc(g.it.key)}" onclick="${isStock ? 'spToggleStock' : 'spToggleRemoved'}(this.dataset.key)" title="${isStock ? 'Order it after all — goes back on its supplier’s delivery' : 'Needed after all — goes back on its supplier’s delivery'}" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button>
+      </span>
+    </div>`;
+  const panel = document.createElement('div');
+  panel.id = 'sp-stock-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9998;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:620px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:17px">📦 Stock &amp; removed items</h3>
+      <p style="font-size:13px;color:var(--i2);margin:0 0 8px">Everything on this plan that isn't being ordered — whichever supplier it belongs to, even when that supplier no longer has a delivery row. Stock still counts as a cost (it gets replaced); removed items don't (that money is extra profit).</p>
+      <div style="max-height:60vh;overflow-y:auto;padding-right:4px">
+        ${stocked.length ? `<div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-top:4px">📦 Stock — not ordered, counted as cost</div>${stocked.map(g => rowHtml(g, true)).join('')}` : ''}
+        ${removed.length ? `<div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#DC2626;margin-top:10px">🗑 Removed — not needed, not costed</div>${removed.map(g => rowHtml(g, false)).join('')}` : ''}
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-primary" onclick="document.getElementById('sp-stock-dialog').remove()">Done</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+}
 // ✎ edit a material's qty/wording — plan-scope only (formula/quote untouched).
 // With a rowId from a SPLIT supplier's ☰ dialog, the quantity edited is THIS DROP's
 // (2026-08-13, Neal's ballast case: the dialog listed this drop's 1530 but edited the
@@ -5850,6 +5893,7 @@ function renderSchedule() {
           if (!qm.charged) return '';
           const planned = spPlannedSpend();          // orders + stock at replacement cost, removed items excluded
           const stockCost = spStockSpend();
+          const removedN = spRollup().reduce((n, s) => n + s.items.filter(i => i.removed).length, 0);
           const orders = planned - stockCost;
           const projMargin = qm.charged - planned;
           const diff = projMargin - qm.profit;
@@ -5860,7 +5904,7 @@ function renderSchedule() {
           // so show the same figure — 808.42 vs 808.50 used to read "£808 vs £809 ·".
           const profitDisp = money(qm.profit);
           const ordersDisp = Math.abs(diff) <= 0.5 ? profitDisp : money(projMargin);
-          return `<div title="The customer pays ${money(qm.charged)} for materials on this quote (that includes your 10% markup). Take the markup off and you have ${money(qm.allowed)} to spend with suppliers. Planned orders = everything on the delivery rows added up at buying prices, including items you've added by hand (at the price you gave them — a blank price counts as £0). Stock items aren't ordered but still count as cost — they get replaced. Removed items cost nothing, so that money becomes extra profit. If you changed a line's material cost by hand on the quote, its items are priced from your figure instead of the price list (marked quote-priced). Profit on orders = what you charge minus what you plan to spend. Profit on quote (${money(qm.profit)}) is your normal 10% markup — ▲ green means this plan beats it, ▼ red means materials are costing more than the quote allows. Nothing here changes the quote." style="font-size:12px;color:var(--i2);margin-bottom:6px;cursor:help">Materials check: quote charges <strong style="color:var(--i1)">${money(qm.charged)}</strong> → allows <strong style="color:var(--i1)">${money(qm.allowed)}</strong> at supplier cost · planned orders <strong style="color:var(--i1)">${money(orders)}</strong>${stockCost > 0.5 ? ` + stock <strong style="color:var(--i1)">${money(stockCost)}</strong>` : ''} → profit on orders <strong style="color:${col}">${ordersDisp}</strong> vs profit on quote ${profitDisp} <strong style="color:${col}">${arrow}${Math.abs(Math.round(diff)) > 0 ? ' ' + money(Math.abs(diff)) : ''}</strong></div>`;
+          return `<div title="The customer pays ${money(qm.charged)} for materials on this quote (that includes your 10% markup). Take the markup off and you have ${money(qm.allowed)} to spend with suppliers. Planned orders = everything on the delivery rows added up at buying prices, including items you've added by hand (at the price you gave them — a blank price counts as £0). Stock items aren't ordered but still count as cost — they get replaced. Removed items cost nothing, so that money becomes extra profit. If you changed a line's material cost by hand on the quote, its items are priced from your figure instead of the price list (marked quote-priced). Profit on orders = what you charge minus what you plan to spend. Profit on quote (${money(qm.profit)}) is your normal 10% markup — ▲ green means this plan beats it, ▼ red means materials are costing more than the quote allows. Nothing here changes the quote." style="font-size:12px;color:var(--i2);margin-bottom:6px;cursor:help">Materials check: quote charges <strong style="color:var(--i1)">${money(qm.charged)}</strong> → allows <strong style="color:var(--i1)">${money(qm.allowed)}</strong> at supplier cost · planned orders <strong style="color:var(--i1)">${money(orders)}</strong>${stockCost > 0.5 ? ` + <button onclick="spStockDialog()" title="Stock being used on this job — click to see and manage every stocked item, even ones whose supplier no longer has a delivery row" style="background:none;border:none;padding:0;cursor:pointer;font:inherit;font-weight:700;color:var(--i1);text-decoration:underline dotted var(--i3)">stock ${money(stockCost)}</button>` : ''}${removedN ? ` · <button onclick="spStockDialog()" title="Items marked not-needed — click to see and manage them (restore or edit)" style="background:none;border:none;padding:0;cursor:pointer;font:inherit;color:var(--i2);text-decoration:underline dotted var(--i3)">🗑 ${removedN} removed</button>` : ''} → profit on orders <strong style="color:${col}">${ordersDisp}</strong> vs profit on quote ${profitDisp} <strong style="color:${col}">${arrow}${Math.abs(Math.round(diff)) > 0 ? ' ' + money(Math.abs(diff)) : ''}</strong></div>`;
         })()}
         <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start">
           <div style="flex:0 0 235px;min-width:210px;position:sticky;top:10px;background:white;border:1px solid var(--bd);border-radius:6px;padding:8px 10px">
@@ -5890,6 +5934,13 @@ function renderSchedule() {
     const idx = (p.deliveries||[]).findIndex(d => d.id === rid);
     idlg.remove();
     if (idx >= 0) spItemsDialog(idx);
+  }
+  // Same for the 📦/🗑 manager: rebuild against fresh state after any in-dialog action
+  // (edit save, restore); close it once nothing is stocked or removed any more.
+  const sdlg = document.getElementById('sp-stock-dialog');
+  if (sdlg) {
+    sdlg.remove();
+    if (spRollup().some(s => s.items.some(i => i.stock || i.removed))) spStockDialog();
   }
 }
 
