@@ -389,7 +389,8 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 /* 📊 Timeline column (2026-08-13, Neal): read-only mini gantt BESIDE the task cards so
    an edit and its bar move in the same paint. Third flex column; on narrower windows
    flex-wrap drops it below the cards, and it goes sticky only when truly side by side. */
-.sp-chart-col{flex:1 1 440px;min-width:360px;background:white;border:1px solid var(--bd);border-radius:6px;padding:8px 10px;align-self:flex-start}
+.sp-chart-col{flex:0 1 420px;min-width:340px;background:white;border:1px solid var(--bd);border-radius:6px;padding:8px 10px;align-self:flex-start}
+.sp-chart-col.sp-chart-max{flex:1.4 1 640px;min-width:520px}
 @media (min-width: 1400px) {
   .sp-chart-col{position:sticky;top:10px;max-height:calc(100vh - 20px);overflow-y:auto}
 }
@@ -5393,7 +5394,17 @@ function spToggleChart() {
   else localStorage.setItem('fl_sp_chart_hidden', '1');
   renderSchedule();
 }
-function spChartHtml(p, dates, crew) {
+// ⤢ expanded chart (2026-08-13, Neal — docked was "too small to be helpful, weeks not
+// days"): the quote tray hides (dock back to drag/seed from it), the chart takes the
+// tray's width, and the axis switches to a DAY grid — month band + every day number,
+// 26px/day with its own horizontal scroll when the job outgrows the column.
+function spChartMax() { return localStorage.getItem('fl_sp_chart_max') === '1'; }
+function spToggleChartMax() {
+  if (spChartMax()) localStorage.removeItem('fl_sp_chart_max');
+  else localStorage.setItem('fl_sp_chart_max', '1');
+  renderSchedule();
+}
+function spChartHtml(p, dates, crew, maxMode) {
   if (!p.startDate) return '<div style="font-size:12px;color:var(--i3);padding:6px 0">Set a job start date to draw the timeline.</div>';
   if (!p.tasks.length) return '<div style="font-size:12px;color:var(--i3);padding:6px 0">No tasks yet.</div>';
   // Span = everything dated: cascaded tasks, reminder dates, the deadline. One day's
@@ -5412,33 +5423,42 @@ function spChartHtml(p, dates, crew) {
   const idxOf = iso => Math.round((new Date(iso + 'T00:00:00') - d0) / 86400000);
   const pct = k => (k / N * 100).toFixed(3) + '%';
   const wOf = n => (n / N * 100).toFixed(3) + '%';
-  // Weekend stripes + date axis. Fit-to-width, so label density adapts: every Monday
-  // on short jobs, alternate Mondays on medium, month firsts on long ones.
+  // Axis + weekend stripes. Docked = fit-to-width with adaptive labels (every Monday on
+  // short jobs, alternate Mondays on medium, month firsts on long). Expanded = a real
+  // DAY grid: month band + every day number, at 26px/day inside its own h-scroll.
+  const big = !!maxMode;
   const lblEvery = N <= 60 ? 1 : (N <= 130 ? 2 : 0);
+  const axisH = big ? 28 : 16;
   let stripes = '', axis = '';
   for (let k = 0; k < N; k++) {
     const d = new Date(d0); d.setDate(d0.getDate() + k);
     const dow = d.getDay();
     if (dow === 0 || dow === 6) stripes += `<div style="position:absolute;top:0;bottom:0;left:${pct(k)};width:${wOf(1)};background:var(--bg2)"></div>`;
-    let lbl = '';
-    if (lblEvery && dow === 1 && (lblEvery === 1 || Math.floor(k / 7) % 2 === 0)) lbl = d.getDate() + '/' + (d.getMonth() + 1);
-    if (!lblEvery && d.getDate() === 1) lbl = d.toLocaleDateString('en-GB', { month: 'short' });
-    if (lbl) axis += `<div style="position:absolute;left:${pct(k)};top:1px;font-size:9px;font-family:'DM Mono',monospace;color:var(--i3);white-space:nowrap">${lbl}</div>`;
+    if (big) {
+      if (k === 0 || d.getDate() === 1) axis += `<div style="position:absolute;left:${pct(k)};top:0;font-size:9px;font-weight:700;color:var(--i2);white-space:nowrap;padding-left:2px">${d.toLocaleDateString('en-GB', { month: 'long' })}</div>`;
+      axis += `<div style="position:absolute;left:${pct(k)};width:${wOf(1)};top:13px;font-size:9px;font-family:'DM Mono',monospace;color:${dow === 1 ? 'var(--i1)' : 'var(--i3)'};font-weight:${dow === 1 ? '700' : '400'};text-align:center">${d.getDate()}</div>`;
+    } else {
+      let lbl = '';
+      if (lblEvery && dow === 1 && (lblEvery === 1 || Math.floor(k / 7) % 2 === 0)) lbl = d.getDate() + '/' + (d.getMonth() + 1);
+      if (!lblEvery && d.getDate() === 1) lbl = d.toLocaleDateString('en-GB', { month: 'short' });
+      if (lbl) axis += `<div style="position:absolute;left:${pct(k)};top:1px;font-size:9px;font-family:'DM Mono',monospace;color:var(--i3);white-space:nowrap">${lbl}</div>`;
+    }
   }
   const startLine = `<div title="Job start ${spNice(p.startDate)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.startDate))};width:0;border-left:1px dashed var(--i3);z-index:2"></div>`;
   const deadLine = p.deadline ? `<div title="⚑ Deadline ${spNice(p.deadline)}" style="position:absolute;top:0;bottom:0;left:${pct(idxOf(p.deadline) + 1)};width:0;border-left:2px solid #DC2626;z-index:2"></div>` : '';
-  const ROW = 20;
-  let labels = `<div style="height:16px"></div>`, lanes = `<div style="position:relative;height:16px">${axis}</div>`;
+  const ROW = big ? 22 : 20;
+  const labelW = big ? 200 : 112;
+  let labels = `<div style="height:${axisH}px"></div>`, lanes = `<div style="position:relative;height:${axisH}px">${axis}</div>`;
   p.tasks.forEach((t, i) => {
     const isRem = !!t.reminder;
     const s = isRem ? t.startISO : (dates[i] && dates[i].start);
     const e = isRem ? t.startISO : (dates[i] && dates[i].end);
     const label = (isRem ? '📌 ' : (i + 1) + '. ') + (t.name || (isRem ? '' : 'Task ' + (i + 1)));
-    labels += `<div title="${cwEsc(label)}" style="height:${ROW}px;line-height:${ROW}px;font-size:10px;color:${isRem ? '#92400E' : 'var(--i2)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:5px">${cwEsc(label)}</div>`;
+    labels += `<div title="${cwEsc(label)}" style="height:${ROW}px;line-height:${ROW}px;font-size:${big ? 11 : 10}px;color:${isRem ? '#92400E' : 'var(--i2)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding-right:5px">${cwEsc(label)}</div>`;
     let bar = '';
     if (s) {
       if (isRem) {
-        bar = `<span title="${cwEsc('📌 ' + (t.name || 'Reminder') + ' — ' + spNice(s))}" style="position:absolute;left:${pct(idxOf(s))};width:${wOf(1)};top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:10px;min-width:10px">📌</span>`;
+        bar = `<span title="${cwEsc('📌 ' + (t.name || 'Reminder') + ' — ' + spNice(s))}" style="position:absolute;left:${pct(idxOf(s))};width:${wOf(1)};top:0;bottom:0;display:flex;align-items:center;justify-content:center;font-size:${big ? 11 : 10}px;min-width:10px">📌</span>`;
       } else {
         const manual = !!t.startISO;
         const men = spMenOf(t, crew);
@@ -5448,9 +5468,15 @@ function spChartHtml(p, dates, crew) {
     }
     lanes += `<div style="position:relative;height:${ROW}px">${bar}</div>`;
   });
+  // Expanded: the lane area scrolls horizontally on long jobs (26px/day floor) while
+  // the label column stays put. Docked: plain fit-to-width, no scroll.
+  const inner = `${stripes}${startLine}${deadLine}${lanes}`;
+  const right = big
+    ? `<div style="flex:1;overflow-x:auto;min-width:0"><div style="position:relative;min-width:${N * 26}px">${inner}</div></div>`
+    : `<div style="flex:1;position:relative;min-width:0">${inner}</div>`;
   return `<div style="display:flex">
-    <div style="flex:0 0 112px;min-width:0">${labels}</div>
-    <div style="flex:1;position:relative;min-width:0">${stripes}${startLine}${deadLine}${lanes}</div>
+    <div style="flex:0 0 ${labelW}px;min-width:0">${labels}</div>
+    ${right}
   </div>
   <div style="font-size:10px;color:var(--i3);margin-top:6px;display:flex;gap:10px;flex-wrap:wrap">
     <span><span style="display:inline-block;width:14px;height:8px;background:#7FB5E6;border-radius:2px"></span> auto</span>
@@ -5693,7 +5719,7 @@ function renderSchedule() {
         })()}
       </div>
       <div style="display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start">
-        <div class="sp-tray-col" style="flex:0 1 330px;min-width:290px">
+        <div class="sp-tray-col" style="flex:0 1 330px;min-width:290px${!spChartHidden() && spChartMax() ? ';display:none' : ''}">
           <div style="font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--i1);margin-bottom:5px">On the quote <span style="font-weight:400;text-transform:none;color:var(--i3);font-size:11px">— + adds a task · tick to combine or attach</span></div>
           <div class="sp-tray-list" style="overflow-y:auto;padding-right:4px">${quoteListHtml || '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing priced on the quote yet.</div>'}</div>
           ${quoteListHtml ? `<div style="display:flex;gap:6px;margin-top:8px;flex-wrap:wrap">
@@ -5711,12 +5737,15 @@ function renderSchedule() {
             <button class="btn btn-outline btn-sm" onclick="spAddTaskGo()" title="Add the task (Enter works too)">Add</button>
           </div>
         </div>
-        ${spChartHidden() ? '' : `<div class="sp-chart-col">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+        ${spChartHidden() ? '' : `<div class="sp-chart-col${spChartMax() ? ' sp-chart-max' : ''}">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px;margin-bottom:4px">
             <span style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📊 Timeline <span style="font-weight:400;text-transform:none;letter-spacing:normal">— read-only, TeamGantt owns it after push</span></span>
-            <button onclick="spToggleChart()" title="Hide the timeline" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 7px;color:var(--i3)">hide</button>
+            <span style="display:flex;gap:5px;flex-shrink:0">
+              <button onclick="spToggleChartMax()" title="${spChartMax() ? 'Back to the compact overview — the quote list comes back' : 'Expand — day-by-day dates; the quote list hides to make room (shrink to drag from it again)'}" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 7px;color:var(--i3)">${spChartMax() ? '⤡ shrink' : '⤢ expand'}</button>
+              <button onclick="spToggleChart()" title="Hide the timeline" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:1px 7px;color:var(--i3)">hide</button>
+            </span>
           </div>
-          ${spChartHtml(p, dates, crew)}
+          ${spChartHtml(p, dates, crew, spChartMax())}
         </div>`}
       </div>
       <div style="margin-top:16px">
