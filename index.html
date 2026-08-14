@@ -4702,8 +4702,14 @@ function spItemsDialog(rowIdx) {
   const items = spRowItems(row, meta);
   const tot = items.reduce((s,it) => s + it.cost, 0);
   const supItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items;
-  const stockItems = supItems.filter(x => x.stock && !x.removed);
-  const removedItems = supItems.filter(x => x.removed);
+  // Stocked/removed items aren't being ordered, so they belong to the SUPPLIER, not to
+  // any one delivery — listing them under every drop made them look like part of each
+  // (Neal 2026-08-14: "why is the removed sand showing in the single-line delivery I
+  // just made?"). Show them once, on the supplier's first drop, and say what they are.
+  const firstOfSupplier = spRowsOf(row.supplier)[0];
+  const showSupLists = !firstOfSupplier || firstOfSupplier.id === row.id;
+  const stockItems = showSupLists ? supItems.filter(x => x.stock && !x.removed) : [];
+  const removedItems = showSupLists ? supItems.filter(x => x.removed) : [];
   const itemHtml = items.map(it => `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
@@ -4714,12 +4720,12 @@ function spItemsDialog(rowIdx) {
     </div>`).join('');
   const stockHtml = stockItems.length ? `
     <div style="margin-top:10px">
-      <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not ordered</div>
+      <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not on any delivery <span style="font-weight:400;text-transform:none;letter-spacing:normal">(${cwEsc(row.supplier)} items you're not ordering)</span></div>
       ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
     </div>` : '';
   const removedHtml = removedItems.length ? `
     <div style="margin-top:10px">
-      <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#DC2626">🗑 Removed — not needed, not costed</div>
+      <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#DC2626">🗑 Removed — not on any delivery <span style="font-weight:400;text-transform:none;letter-spacing:normal;color:var(--i3)">(${cwEsc(row.supplier)} items you're not buying)</span></div>
       ${removedItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Put it back on the order" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
     </div>` : '';
   const panel = document.createElement('div');
