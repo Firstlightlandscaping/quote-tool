@@ -4620,7 +4620,7 @@ function spItemMeta() {
 // THIS DROP's quantity, not the whole order (Neal's ballast case, 2026-08-13).
 function spItemCtlHtml(it, rowId) {
   return `<span style="display:inline-flex;gap:5px;flex-shrink:0">
-    ${it.ceilTo != null ? `<button data-key="${cwEsc(it.key)}" onclick="spRoundUpItem(this.dataset.key)" title="Round the order up to ${it.ceilTo} — becomes an ✎ edit (amber tag, planned spend updates, reversible)" style="background:#FFFBEB;border:1px solid #F59E0B;border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#92400E;font-weight:600">⏫ ${it.ceilTo}</button>` : ''}
+    ${it.ceilTo != null ? `<button data-key="${cwEsc(it.key)}" ${rowId != null ? `data-row="${cwEsc(String(rowId))}"` : ''} onclick="spRoundUpItem(this.dataset.key, this.dataset.row)" title="Round ${it.rowScoped ? 'THIS delivery' : 'the order'} up to ${it.ceilTo} — becomes an ✎ edit (amber tag, planned spend updates, reversible)" style="background:#FFFBEB;border:1px solid #F59E0B;border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#92400E;font-weight:600">⏫ ${it.ceilTo}</button>` : ''}
     <button data-key="${cwEsc(it.key)}" ${rowId != null ? `data-row="${cwEsc(String(rowId))}"` : ''} onclick="spMatEditDialog(this.dataset.key, this.dataset.row)" title="Edit the quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
     ${it.extra
       ? `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — keep it on the plan but don't order it. Still counts as a cost, because using stock means replacing it" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
@@ -4859,6 +4859,36 @@ function spApplySupplierMove(key, panel) {
   const destRows = spRowsOf(to);
   if (destRows.length) destRows[0].alloc = (destRows[0].alloc||[]).concat(spKeyTruthAtoms(key));
 }
+// Write a per-DROP quantity for one material: scales this row's fragments to `qty`,
+// carries the same delta into the per-line memory (srcQtys) and leaves every other
+// drop's allocations untouched. Shared by the ✎ dialog's row-scoped save and the
+// row-scoped ⏫ round-up. `meta` (desc/unit/url) comes from the dialog; the round-up
+// passes nothing so existing wording/link survives. Returns false when this row can't
+// own the change (no rowId, an extra, or the row holds none of it) — callers then
+// fall back to the whole-order path.
+function spSetRowQty(key, supName, rowId, qty, meta) {
+  if (!supName || rowId == null || rowId === '' || key.indexOf('extra:') === 0) return false;
+  const p = spEnsurePlan();
+  const row = spRowsOf(supName).find(r => String(r.id) === String(rowId));
+  const frags = row ? (row.alloc||[]).filter(a => a.key === key) : [];
+  const rowHeld = frags.reduce((s, a) => s + a.qty, 0);
+  if (!row || !(rowHeld > 0)) return false;
+  const truth = {};
+  (spAtoms()[supName] || []).filter(a => a.key === key).forEach(a => { truth[a.lineId] = a.qty; });
+  const f = qty / rowHeld;
+  frags.forEach(a => {
+    const nu = Math.round(a.qty * f * 1000) / 1000;
+    truth[a.lineId] = Math.round((((truth[a.lineId] || 0) - a.qty) + nu) * 1000) / 1000;
+    a.qty = nu;
+  });
+  row.alloc = (row.alloc||[]).filter(a => !(a.key === key && a.qty <= 0.0005));
+  const srcQtys = {};
+  let total = 0;
+  Object.keys(truth).forEach(lid => { const v = truth[lid]; if (v > 0.0005) { srcQtys[lid] = v; total += v; } });
+  p.matEdits = p.matEdits || {};
+  p.matEdits[key] = { ...(p.matEdits[key] || {}), ...(meta || {}), qty: Math.round(total * 1000) / 1000, srcQtys };
+  return true;
+}
 // Scale a previous edit's per-source memory onto a new total (whole-order edits and
 // the ⏫ chip on a key that had a row-scoped edit): every drop keeps its ratio.
 function spScaledSrcQtys(prev, newQty) {
@@ -4883,31 +4913,11 @@ function spSaveMatEdit() {
   const supNow = spRollup().find(x => x.name === supName);
   const cur = supNow ? ((supNow.items.find(i => i.key === key)||{}).totalQty || 0) : 0;
   // ── row-scoped save (dialog opened from a split supplier's ☰ items): the typed qty
-  // is THIS DROP's. The delta lands on this row's own source lines; every other drop's
-  // allocations are untouched by construction, so no reconcile pass is needed.
-  const rowId = panel.dataset.rowId;
-  if (rowId != null && rowId !== '' && key.indexOf('extra:') !== 0 && supName) {
-    const row = spRowsOf(supName).find(r => String(r.id) === String(rowId));
-    const frags = row ? (row.alloc||[]).filter(a => a.key === key) : [];
-    const rowHeld = frags.reduce((s, a) => s + a.qty, 0);
-    if (row && rowHeld > 0) {
-      const truth = {};
-      (spAtoms()[supName] || []).filter(a => a.key === key).forEach(a => { truth[a.lineId] = a.qty; });
-      const f = qty / rowHeld;
-      frags.forEach(a => {
-        const nu = Math.round(a.qty * f * 1000) / 1000;
-        truth[a.lineId] = Math.round((((truth[a.lineId] || 0) - a.qty) + nu) * 1000) / 1000;
-        a.qty = nu;
-      });
-      row.alloc = (row.alloc||[]).filter(a => !(a.key === key && a.qty <= 0.0005));
-      const srcQtys = {};
-      let total = 0;
-      Object.keys(truth).forEach(lid => { const v = truth[lid]; if (v > 0.0005) { srcQtys[lid] = v; total += v; } });
-      (p.matEdits = p.matEdits || {})[key] = { qty: Math.round(total * 1000) / 1000, desc, unit, url, srcQtys };
-      spApplySupplierMove(key, panel);
-      panel.remove(); spMark(); renderSchedule();
-      return;
-    }
+  // is THIS DROP's; spSetRowQty leaves every other drop untouched by construction.
+  if (spSetRowQty(key, supName, panel.dataset.rowId, qty, { desc, unit, url })) {
+    spApplySupplierMove(key, panel);
+    panel.remove(); spMark(); renderSchedule();
+    return;
   }
   if (key.indexOf('extra:') === 0) {
     const ex = (p.extraItems||[]).find(e => 'extra:' + e.id === key);
@@ -4952,12 +4962,24 @@ function spCeilTarget(n) { const t = Math.ceil(n - 0.0005); return n > 0 && t - 
 // Round ONE item's order total up to the next whole number, as a real ✎ edit —
 // amber "edited" tag, planned spend follows, reversible via ↺ Reset to formula.
 // Any existing edit's wording/link is kept; only the qty changes.
-function spRoundUpKey(key) {
+function spRoundUpKey(key, rowId) {
   const p = spEnsurePlan();
   const supName = spSupplierOfKey(key);
   const sup = spRollup().find(x => x.name === supName);
   const it = sup && sup.items.find(i => i.key === key);
   if (!it || it.stock || it.removed) return false;
+  // ROW-SCOPED on a split supplier (2026-08-13, Neal — "when I split this delivery I
+  // can't order part bags of cement"): each DROP must be whole, so the chip rounds
+  // THIS drop, matching the ✎ edit's scope. Single-drop suppliers fall through — there
+  // the drop IS the order, so the whole-order round is the same thing.
+  if (rowId != null && rowId !== '' && key.indexOf('extra:') !== 0 && supName && spRowsOf(supName).length > 1) {
+    const row = spRowsOf(supName).find(r => String(r.id) === String(rowId));
+    if (row) {
+      const held = (row.alloc||[]).filter(a => a.key === key).reduce((s, a) => s + a.qty, 0);
+      const t = spCeilTarget(held);
+      return t == null ? false : spSetRowQty(key, supName, rowId, t);
+    }
+  }
   const cur = it.totalQty || 0;
   const target = spCeilTarget(cur);
   if (target == null) return false;
@@ -4978,8 +5000,8 @@ function spRoundUpKey(key) {
   spReconcileKeyAllocs(key, supName, cur, target);
   return true;
 }
-function spRoundUpItem(key) {
-  if (spRoundUpKey(key)) { spMark(); renderSchedule(); }
+function spRoundUpItem(key, rowId) {
+  if (spRoundUpKey(key, rowId)) { spMark(); renderSchedule(); }
 }
 // Bulk ⏫ for one delivery row: every fractional order total among ITS items, with a
 // confirm stating the £ impact (rounding up is exactly where money leaks — say so).
@@ -4989,11 +5011,22 @@ function spRoundUpRow(rowIdx) {
   if (!row) return;
   const supItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items;
   const rowKeys = new Set((row.alloc||[]).filter(a => a.qty > 0).map(a => a.key));
-  const todo = supItems.filter(it => !it.stock && !it.removed && rowKeys.has(it.key) && spCeilTarget(it.totalQty) != null);
+  // Same scope rule as the per-item chip: on a split supplier round THIS DROP's
+  // quantities (each delivery must be whole), else the whole order.
+  const split = spRowsOf(row.supplier).length > 1;
+  const heldOf = key => (row.alloc||[]).filter(a => a.key === key).reduce((s, a) => s + a.qty, 0);
+  const todo = [];
+  supItems.forEach(it => {
+    if (it.stock || it.removed || !rowKeys.has(it.key)) return;
+    const rowScoped = split && it.key.indexOf('extra:') !== 0;
+    const base = rowScoped ? heldOf(it.key) : it.totalQty;
+    const target = spCeilTarget(base);
+    if (target != null) todo.push({ it, base, target, rowScoped });
+  });
   if (!todo.length) { toast('Nothing to round — every quantity is already a whole number'); return; }
-  const extra = todo.reduce((s, it) => s + (it.supCost || 0) * ((spCeilTarget(it.totalQty) - it.totalQty) / it.totalQty), 0);
-  if (!confirm('Round ' + todo.length + ' item' + (todo.length !== 1 ? 's' : '') + ' up to whole numbers for ordering?\n\nAdds about £' + Math.round(extra).toLocaleString('en-GB') + ' to the planned spend. Each becomes an ✎ edit you can reset individually.')) return;
-  todo.forEach(it => spRoundUpKey(it.key));
+  const extra = todo.reduce((s, x) => s + (x.target - x.base) * ((x.it.supCost || 0) / (x.it.totalQty || 1)), 0);
+  if (!confirm('Round ' + todo.length + ' item' + (todo.length !== 1 ? 's' : '') + ' up to whole numbers' + (split ? ' on THIS delivery' : ' for ordering') + '?\n\nAdds about £' + Math.round(extra).toLocaleString('en-GB') + ' to the planned spend. Each becomes an ✎ edit you can reset individually.')) return;
+  todo.forEach(x => spRoundUpKey(x.it.key, x.rowScoped ? row.id : null));
   spMark(); renderSchedule();
   toast('✓ Rounded ' + todo.length + ' item' + (todo.length !== 1 ? 's' : '') + ' up for ordering');
 }
@@ -5314,12 +5347,15 @@ function spRowItems(row, meta) {
   meta = meta || spItemMeta();
   const acc = {};
   (row.alloc || []).forEach(a => { acc[a.key] = (acc[a.key] || 0) + a.qty; });
+  // On a SPLIT supplier the ⏫ chip rounds THIS DROP (each delivery has to be whole
+  // bags/lengths — you can't take part of one off a lorry), matching the ✎ edit's
+  // scope; with a single drop, drop = order, so both scopes are the same figure.
+  const split = spRowsOf(row.supplier).length > 1;
   return Object.keys(acc).filter(k => acc[k] > 0).map(k => {
     const m = meta[k] || {};
-    // ceilTo = the ⏫ round-up target for the item's ORDER TOTAL (not this row's
-    // share — on a split supplier the chip still rounds the whole order)
+    const rowScoped = split && k.indexOf('extra:') !== 0;
     return { key: k, stockCode: m.stockCode, desc: m.description || k.split('|')[0], unit: m.unit || '', qty: Math.round(acc[k]*1000)/1000, cost: acc[k] * (m.unitPrice||0), url: m.url,
-      ceilTo: spCeilTarget(m.totalQty != null ? m.totalQty : acc[k]),
+      ceilTo: spCeilTarget(rowScoped ? acc[k] : (m.totalQty != null ? m.totalQty : acc[k])), rowScoped,
       edited: !!m.edited, extra: !!m.extra, overridePriced: !!m.overridePriced, rawQty: m.rawQty, rawDesc: m.rawDesc };
   }).sort((a,b) => (a.desc||'').localeCompare(b.desc||''));
 }
