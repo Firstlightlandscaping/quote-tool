@@ -4509,7 +4509,27 @@ function spRollup() {
         // Row-scoped edits (2026-08-13, Neal's ballast case) remember EXACT per-source
         // quantities — a "this drop gets 2000" edit must not be re-dealt greedily, or
         // the change lands on whichever source pile happens to be largest.
-        it.sources.forEach(src => { src.qty = e.srcQtys[src.lineId] != null ? e.srcQtys[src.lineId] : 0; });
+        // srcQtys is keyed by LINE (the grain of atoms and row allocations), but ONE
+        // line can feed the same material through SEVERAL sources — a misc item with
+        // three cement components, or a deliverable listing a material twice. Each
+        // line's figure is therefore SPLIT across its own sources in their existing
+        // proportions; assigning it to every source multiplied the order (Neal's
+        // cement, 2026-08-13: editing a drop to 16 bags read as 48 → chip said 121).
+        const byLine = {};
+        it.sources.forEach(src => { (byLine[src.lineId] = byLine[src.lineId] || []).push(src); });
+        Object.keys(byLine).forEach(lid => {
+          const group = byLine[lid];
+          const target = e.srcQtys[lid] != null ? e.srcQtys[lid] : 0;
+          const cur = group.reduce((s, x) => s + x.qty, 0);
+          let left = target;
+          group.forEach((src, gi) => {
+            // last source takes the remainder, so the group sums to target exactly
+            const v = gi === group.length - 1 ? Math.round(left * 1000) / 1000
+              : (cur > 0 ? Math.round(target * (src.qty / cur) * 1000) / 1000 : 0);
+            src.qty = v;
+            left = Math.round((left - v) * 1000) / 1000;
+          });
+        });
         it.totalQty = Math.round(it.sources.reduce((s, src) => s + src.qty, 0) * 1000) / 1000;
       } else {
         // Distribute the new total across the sources GREEDILY (largest first), not
