@@ -4437,12 +4437,14 @@ function spQuoteMaterials() {
 // ordered but is NOT free — it gets replaced — so it's margin-NEUTRAL (Neal's ruling
 // 2026-07-14: £1,000 of stock on a job isn't £1,000 of extra profit). Only REMOVED
 // items (charged but never bought) genuinely add to the margin, by being excluded.
+// supCost is the ORDERED part; stockSup is the stocked part (a cost too — stock gets
+// replaced); removedSup is never counted (charged, never bought → extra margin).
 function spPlannedSpend() {
-  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.removed ? 0 : (it.supCost || 0)), 0), 0);
+  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.supCost || 0) + (it.stockSup || 0), 0), 0);
 }
 // The stock slice of spPlannedSpend, for showing separately in the check strip.
 function spStockSpend() {
-  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.stock && !it.removed ? (it.supCost || 0) : 0), 0), 0);
+  return spRollup().reduce((s, sup) => s + sup.items.reduce((a, it) => a + (it.stockSup || 0), 0), 0);
 }
 // The schedule's view of the rollup: the raw supplier rollup with the plan's
 // supplier OVERRIDES applied (plan.supplierOverrides = { itemKey: supplier }).
@@ -4570,16 +4572,44 @@ function spRollup() {
       });
     });
   }
-  // 4. stock items: flagged, kept for display but excluded from atoms/rows/checklists.
-  //    Margin-neutral: not ordered, but their supplier cost still counts as job cost
-  //    (using stock isn't free — it gets replaced). See spPlannedSpend.
-  const stock = p.stockKeys || {};
-  rollup.forEach(s => s.items.forEach(it => { if (stock[it.key]) it.stock = true; }));
-  // 5. removed items ("not needed"): flagged, excluded from atoms/rows/checklists AND
-  //    from planned spend — the one state that genuinely adds to the materials margin
-  //    (charged on the quote, never bought).
-  const removed = p.removedKeys || {};
-  rollup.forEach(s => s.items.forEach(it => { if (removed[it.key]) it.removed = true; }));
+  // 4. item fates — ordered / 📦 stock / 🗑 removed. TWO grains, like the re-sourcing
+  //    above: stockKeys[key] / removedKeys[key] = the WHOLE material (Unassigned list,
+  //    single-drop supplier, stock manager), and srcFate[lineId§key] = {fate, qty?} =
+  //    just THIS DROP's share. A partial fate leaves the rest ordered, with the flagged
+  //    portion carried in stockQty/removedQty (Neal 2026-08-14: stocking the pergola's
+  //    3 bags took all 66 and moved ~£750 into profit). Stock is margin-NEUTRAL — not
+  //    ordered but still a cost, because it gets replaced; removed is the only
+  //    margin-positive state (charged on the quote, never bought).
+  const stockK = p.stockKeys || {}, removedK = p.removedKeys || {}, fates = p.srcFate || {};
+  rollup.forEach(s => s.items.forEach(it => {
+    const unit = it.totalQty ? (it.supCost || 0) / it.totalQty : 0;
+    const whole = stockK[it.key] ? 'stock' : (removedK[it.key] ? 'removed' : '');
+    const ordered = [], flaggedByLine = {};
+    let stockQty = 0, removedQty = 0;
+    it.sources.forEach(src => {
+      const rule = fates[src.lineId + '§' + it.key];
+      const fate = whole || (rule && rule.fate) || '';
+      if (!fate) { ordered.push(src); return; }
+      const q = (!whole && rule && rule.qty != null && rule.qty < src.qty - 0.0005) ? rule.qty : src.qty;
+      if (q < src.qty - 0.0005) ordered.push({ ...src, qty: Math.round((src.qty - q) * 1000) / 1000 });
+      flaggedByLine[src.lineId] = Math.round(((flaggedByLine[src.lineId] || 0) + q) * 1000) / 1000;
+      if (fate === 'stock') stockQty += q; else removedQty += q;
+    });
+    it.sources = ordered;
+    it.flaggedByLine = flaggedByLine;   // per-line stocked+removed qty, for spKeyLineTotals
+    it.stockQty = Math.round(stockQty * 1000) / 1000;
+    it.removedQty = Math.round(removedQty * 1000) / 1000;
+    it.stockSup = it.stockQty * unit;
+    it.removedSup = it.removedQty * unit;
+    it.totalQty = Math.round(ordered.reduce((a, x) => a + x.qty, 0) * 1000) / 1000;
+    it.totalCost = it.totalQty * (it.unitPrice || 0);
+    it.supCost = it.totalQty * unit;
+    // the old whole-item flags keep their meaning: nothing of this left to order
+    it.stock = it.stockQty > 0.0005 && it.totalQty <= 0.0005 && it.removedQty <= 0.0005;
+    it.removed = it.removedQty > 0.0005 && it.totalQty <= 0.0005 && it.stockQty <= 0.0005;
+    it.partStock = it.stockQty > 0.0005 && !it.stock;      // stocked share of an item still being ordered
+    it.partRemoved = it.removedQty > 0.0005 && !it.removed;
+  }));
   rollup.forEach(s => {
     const live = s.items.filter(i => !i.stock && !i.removed);
     s.total = live.reduce((a,i) => a + i.totalCost, 0);
@@ -4661,7 +4691,7 @@ function spItemCtlHtml(it, rowId) {
     <button data-key="${cwEsc(it.key)}" ${rowId != null ? `data-row="${cwEsc(String(rowId))}"` : ''} onclick="spMatEditDialog(this.dataset.key, this.dataset.row)" title="Edit the quantity/wording — this schedule only" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
     ${it.extra
       ? `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — keep it on the plan but don't order it. Still counts as a cost, because using stock means replacing it" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spDelExtra(this.dataset.key)" title="Remove this added item" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑</button>`
-      : `<button data-key="${cwEsc(it.key)}" onclick="spToggleStock(this.dataset.key)" title="We hold this in stock — don't order it, but it still counts as a cost because it gets replaced (no change to profit)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Not needed — don't buy it at all; the saving becomes extra profit (quote unchanged)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑 remove</button>`}
+      : `<button data-key="${cwEsc(it.key)}" ${rowId != null ? `data-row="${cwEsc(String(rowId))}"` : ''} onclick="spToggleStock(this.dataset.key, this.dataset.row)" title="We hold ${it.rowScoped ? "this delivery's share" : 'this'} in stock — don't order it, but it still counts as a cost because it gets replaced (no change to profit)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">📦 stock</button><button data-key="${cwEsc(it.key)}" ${rowId != null ? `data-row="${cwEsc(String(rowId))}"` : ''} onclick="spToggleRemoved(this.dataset.key, this.dataset.row)" title="Not needed — don't buy ${it.rowScoped ? "this delivery's share" : 'it'} at all; the saving becomes extra profit (quote unchanged)" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:#DC2626">🗑 remove</button>`}
   </span>`;
 }
 function spEditedTagHtml(it) {
@@ -4708,8 +4738,9 @@ function spItemsDialog(rowIdx) {
   // just made?"). Show them once, on the supplier's first drop, and say what they are.
   const firstOfSupplier = spRowsOf(row.supplier)[0];
   const showSupLists = !firstOfSupplier || firstOfSupplier.id === row.id;
-  const stockItems = showSupLists ? supItems.filter(x => x.stock && !x.removed) : [];
-  const removedItems = showSupLists ? supItems.filter(x => x.removed) : [];
+  // Partly-stocked / partly-removed items appear here too, showing only the flagged share
+  const stockItems = showSupLists ? supItems.filter(x => x.stockQty > 0.0005) : [];
+  const removedItems = showSupLists ? supItems.filter(x => x.removedQty > 0.0005) : [];
   const itemHtml = items.map(it => `<div style="padding:7px 0;border-bottom:1px solid var(--bd)">
       <div style="display:flex;align-items:center;gap:10px">
         <span style="flex:1;font-size:14px;color:var(--i1);line-height:1.3"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
@@ -4721,12 +4752,12 @@ function spItemsDialog(rowIdx) {
   const stockHtml = stockItems.length ? `
     <div style="margin-top:10px">
       <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3)">📦 Stock — not on any delivery <span style="font-weight:400;text-transform:none;letter-spacing:normal">(${cwEsc(row.supplier)} items you're not ordering)</span></div>
-      ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+      ${stockItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.stockQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span>${x.partStock ? `<span title="Only part of this material is stock — the rest is still on order" style="font-size:10px;color:var(--i3);border:1px solid var(--bd);border-radius:8px;padding:0 5px">part</span>` : ''}<button data-key="${cwEsc(x.key)}" onclick="spToggleStock(this.dataset.key)" title="Order it after all" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
     </div>` : '';
   const removedHtml = removedItems.length ? `
     <div style="margin-top:10px">
       <div style="font-size:12px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#DC2626">🗑 Removed — not on any delivery <span style="font-weight:400;text-transform:none;letter-spacing:normal;color:var(--i3)">(${cwEsc(row.supplier)} items you're not buying)</span></div>
-      ${removedItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.totalQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span><button data-key="${cwEsc(x.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Put it back on the order" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
+      ${removedItems.map(x => `<div style="display:flex;align-items:center;gap:10px;padding:5px 0;border-bottom:1px dashed var(--bd)"><span style="flex:1;font-size:13px;color:var(--i3);text-decoration:line-through">${spQtyDisp(x.removedQty)} × ${cwEsc(x.description)}${x.unit ? ' (' + cwEsc(x.unit) + ')' : ''}</span>${x.partRemoved ? `<span title="Only part of this material is removed — the rest is still on order" style="font-size:10px;color:var(--i3);border:1px solid var(--bd);border-radius:8px;padding:0 5px">part</span>` : ''}<button data-key="${cwEsc(x.key)}" onclick="spToggleRemoved(this.dataset.key)" title="Put it back on the order" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button></div>`).join('')}
     </div>` : '';
   const panel = document.createElement('div');
   panel.id = 'sp-items-dialog';
@@ -4759,35 +4790,60 @@ function spKeyTruthAtoms(key) {
   it.sources.forEach(src => { if (src.lineId != null) acc[src.lineId] = (acc[src.lineId]||0) + src.qty; });
   return Object.keys(acc).map(lid => ({ lineId: parseFloat(lid), key, qty: Math.round(acc[lid]*1000)/1000 }));
 }
+// Does this material carry any fate at all (whole-material flag or per-drop share)?
+function spHasFate(key, fate) {
+  const p = spEnsurePlan();
+  if ((fate === 'stock' ? (p.stockKeys||{}) : (p.removedKeys||{}))[key]) return true;
+  const f = p.srcFate || {};
+  return Object.keys(f).some(k => k.slice(k.indexOf('§') + 1) === key && f[k] && f[k].fate === fate);
+}
+// Clear every fate on a material — whole-material flag AND per-drop shares — then put
+// the freed quantities back on the rows (reconcile adds what's missing per source line;
+// single-row suppliers re-derive through the sync).
+function spClearFate(key) {
+  const p = spEnsurePlan();
+  if (p.stockKeys) delete p.stockKeys[key];
+  if (p.removedKeys) delete p.removedKeys[key];
+  if (p.srcFate) Object.keys(p.srcFate).forEach(k => { if (k.slice(k.indexOf('§') + 1) === key) delete p.srcFate[k]; });
+  spRollup().filter(s => s.items.some(i => i.key === key)).forEach(s => spReconcileKeyAllocs(key, s.name));
+}
+// Apply a fate. With a rowId (clicked from a drop's ☰ items) only THAT DROP's share is
+// stocked/removed — the other drops keep ordering theirs (Neal 2026-08-14: stocking the
+// pergola's 3 bags of cement took all 66). Without one (Unassigned list, stock manager)
+// the whole material is flagged, as before.
+function spApplyFate(key, fate, rowId) {
+  const p = spEnsurePlan();
+  const rows = (p.deliveries||[]).filter(r => (r.alloc||[]).some(a => a.key === key));
+  const row = (rowId != null && rowId !== '') ? rows.find(r => String(r.id) === String(rowId)) : null;
+  if (row && key.indexOf('extra:') !== 0) {
+    const byLine = {};
+    (row.alloc||[]).filter(a => a.key === key).forEach(a => { byLine[a.lineId] = Math.round(((byLine[a.lineId]||0) + a.qty) * 1000) / 1000; });
+    const lids = Object.keys(byLine);
+    if (lids.length) {
+      p.srcFate = p.srcFate || {};
+      const lineTot = spKeyLineTotals(key);
+      lids.forEach(lid => {
+        const whole = Math.abs((lineTot[lid] || 0) - byLine[lid]) < 0.0005;
+        p.srcFate[lid + '§' + key] = whole ? { fate } : { fate, qty: byLine[lid] };
+      });
+      row.alloc = (row.alloc||[]).filter(a => a.key !== key);
+      return;
+    }
+  }
+  (fate === 'stock' ? (p.stockKeys = p.stockKeys || {}) : (p.removedKeys = p.removedKeys || {}))[key] = true;
+  (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
+}
 // 📦 stock toggle — "we hold this, don't order it this job". Plan-scope; the quote's
 // pricing keeps the item (correctly — it was charged for), it just isn't ordered.
-function spToggleStock(key) {
-  const p = spEnsurePlan();
-  p.stockKeys = p.stockKeys || {};
-  if (p.stockKeys[key]) {
-    delete p.stockKeys[key];
-    const sup = spSupplierOfKey(key);
-    if (sup) { const rows = spRowsOf(sup); if (rows.length > 1) rows[0].alloc = (rows[0].alloc||[]).concat(spKeyTruthAtoms(key)); }
-  } else {
-    p.stockKeys[key] = true;
-    (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
-  }
+function spToggleStock(key, rowId) {
+  if (spHasFate(key, 'stock')) spClearFate(key); else spApplyFate(key, 'stock', rowId);
   spMark(); renderSchedule();
 }
 // 🗑 remove toggle — "not needed, don't buy it" (e.g. charged for a waste van, hiring a
 // skip instead). Plan-scope; the quote still charges the client for it, so the saved
 // supplier cost lands in the materials margin (unlike 📦 stock, which is margin-neutral).
-function spToggleRemoved(key) {
-  const p = spEnsurePlan();
-  p.removedKeys = p.removedKeys || {};
-  if (p.removedKeys[key]) {
-    delete p.removedKeys[key];
-    const sup = spSupplierOfKey(key);
-    if (sup) { const rows = spRowsOf(sup); if (rows.length > 1) rows[0].alloc = (rows[0].alloc||[]).concat(spKeyTruthAtoms(key)); }
-  } else {
-    p.removedKeys[key] = true;
-    (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
-  }
+function spToggleRemoved(key, rowId) {
+  if (spHasFate(key, 'removed')) spClearFate(key); else spApplyFate(key, 'removed', rowId);
   spMark(); renderSchedule();
 }
 // 📦/🗑 manager (2026-08-13, Neal's Shane Webster case): stocked/removed items were
@@ -4802,15 +4858,15 @@ function spStockDialog() {
   if (existing) existing.remove();
   const stocked = [], removed = [];
   spRollup().forEach(s => s.items.forEach(it => {
-    if (it.removed) removed.push({ sup: s.name, it });
-    else if (it.stock) stocked.push({ sup: s.name, it });
+    if (it.removedQty > 0.0005) removed.push({ sup: s.name, it });
+    if (it.stockQty > 0.0005) stocked.push({ sup: s.name, it });
   }));
   if (!stocked.length && !removed.length) { toast('Nothing is marked as stock or removed on this plan'); return; }
   const money = v => '£' + Math.round(v).toLocaleString('en-GB');
   const rowHtml = (g, isStock) => `
     <div style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">
-      <span style="flex:1;min-width:220px;font-size:13px;color:${isStock ? 'var(--i1)' : 'var(--i3)'};${isStock ? '' : 'text-decoration:line-through;'}line-height:1.3"><strong>${spQtyDisp(g.it.totalQty)}</strong> × ${cwEsc(g.it.description)}${g.it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(g.it.unit) + ')</span>' : ''}${spEditedTagHtml(g.it)} <span style="color:var(--i3);font-size:11px">— ${cwEsc(g.sup)}</span></span>
-      <span style="font-size:12px;color:var(--i2);font-family:'DM Mono',monospace;white-space:nowrap">${money(g.it.supCost || 0)}</span>
+      <span style="flex:1;min-width:220px;font-size:13px;color:${isStock ? 'var(--i1)' : 'var(--i3)'};${isStock ? '' : 'text-decoration:line-through;'}line-height:1.3"><strong>${spQtyDisp(isStock ? g.it.stockQty : g.it.removedQty)}</strong> × ${cwEsc(g.it.description)}${g.it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(g.it.unit) + ')</span>' : ''}${spEditedTagHtml(g.it)}${(isStock ? g.it.partStock : g.it.partRemoved) ? ` <span title="Only part of this material — the rest is still on order" style="font-size:10px;color:var(--i3);border:1px solid var(--bd);border-radius:8px;padding:0 5px">part</span>` : ''} <span style="color:var(--i3);font-size:11px">— ${cwEsc(g.sup)}</span></span>
+      <span style="font-size:12px;color:var(--i2);font-family:'DM Mono',monospace;white-space:nowrap">${money((isStock ? g.it.stockSup : g.it.removedSup) || 0)}</span>
       <span style="display:inline-flex;gap:5px;flex-shrink:0">
         <button data-key="${cwEsc(g.it.key)}" onclick="spMatEditDialog(this.dataset.key)" title="Edit the quantity/wording — e.g. only 3 of the 4 days are needed" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">✎ edit</button>
         <button data-key="${cwEsc(g.it.key)}" onclick="${isStock ? 'spToggleStock' : 'spToggleRemoved'}(this.dataset.key)" title="${isStock ? 'Order it after all — goes back on its supplier’s delivery' : 'Needed after all — goes back on its supplier’s delivery'}" style="background:none;border:1px solid var(--bd);border-radius:4px;cursor:pointer;font-size:12px;padding:3px 10px;color:var(--i1)">↺ restore</button>
@@ -4987,11 +5043,16 @@ function spSetRowQty(key, supName, rowId, qty, meta) {
   });
   return true;
 }
-// Per-quote-line totals for one material, added up across every supplier holding it.
+// Per-quote-line totals for one material — the WHOLE material, across every supplier
+// holding it AND including any stocked/removed share. It feeds srcQtys (the per-line
+// memory behind drop-scoped edits), so leaving the flagged portions out would quietly
+// un-stock or un-remove another drop's share the next time a quantity was edited.
 function spKeyLineTotals(key) {
-  const out = {}, A = spAtoms();
-  Object.keys(A).forEach(sn => (A[sn]||[]).filter(a => a.key === key)
-    .forEach(a => { out[a.lineId] = Math.round(((out[a.lineId] || 0) + a.qty) * 1000) / 1000; }));
+  const out = {};
+  spRollup().forEach(s => s.items.filter(i => i.key === key).forEach(it => {
+    it.sources.forEach(src => { out[src.lineId] = Math.round(((out[src.lineId] || 0) + src.qty) * 1000) / 1000; });
+    Object.keys(it.flaggedByLine || {}).forEach(lid => { out[lid] = Math.round(((out[lid] || 0) + it.flaggedByLine[lid]) * 1000) / 1000; });
+  }));
   return out;
 }
 // Scale a previous edit's per-source memory onto a new total (whole-order edits and
@@ -6095,7 +6156,7 @@ function renderSchedule() {
           if (!qm.charged) return '';
           const planned = spPlannedSpend();          // orders + stock at replacement cost, removed items excluded
           const stockCost = spStockSpend();
-          const removedN = spRollup().reduce((n, s) => n + s.items.filter(i => i.removed).length, 0);
+          const removedN = spRollup().reduce((n, s) => n + s.items.filter(i => i.removedQty > 0.0005).length, 0);
           const orders = planned - stockCost;
           const projMargin = qm.charged - planned;
           const diff = projMargin - qm.profit;
@@ -6142,7 +6203,7 @@ function renderSchedule() {
   const sdlg = document.getElementById('sp-stock-dialog');
   if (sdlg) {
     sdlg.remove();
-    if (spRollup().some(s => s.items.some(i => i.stock || i.removed))) spStockDialog();
+    if (spRollup().some(s => s.items.some(i => i.stockQty > 0.0005 || i.removedQty > 0.0005))) spStockDialog();
   }
 }
 
