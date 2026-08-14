@@ -4461,28 +4461,9 @@ function spRollup() {
     }
     return sup;
   };
-  // 1. supplier overrides: move items to their overridden supplier. Originally this
-  //    only lifted items OUT of the Unassigned bucket; since 2026-08-13 (the ✎
-  //    dialog's Supplier dropdown) an override moves an item from ANY bucket — "this
-  //    job the ballast comes from Myers, not GH Brooks" — so it now sweeps every
-  //    supplier. An item already sitting under its overridden name stays put.
-  if (Object.keys(ov).length) {
-    const moved = [];
-    rollup.forEach(s => {
-      s.items = s.items.filter(it => { const t = (ov[it.key]||'').trim(); if (t && t !== s.name) { moved.push({ it, t }); return false; } return true; });
-    });
-    moved.forEach(({ it, t }) => {
-      const sup = getSup(t);
-      const dup = sup.items.find(x => x.key === it.key);
-      if (dup) {
-        dup.totalQty = Math.round((dup.totalQty + it.totalQty) * 1000) / 1000;
-        dup.totalCost += it.totalCost;
-        dup.supCost = (dup.supCost || 0) + (it.supCost || 0);
-        dup.sources = dup.sources.concat(it.sources);
-        dup.unitPrice = dup.totalQty ? dup.totalCost / dup.totalQty : 0;
-      } else sup.items.push(it);
-    });
-  }
+  // (Supplier re-sourcing used to happen HERE, before the qty edits. It now runs after
+  //  them — see step 3b — so the quantities that move are the ones on screen and an
+  //  edit is applied ONCE, to the whole material, before it is divided.)
   // 2. extra items: order-only lines that exist ONLY in this plan (never on the quote).
   //    Synthetic lineId -1; supplier overrides apply to them too (so they're assignable).
   (p.extraItems || []).forEach(e => {
@@ -4545,6 +4526,50 @@ function spRollup() {
     }
     it.edited = true;
   }));
+  // 3b. supplier re-sourcing (plan-scope, quote and Price Manager untouched) — TWO grains:
+  //     supplierOverrides[key]               = the WHOLE material comes from X
+  //     srcSupplier[lineId§key] = {sup,qty}  = just THIS source's share does (a drop's
+  //                                            worth; a qty below the source splits it)
+  //     Per-source wins. A material can therefore sit under two suppliers at once —
+  //     moving a decking drop elsewhere must not drag the front wall's ballast with it
+  //     (Neal 2026-08-14: re-sourcing one drop took the whole 6,950kg and 88 bags).
+  //     Runs AFTER the qty edits so what moves is what the drop shows.
+  const so = p.srcSupplier || {};
+  if (Object.keys(ov).length || Object.keys(so).length) {
+    rollup.forEach(s => s.items.forEach(it => { it._unitSup = it.totalQty ? (it.supCost || 0) / it.totalQty : 0; }));
+    const moves = [];
+    rollup.forEach(s => {
+      s.items.forEach(it => {
+        if (it.extra) return;                       // extras carry their own supplier field
+        const keep = [];
+        it.sources.forEach(src => {
+          const rule = so[src.lineId + '§' + it.key];
+          const target = (((rule && rule.sup) || ov[it.key] || '') + '').trim();
+          if (!target || target === s.name) { keep.push(src); return; }
+          const moveQty = (rule && rule.qty != null && rule.qty < src.qty - 0.0005) ? rule.qty : src.qty;
+          if (moveQty < src.qty - 0.0005) keep.push({ ...src, qty: Math.round((src.qty - moveQty) * 1000) / 1000 });
+          moves.push({ target, proto: it, src: { ...src, qty: Math.round(moveQty * 1000) / 1000 } });
+        });
+        it.sources = keep;
+      });
+    });
+    moves.forEach(m => {
+      const sup = getSup(m.target);
+      let dst = sup.items.find(x => x.key === m.proto.key);
+      if (!dst) { dst = { ...m.proto, sources: [], totalQty: 0, totalCost: 0, supCost: 0 }; sup.items.push(dst); }
+      dst.sources.push(m.src);
+    });
+    rollup.forEach(s => {
+      s.items = s.items.filter(it => {
+        if (it.extra) return true;
+        it.totalQty = Math.round(it.sources.reduce((a, x) => a + x.qty, 0) * 1000) / 1000;
+        it.totalCost = it.totalQty * (it.unitPrice || 0);
+        it.supCost = it.totalQty * (it._unitSup || 0);
+        delete it._unitSup;
+        return it.totalQty > 0.0005;                // a bucket that gave everything away
+      });
+    });
+  }
   // 4. stock items: flagged, kept for display but excluded from atoms/rows/checklists.
   //    Margin-neutral: not ordered, but their supplier cost still counts as job cost
   //    (using stock isn't free — it gets replaced). See spPlannedSpend.
@@ -4610,10 +4635,22 @@ function spAtoms() {
 function spItemMeta() {
   const map = {};
   spRollup().forEach(s => s.items.forEach(it => {
+    // A material can be split between suppliers (per-source re-sourcing), so totalQty
+    // accumulates across buckets = the WHOLE material, and multiSupplier flags the
+    // split — the ⏫ chip and ✎ dialog use it to work per drop instead of per order.
+    if (map[it.key]) {
+      map[it.key].totalQty = Math.round((map[it.key].totalQty + it.totalQty) * 1000) / 1000;
+      map[it.key].multiSupplier = true;
+      return;
+    }
     map[it.key] = { description: it.description, unit: it.unit, unitPrice: it.unitPrice || 0, url: it.url, stockCode: it.stockCode, totalQty: it.totalQty,
       edited: !!it.edited, extra: !!it.extra, overridePriced: !!it.overridePriced, rawQty: it.rawQty, rawDesc: it.rawDesc, rawUnit: it.rawUnit };
   }));
   return map;
+}
+// The whole material's quantity, however many suppliers it is split between.
+function spWholeQty(key, roll) {
+  return Math.round((roll || spRollup()).reduce((a, s) => a + s.items.filter(i => i.key === key).reduce((x, i) => x + i.totalQty, 0), 0) * 1000) / 1000;
 }
 // Shared bits for item rows (used by the unassigned inline list AND the items dialog).
 // rowId (☰ dialog only): the ✎ edit becomes row-scoped on split suppliers — it edits
@@ -4796,13 +4833,20 @@ function spStockDialog() {
 // whole 6950 order — typing 2000 greedily drained other piles and left 100 here).
 // The whole-order figure is shown for context; other drops keep their exact share.
 function spMatEditDialog(key, rowId) {
-  const sup = spRollup().find(x => x.items.some(i => i.key === key));
+  const roll = spRollup();
+  const idRow = (rowId != null && rowId !== '') ? (spEnsurePlan().deliveries||[]).find(r => String(r.id) === String(rowId)) : null;
+  // With a material split between suppliers, take the bucket belonging to the row the
+  // dialog was opened from — otherwise the first bucket holding it.
+  const sup = (idRow && roll.find(x => x.name === idRow.supplier && x.items.some(i => i.key === key)))
+           || roll.find(x => x.items.some(i => i.key === key));
   const it = sup && sup.items.find(i => i.key === key);
   if (!it) return;
-  const rows = sup ? spRowsOf(sup.name) : [];
-  const row = rowId != null && rowId !== '' ? rows.find(r => String(r.id) === String(rowId)) : null;
+  const rows = spRowsOf(sup.name);
+  const row = (idRow && idRow.supplier === sup.name) ? idRow : null;
+  const multiSup = roll.filter(x => x.items.some(i => i.key === key)).length > 1;
+  const wholeQty = spWholeQty(key, roll);
   const rowHeld = row ? Math.round((row.alloc||[]).filter(a => a.key === key).reduce((s, a) => s + a.qty, 0) * 1000) / 1000 : 0;
-  const rowMode = !!(row && rows.length > 1 && rowHeld > 0 && key.indexOf('extra:') !== 0);
+  const rowMode = !!(row && (rows.length > 1 || multiSup) && rowHeld > 0 && key.indexOf('extra:') !== 0);
   const existing = document.getElementById('sp-mat-dialog');
   if (existing) existing.remove();
   const panel = document.createElement('div');
@@ -4815,10 +4859,10 @@ function spMatEditDialog(key, rowId) {
     <div style="background:white;border-radius:12px;padding:24px;width:460px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
       <h3 style="margin:0 0 4px;font-size:16px">✎ Edit order line${rowMode ? ' — this drop' : ''}</h3>
       <p style="font-size:12px;color:var(--i3);margin:0 0 12px">Changes what you ORDER on this schedule only — the quote and Order List keep the formula's figures${it.edited && it.rawQty != null ? ' (formula: ' + Math.round(it.rawQty*1000)/1000 + ' × ' + cwEsc(it.rawDesc||'') + (it.rawUnit ? ' (' + cwEsc(it.rawUnit) + ')' : '') + ')' : ''}.</p>
-      ${rowMode ? `<p style="font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:6px 9px;margin:0 0 12px">Quantity below = <strong>this drop only</strong>. The whole ${cwEsc(sup.name)} order is <strong>${Math.round(it.totalQty*1000)/1000}${it.unit ? ' ' + cwEsc(it.unit) : ''}</strong> across ${rows.length} drops — the other drops keep their share; the order total follows this change.</p>` : ''}
+      ${rowMode ? `<p style="font-size:12px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:6px 9px;margin:0 0 12px">Quantity and supplier below apply to <strong>this drop only</strong> — the other drops keep their share. ${cwEsc(sup.name)}${rows.length > 1 ? ' takes <strong>' + (Math.round(it.totalQty*1000)/1000) + (it.unit ? ' ' + cwEsc(it.unit) : '') + '</strong> across ' + rows.length + ' drops' : ' takes <strong>' + (Math.round(it.totalQty*1000)/1000) + (it.unit ? ' ' + cwEsc(it.unit) : '') + '</strong>'}${multiSup ? `; <strong>${wholeQty}${it.unit ? ' ' + cwEsc(it.unit) : ''}</strong> is needed in total, the rest from other suppliers` : ''}.</p>` : ''}
       <div class="fg" style="margin-bottom:10px"><label>Description</label><input type="text" id="sp-me-desc" value="${cwEsc(it.description)}" style="width:100%"></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:10px">
-        <div class="fg"><label>Quantity${rowMode ? ' (this drop)' : ''}</label><input type="number" id="sp-me-qty" value="${rowMode ? rowHeld : Math.round(it.totalQty*1000)/1000}" min="0" step="any" style="width:100%"></div>
+        <div class="fg"><label>Quantity${rowMode ? ' (this drop)' : ''}</label><input type="number" id="sp-me-qty" value="${rowMode ? rowHeld : wholeQty}" min="0" step="any" style="width:100%"></div>
         <div class="fg"><label>Unit</label><input type="text" id="sp-me-unit" value="${cwEsc(it.unit||'')}" placeholder="e.g. length, kg, pack" style="width:100%"></div>
       </div>
       <div class="fg" style="margin-bottom:10px"><label>Supplier — who this is ordered from on THIS plan (moves every drop of it; set it in the Price Manager to change future quotes too)</label><select id="sp-me-sup" onchange="supplierSelResolve(this)" style="width:100%">${supplierOptionsHtml(sup && sup.name !== SUP_UNASSIGNED ? sup.name : '', spKnownSuppliers(), '— unassigned —')}</select></div>
@@ -4848,12 +4892,42 @@ function spApplySupplierMove(key, panel) {
   const was = panel.dataset.sup || '';
   if (!to || to === was) return;
   const p = spEnsurePlan();
+  // ── PER-DROP move (dialog opened from one of a supplier's drops, and that supplier
+  // has more than one — or the material is already shared): only THIS drop's share
+  // changes hands, recorded per source line so every other drop keeps its supplier.
+  // Neal 2026-08-14: re-sourcing the decking drop must not take the front wall's
+  // ballast and the whole job's cement with it.
+  const rowId = panel.dataset.rowId;
+  const rows = spRowsOf(was);
+  const row = (rowId != null && rowId !== '') ? rows.find(r => String(r.id) === String(rowId)) : null;
+  if (row && key.indexOf('extra:') !== 0) {
+    const byLine = {};
+    (row.alloc||[]).filter(a => a.key === key).forEach(a => { byLine[a.lineId] = Math.round(((byLine[a.lineId]||0) + a.qty) * 1000) / 1000; });
+    const lids = Object.keys(byLine);
+    if (lids.length) {
+      p.srcSupplier = p.srcSupplier || {};
+      // Whole source → record NO qty, so later quantity changes on that line follow the
+      // move. A partial share records the amount and keeps the rest where it was.
+      const lineTot = spKeyLineTotals(key);
+      lids.forEach(lid => {
+        const whole = Math.abs((lineTot[lid] || 0) - byLine[lid]) < 0.0005;
+        p.srcSupplier[lid + '§' + key] = whole ? { sup: to } : { sup: to, qty: byLine[lid] };
+      });
+      row.alloc = (row.alloc||[]).filter(a => a.key !== key);
+      const dest = spRowsOf(to);
+      if (dest.length) dest[0].alloc = (dest[0].alloc||[]).concat(lids.map(lid => ({ lineId: parseFloat(lid), key, qty: byLine[lid] })));
+      return;
+    }
+  }
+  // ── WHOLE-material move (Unassigned list, single-drop supplier, stock manager).
   if (key.indexOf('extra:') === 0) {
     const ex = (p.extraItems||[]).find(e => 'extra:' + e.id === key);
     if (ex) ex.supplier = to;
     if (p.supplierOverrides) delete p.supplierOverrides[key];
   } else {
     (p.supplierOverrides = p.supplierOverrides || {})[key] = to;
+    // a whole-material move supersedes any per-source rules for it
+    if (p.srcSupplier) Object.keys(p.srcSupplier).forEach(k => { if (k.slice(k.indexOf('§') + 1) === key) delete p.srcSupplier[k]; });
   }
   (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
   const destRows = spRowsOf(to);
@@ -4873,13 +4947,17 @@ function spSetRowQty(key, supName, rowId, qty, meta) {
   const frags = row ? (row.alloc||[]).filter(a => a.key === key) : [];
   const rowHeld = frags.reduce((s, a) => s + a.qty, 0);
   if (!row || !(rowHeld > 0)) return false;
-  const truth = {};
-  (spAtoms()[supName] || []).filter(a => a.key === key).forEach(a => { truth[a.lineId] = a.qty; });
+  // Seed from EVERY supplier's atoms: srcQtys is the whole material's per-line memory,
+  // and the material may be split between suppliers — dropping the other supplier's
+  // lines here would silently zero their share.
+  const truth = spKeyLineTotals(key);
   const f = qty / rowHeld;
-  frags.forEach(a => {
-    const nu = Math.round(a.qty * f * 1000) / 1000;
+  let left = qty;                       // last fragment takes the remainder, so the row
+  frags.forEach((a, i) => {             // sums to exactly what was typed (no 66.001)
+    const nu = i === frags.length - 1 ? Math.round(left * 1000) / 1000 : Math.round(a.qty * f * 1000) / 1000;
     truth[a.lineId] = Math.round((((truth[a.lineId] || 0) - a.qty) + nu) * 1000) / 1000;
     a.qty = nu;
+    left = Math.round((left - nu) * 1000) / 1000;
   });
   row.alloc = (row.alloc||[]).filter(a => !(a.key === key && a.qty <= 0.0005));
   const srcQtys = {};
@@ -4887,7 +4965,28 @@ function spSetRowQty(key, supName, rowId, qty, meta) {
   Object.keys(truth).forEach(lid => { const v = truth[lid]; if (v > 0.0005) { srcQtys[lid] = v; total += v; } });
   p.matEdits = p.matEdits || {};
   p.matEdits[key] = { ...(p.matEdits[key] || {}), ...(meta || {}), qty: Math.round(total * 1000) / 1000, srcQtys };
+  // Keep any per-source supplier rule OWNED BY THIS SUPPLIER in step with the new
+  // quantities — otherwise the moved share stays frozen at the figure it had when it
+  // was re-sourced and an increase silently lands back on the original supplier.
+  const so = p.srcSupplier || {};
+  const mineRows = spRowsOf(supName);
+  frags.forEach(fr => {
+    const rk = fr.lineId + '§' + key;
+    const rule = so[rk];
+    if (!rule || rule.sup !== supName) return;
+    const mine = Math.round(mineRows.reduce((s, r) => s + (r.alloc||[]).filter(a => a.key === key && a.lineId === fr.lineId).reduce((x, a) => x + a.qty, 0), 0) * 1000) / 1000;
+    if (mine <= 0.0005) delete so[rk];
+    else if (Math.abs(mine - (truth[fr.lineId] || 0)) < 0.0005) so[rk] = { sup: rule.sup };   // now the whole line
+    else so[rk] = { sup: rule.sup, qty: mine };
+  });
   return true;
+}
+// Per-quote-line totals for one material, added up across every supplier holding it.
+function spKeyLineTotals(key) {
+  const out = {}, A = spAtoms();
+  Object.keys(A).forEach(sn => (A[sn]||[]).filter(a => a.key === key)
+    .forEach(a => { out[a.lineId] = Math.round(((out[a.lineId] || 0) + a.qty) * 1000) / 1000; }));
+  return out;
 }
 // Scale a previous edit's per-source memory onto a new total (whole-order edits and
 // the ⏫ chip on a key that had a row-scoped edit): every drop keeps its ratio.
@@ -4909,11 +5008,10 @@ function spSaveMatEdit() {
   const url = urlRaw ? normSupplierUrl(urlRaw) : '';
   if (!(qty > 0)) { toast('Enter a quantity'); return; }
   const p = spEnsurePlan();
-  const supName = spSupplierOfKey(key);
-  const supNow = spRollup().find(x => x.name === supName);
-  const cur = supNow ? ((supNow.items.find(i => i.key === key)||{}).totalQty || 0) : 0;
-  // ── row-scoped save (dialog opened from a split supplier's ☰ items): the typed qty
-  // is THIS DROP's; spSetRowQty leaves every other drop untouched by construction.
+  // the bucket the dialog was opened from (a material can sit under two suppliers)
+  const supName = panel.dataset.sup || spSupplierOfKey(key);
+  // ── row-scoped save (dialog opened from a supplier's drop): the typed qty is THIS
+  // DROP's; spSetRowQty leaves every other drop untouched by construction.
   if (spSetRowQty(key, supName, panel.dataset.rowId, qty, { desc, unit, url })) {
     spApplySupplierMove(key, panel);
     panel.remove(); spMark(); renderSchedule();
@@ -4926,7 +5024,7 @@ function spSaveMatEdit() {
     const sq = spScaledSrcQtys((p.matEdits||{})[key], qty);
     (p.matEdits = p.matEdits || {})[key] = sq ? { qty, desc, unit, url, srcQtys: sq } : { qty, desc, unit, url };
   }
-  spReconcileKeyAllocs(key, supName, cur, qty);
+  spRollup().filter(s => s.items.some(i => i.key === key)).forEach(s => spReconcileKeyAllocs(key, s.name));
   spApplySupplierMove(key, panel);
   panel.remove(); spMark(); renderSchedule();
 }
@@ -4935,8 +5033,8 @@ function spSaveMatEdit() {
 // line's fragments across the rows to the new atom qty — ratios WITHIN a source
 // survive, and the row sums exactly match the greedy atoms, so no drift flag.
 // Shared by the ✎ edit dialog save and the ⏫ round-up actions.
-function spReconcileKeyAllocs(key, supName, cur, qty) {
-  if (!(cur > 0) || qty === cur || !supName) return;
+function spReconcileKeyAllocs(key, supName) {
+  if (!supName) return;
   const rows = spRowsOf(supName);
   if (rows.length <= 1) return;
   const truth = {};
@@ -4964,23 +5062,28 @@ function spCeilTarget(n) { const t = Math.ceil(n - 0.0005); return n > 0 && t - 
 // Any existing edit's wording/link is kept; only the qty changes.
 function spRoundUpKey(key, rowId) {
   const p = spEnsurePlan();
-  const supName = spSupplierOfKey(key);
-  const sup = spRollup().find(x => x.name === supName);
+  const roll = spRollup();
+  // Resolve the supplier from the ROW when one is given — with a material split between
+  // suppliers, keying off the material alone picks the wrong bucket and the round-up
+  // lands on someone else's share.
+  const idRow = (rowId != null && rowId !== '') ? (p.deliveries||[]).find(r => String(r.id) === String(rowId)) : null;
+  const supName = (idRow && roll.some(s => s.name === idRow.supplier && s.items.some(i => i.key === key)))
+    ? idRow.supplier : spSupplierOfKey(key);
+  const sup = roll.find(x => x.name === supName);
   const it = sup && sup.items.find(i => i.key === key);
   if (!it || it.stock || it.removed) return false;
   // ROW-SCOPED on a split supplier (2026-08-13, Neal — "when I split this delivery I
   // can't order part bags of cement"): each DROP must be whole, so the chip rounds
   // THIS drop, matching the ✎ edit's scope. Single-drop suppliers fall through — there
   // the drop IS the order, so the whole-order round is the same thing.
-  if (rowId != null && rowId !== '' && key.indexOf('extra:') !== 0 && supName && spRowsOf(supName).length > 1) {
-    const row = spRowsOf(supName).find(r => String(r.id) === String(rowId));
-    if (row) {
-      const held = (row.alloc||[]).filter(a => a.key === key).reduce((s, a) => s + a.qty, 0);
-      const t = spCeilTarget(held);
-      return t == null ? false : spSetRowQty(key, supName, rowId, t);
-    }
+  // (also when the material is SHARED with another supplier — this row owns only part)
+  const multiSup = roll.filter(x => x.items.some(i => i.key === key)).length > 1;
+  if (idRow && idRow.supplier === supName && key.indexOf('extra:') !== 0 && (spRowsOf(supName).length > 1 || multiSup)) {
+    const held = (idRow.alloc||[]).filter(a => a.key === key).reduce((s, a) => s + a.qty, 0);
+    const t = spCeilTarget(held);
+    return t == null ? false : spSetRowQty(key, supName, rowId, t);
   }
-  const cur = it.totalQty || 0;
+  const cur = spWholeQty(key);
   const target = spCeilTarget(cur);
   if (target == null) return false;
   if (key.indexOf('extra:') === 0) {
@@ -4997,7 +5100,7 @@ function spRoundUpKey(key, rowId) {
     if (sq) ne.srcQtys = sq; else delete ne.srcQtys;
     p.matEdits[key] = ne;
   }
-  spReconcileKeyAllocs(key, supName, cur, target);
+  spRollup().filter(s => s.items.some(i => i.key === key)).forEach(s => spReconcileKeyAllocs(key, s.name));
   return true;
 }
 function spRoundUpItem(key, rowId) {
@@ -5009,24 +5112,16 @@ function spRoundUpRow(rowIdx) {
   const p = spEnsurePlan();
   const row = p.deliveries[rowIdx];
   if (!row) return;
+  // Reuse the row's own item list so the scope (per drop vs whole order) and the
+  // targets are exactly the ones the chips beside each line are showing.
   const supItems = ((spRollup().find(s => s.name === row.supplier))||{items:[]}).items;
-  const rowKeys = new Set((row.alloc||[]).filter(a => a.qty > 0).map(a => a.key));
-  // Same scope rule as the per-item chip: on a split supplier round THIS DROP's
-  // quantities (each delivery must be whole), else the whole order.
-  const split = spRowsOf(row.supplier).length > 1;
-  const heldOf = key => (row.alloc||[]).filter(a => a.key === key).reduce((s, a) => s + a.qty, 0);
-  const todo = [];
-  supItems.forEach(it => {
-    if (it.stock || it.removed || !rowKeys.has(it.key)) return;
-    const rowScoped = split && it.key.indexOf('extra:') !== 0;
-    const base = rowScoped ? heldOf(it.key) : it.totalQty;
-    const target = spCeilTarget(base);
-    if (target != null) todo.push({ it, base, target, rowScoped });
-  });
+  const todo = spRowItems(row).filter(i => i.ceilTo != null && !supItems.some(x => x.key === i.key && (x.stock || x.removed)))
+    .map(i => ({ i, unitSup: (it => it && it.totalQty ? (it.supCost || 0) / it.totalQty : 0)(supItems.find(x => x.key === i.key)) }));
   if (!todo.length) { toast('Nothing to round — every quantity is already a whole number'); return; }
-  const extra = todo.reduce((s, x) => s + (x.target - x.base) * ((x.it.supCost || 0) / (x.it.totalQty || 1)), 0);
-  if (!confirm('Round ' + todo.length + ' item' + (todo.length !== 1 ? 's' : '') + ' up to whole numbers' + (split ? ' on THIS delivery' : ' for ordering') + '?\n\nAdds about £' + Math.round(extra).toLocaleString('en-GB') + ' to the planned spend. Each becomes an ✎ edit you can reset individually.')) return;
-  todo.forEach(x => spRoundUpKey(x.it.key, x.rowScoped ? row.id : null));
+  const anyRowScoped = todo.some(x => x.i.rowScoped);
+  const extra = todo.reduce((s, x) => s + (x.i.ceilTo - x.i.qty) * x.unitSup, 0);
+  if (!confirm('Round ' + todo.length + ' item' + (todo.length !== 1 ? 's' : '') + ' up to whole numbers' + (anyRowScoped ? ' on THIS delivery' : ' for ordering') + '?\n\nAdds about £' + Math.round(extra).toLocaleString('en-GB') + ' to the planned spend. Each becomes an ✎ edit you can reset individually.')) return;
+  todo.forEach(x => spRoundUpKey(x.i.key, row.id));
   spMark(); renderSchedule();
   toast('✓ Rounded ' + todo.length + ' item' + (todo.length !== 1 ? 's' : '') + ' up for ordering');
 }
@@ -5044,9 +5139,7 @@ function spResetMatEdit() {
   // source the edit had drained to 0 stayed 0 (0 × anything), other sources came back
   // inflated, and every row of the supplier drift-flagged. spReconcileKeyAllocs fixes
   // per source and pushes a zero-held source's quantity back onto the first row.
-  const supAfter = spRollup().find(x => x.name === supName);
-  const raw = supAfter ? ((supAfter.items.find(i => i.key === key) || {}).totalQty || 0) : 0;
-  spReconcileKeyAllocs(key, supName, cur, raw);
+  spRollup().filter(s => s.items.some(i => i.key === key)).forEach(s => spReconcileKeyAllocs(key, s.name));
   panel.remove(); spMark(); renderSchedule();
 }
 // + add item — order-only lines that exist ONLY in this plan (never on the quote).
@@ -5358,7 +5451,9 @@ function spRowItems(row, meta) {
   const split = spRowsOf(row.supplier).length > 1;
   return Object.keys(acc).filter(k => acc[k] > 0).map(k => {
     const m = meta[k] || {};
-    const rowScoped = split && k.indexOf('extra:') !== 0;
+    // Per-drop scope also applies when the material is shared with another supplier —
+    // this row then owns only part of it, so "the order" is not this row's business.
+    const rowScoped = (split || !!m.multiSupplier) && k.indexOf('extra:') !== 0;
     return { key: k, stockCode: m.stockCode, desc: m.description || k.split('|')[0], unit: m.unit || '', qty: Math.round(acc[k]*1000)/1000, cost: acc[k] * (m.unitPrice||0), url: m.url,
       ceilTo: spCeilTarget(rowScoped ? acc[k] : (m.totalQty != null ? m.totalQty : acc[k])), rowScoped,
       edited: !!m.edited, extra: !!m.extra, overridePriced: !!m.overridePriced, rawQty: m.rawQty, rawDesc: m.rawDesc };
