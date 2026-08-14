@@ -5131,7 +5131,9 @@ function spReconcileKeyAllocs(key, supName) {
 // carrying this material already, and only then the first drop.
 function spPlaceOnDrop(rows, lineId, key, qty) {
   if (!rows.length) return;
-  const dest = rows.find(r => (r.alloc||[]).some(a => a.lineId === lineId))
+  // lineId -1 is "added by hand" — shared by every extra, so matching on it would
+  // cluster unrelated extras onto one drop for no reason. Only real lines infer a phase.
+  const dest = (lineId !== -1 && rows.find(r => (r.alloc||[]).some(a => a.lineId === lineId)))
             || rows.find(r => (r.alloc||[]).some(a => a.key === key))
             || rows[0];
   const ex = (dest.alloc = dest.alloc || []).find(a => a.key === key && a.lineId === lineId);
@@ -5558,15 +5560,41 @@ function spKnownSuppliers() {
   const fromRows = ((schedulePlan && schedulePlan.deliveries) || []).map(d => d.supplier).filter(s => s && s !== SUP_UNASSIGNED);
   return [...new Set([...fromMpl, ...fromRows])].sort((a,b) => a.localeCompare(b));
 }
-// Assign a supplier to an unassigned material — PLAN-ONLY override (Price Manager,
-// quote and Order List untouched). The override changes spRollup's bucketing and
-// spSyncDeliveries then re-derives the rows: the item leaves the Unassigned row and
-// lands in the target supplier's row (created automatically) on the same render.
-// If the target supplier is SPLIT, the sync flags drift instead of guessing a drop.
+// Options for the Unassigned row's picker: every EXISTING delivery (grouped by
+// supplier, value "row:<id>") plus suppliers that have no delivery yet (value = the
+// name; one gets created) plus "+ new supplier…". Naming the drop matters because an
+// unassigned or hand-added item has no quote line, so the app has no honest way to
+// guess which drop it belongs on — it must ask (Neal 2026-08-14: assigning 6 edging
+// to GH Brooks "just disappeared into the plan", found on the first drop by hunting).
+function spAssignOptionsHtml(knownSup) {
+  const rows = (spEnsurePlan().deliveries||[]).filter(d => d.supplier !== SUP_UNASSIGNED);
+  const bySup = {};
+  rows.forEach(r => { (bySup[r.supplier] = bySup[r.supplier] || []).push(r); });
+  let h = '';
+  Object.keys(bySup).sort((a,b) => a.localeCompare(b)).forEach(s => {
+    const list = bySup[s];
+    h += `<optgroup label="${cwEsc(s)}">` + list.map(r =>
+      `<option value="row:${cwEsc(String(r.id))}">${cwEsc((r.label || s) + (r.date ? ' · ' + spNice(r.date) : ''))}</option>`).join('') + '</optgroup>';
+  });
+  const noRow = (knownSup || spKnownSuppliers()).filter(s => !bySup[s]);
+  if (noRow.length) h += `<optgroup label="No delivery yet — one will be created">` +
+    noRow.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('') + '</optgroup>';
+  return h + `<option value="__new__">+ new supplier…</option>`;
+}
+// Assign an unassigned material to a DELIVERY (or a supplier that has none yet) —
+// PLAN-ONLY override (Price Manager, quote and Order List untouched). The override
+// changes spRollup's bucketing and spSyncDeliveries re-derives the rows; when a drop
+// was chosen the item's allocations are placed on THAT drop.
 function spAssignSupplierSel(sel) {
   const key = sel.dataset.key;
-  let sup = sel.value;
+  let sup = sel.value, chosenRow = null;
   if (!sup) return;
+  if (sup.indexOf('row:') === 0) {
+    const rid = sup.slice(4);
+    chosenRow = (spEnsurePlan().deliveries||[]).find(r => String(r.id) === rid);
+    if (!chosenRow) { sel.value = ''; return; }
+    sup = chosenRow.supplier;
+  }
   if (sup === '__new__') {
     sup = (prompt('New supplier name:')||'').trim();
     if (!sup || sup === SUP_UNASSIGNED) { sel.value = ''; return; }
@@ -5583,17 +5611,19 @@ function spAssignSupplierSel(sel) {
   // each line's share on the drop already covering that phase, else the first row.
   let rowNote = '';
   const rows = spRowsOf(sup);
-  if (rows.length > 1) {
+  if (rows.length) {
     const mine = (spAtoms()[sup] || []).filter(a => a.key === key);
     const allocated = new Set();
     rows.forEach(r => (r.alloc || []).forEach(a => { if (a.key === key) allocated.add(a.lineId); }));
     const placed = [];
     mine.filter(a => !allocated.has(a.lineId)).forEach(a => {
-      spPlaceOnDrop(rows, a.lineId, key, a.qty);
+      // an explicitly chosen drop wins; otherwise fall back to the phase-matching rule
+      if (chosenRow) spPlaceOnDrop([chosenRow], a.lineId, key, a.qty);
+      else spPlaceOnDrop(rows, a.lineId, key, a.qty);
       const on = rows.find(r => (r.alloc||[]).some(x => x.key === key && x.lineId === a.lineId));
       if (on && !placed.includes(on.label || sup)) placed.push(on.label || sup);
     });
-    if (placed.length) rowNote = ' — added to "' + placed.join('", "') + '" (move it via ⑃ split if needed)';
+    if (placed.length && (rows.length > 1 || chosenRow)) rowNote = ' — on "' + placed.join('", "') + '"';
   }
   const meta = spItemMeta()[key];
   spMark(); renderSchedule();
@@ -6054,10 +6084,9 @@ function renderSchedule() {
           <div style="display:flex;align-items:center;gap:8px;font-size:13px;color:var(--i1);flex-wrap:wrap">
             <span style="flex:1;min-width:160px"><strong>${spQtyDisp(it.qty)}</strong> × ${cwEsc(it.desc)}${it.unit ? ' <span style="color:var(--i3)">(' + cwEsc(it.unit) + ')</span>' : ''}${it.url ? ` <a href="${safeUrl(it.url)}" target="_blank" rel="noopener noreferrer" title="${cwEsc(it.url)}" style="text-decoration:none">🔗</a>` : ''}${spEditedTagHtml(it)}</span>
             ${spItemCostHtml(it)}
-            <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Assign a supplier — THIS SCHEDULE ONLY (Price Manager and quote untouched)" style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:170px;font-weight:600">
-              <option value="">assign supplier…</option>
-              ${knownSup.map(s => `<option value="${cwEsc(s)}">${cwEsc(s)}</option>`).join('')}
-              <option value="__new__">+ new supplier…</option>
+            <select data-key="${cwEsc(it.key)}" onchange="spAssignSupplierSel(this)" title="Choose the DELIVERY this goes on — THIS SCHEDULE ONLY (Price Manager and quote untouched). Suppliers with no delivery yet get one created." style="font-size:12px;padding:3px 5px;border:1px solid #F59E0B;border-radius:4px;color:#92400E;background:white;max-width:210px;font-weight:600">
+              <option value="">assign delivery…</option>
+              ${spAssignOptionsHtml(knownSup)}
             </select>${it.stockCode ? `<span title="Price-list material — set its supplier in the Price Manager to fix EVERY future quote, not just this schedule" style="font-size:10px;color:var(--i3);cursor:help">ℹ PM</span>` : ''}
             ${spItemCtlHtml(it)}
           </div>
