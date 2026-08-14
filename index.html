@@ -4993,7 +4993,8 @@ function spApplySupplierMove(key, panel) {
   }
   (p.deliveries||[]).forEach(r => { r.alloc = (r.alloc||[]).filter(a => a.key !== key); });
   const destRows = spRowsOf(to);
-  if (destRows.length) destRows[0].alloc = (destRows[0].alloc||[]).concat(spKeyTruthAtoms(key));
+  // each line's share goes to the destination drop covering that phase, not blindly first
+  if (destRows.length) spKeyTruthAtoms(key).forEach(a => spPlaceOnDrop(destRows, a.lineId, key, a.qty));
 }
 // Write a per-DROP quantity for one material: scales this row's fragments to `qty`,
 // carries the same delta into the per-line memory (srcQtys) and leaves every other
@@ -5116,10 +5117,26 @@ function spReconcileKeyAllocs(key, supName) {
       const f = target / held;
       rows.forEach(r => (r.alloc||[]).forEach(a => { if (a.key === key && a.lineId === lid) a.qty = Math.round(a.qty * f * 1000) / 1000; }));
     } else if (target > 0) {
-      (rows[0].alloc = rows[0].alloc || []).push({ lineId: lid, key, qty: target });
+      spPlaceOnDrop(rows, lid, key, target);
     }
   });
   rows.forEach(r => { r.alloc = (r.alloc||[]).filter(a => !(a.key === key && a.qty <= 0.0005)); });
+}
+// Where should a quantity that has no home go? (Restoring stock/removed material,
+// un-doing an edit, or moving into a supplier that already has several drops.)
+// It used to land on the supplier's FIRST drop, which dumped a whole job's cement on
+// one lorry (Neal 2026-08-14: restoring the ballast + cement filled "GH Brooks drive
+// wall aggs" with every phase's share). Prefer the drop that already carries OTHER
+// materials from the SAME quote line — that's the drop for that phase — then a drop
+// carrying this material already, and only then the first drop.
+function spPlaceOnDrop(rows, lineId, key, qty) {
+  if (!rows.length) return;
+  const dest = rows.find(r => (r.alloc||[]).some(a => a.lineId === lineId))
+            || rows.find(r => (r.alloc||[]).some(a => a.key === key))
+            || rows[0];
+  const ex = (dest.alloc = dest.alloc || []).find(a => a.key === key && a.lineId === lineId);
+  if (ex) ex.qty = Math.round((ex.qty + qty) * 1000) / 1000;
+  else dest.alloc.push({ lineId, key, qty });
 }
 // ⏫ round-up: the next whole number ABOVE a genuinely fractional qty, else null
 // (0.0005 tolerance so float noise on an already-whole figure never shows a chip).
@@ -5562,16 +5579,21 @@ function spAssignSupplierSel(sel) {
   (p.supplierOverrides = p.supplierOverrides || {})[key] = sup;
   // A SPLIT supplier's rows are hand-arranged, so sync won't place the item there —
   // without an explicit allocation it lands in limbo: counted in the money but on no
-  // row's ☰ list or TeamGantt checklist (Neal hit this 2026-07-15). Drop it on the
-  // supplier's first row; the ⑃ split dialog can move it afterwards.
+  // row's ☰ list or TeamGantt checklist (Neal hit this 2026-07-15). spPlaceOnDrop puts
+  // each line's share on the drop already covering that phase, else the first row.
   let rowNote = '';
   const rows = spRowsOf(sup);
   if (rows.length > 1) {
     const mine = (spAtoms()[sup] || []).filter(a => a.key === key);
     const allocated = new Set();
     rows.forEach(r => (r.alloc || []).forEach(a => { if (a.key === key) allocated.add(a.lineId); }));
-    mine.filter(a => !allocated.has(a.lineId)).forEach(a => (rows[0].alloc = rows[0].alloc || []).push({ ...a }));
-    rowNote = ' — added to "' + (rows[0].label || sup) + '" (move it via ⑃ split if needed)';
+    const placed = [];
+    mine.filter(a => !allocated.has(a.lineId)).forEach(a => {
+      spPlaceOnDrop(rows, a.lineId, key, a.qty);
+      const on = rows.find(r => (r.alloc||[]).some(x => x.key === key && x.lineId === a.lineId));
+      if (on && !placed.includes(on.label || sup)) placed.push(on.label || sup);
+    });
+    if (placed.length) rowNote = ' — added to "' + placed.join('", "') + '" (move it via ⑃ split if needed)';
   }
   const meta = spItemMeta()[key];
   spMark(); renderSchedule();
