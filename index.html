@@ -5297,9 +5297,14 @@ function spSyncDeliveries(p) {
     // supplier via the ✎ dialog): an EMPTY row of it is a shell — drop it. One still
     // HOLDING allocations is kept for the stale-flag below, never silently deleted.
     if (!a) { if (row.alloc.length) return true; spDirty = true; return false; }
-    if (a.length) return true;
-    spDirty = true;
-    return false;
+    if (!a.length) { spDirty = true; return false; }
+    // An emptied drop of a LIVE supplier is leftover scaffolding — everything in it was
+    // split out, stocked, removed or re-sourced elsewhere (2026-08-13, Neal: an emptied
+    // "GH Brooks — Build the decking" drop lingered at 0 items · £0 and looked like it
+    // would push). Rows are derived from where materials live, so an empty delivery goes.
+    // Single-row suppliers can't reach here — the loop above refills their row from atoms.
+    if (!row.alloc.length) { spDirty = true; return false; }
+    return true;
   });
   // The Unassigned row is derived bookkeeping, not planning: assigning its LAST item removes
   // the whole bucket from the rollup, so the supplier loop above never revisits the row and
