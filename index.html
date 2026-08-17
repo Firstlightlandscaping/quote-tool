@@ -2237,7 +2237,15 @@ function addFromSearch() {
   const notes = document.getElementById('add-notes').value.trim();
   const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('add-vat').value),optional:document.getElementById('add-opt').value==='yes',misc:false,materials:selDel.materials||[]});
   const targetGroup=(document.getElementById('add-group')||{value:''}).value;
-  if (targetGroup) moveLinesToGroup([newId], targetGroup);
+  let groupNote='';
+  if (targetGroup) {
+    moveLinesToGroup([newId], targetGroup);
+    const gh=lines.find(x=>x.groupId===targetGroup&&!x.groupMember);
+    groupNote=' → into "'+((gh&&gh.name)||'group')+'"';
+    // Grouping is a per-add choice: reset to Standalone so the NEXT deliverable
+    // doesn't silently land in the same group (the selection used to persist).
+    const gsel=document.getElementById('add-group'); if(gsel) gsel.value='';
+  }
   const nm=selDel.name; selDel=null;
   document.getElementById('si').value='';
   ['add-qty','add-mat','add-days','add-rate','add-xdesc','add-notes'].forEach((id,i) => { document.getElementById(id).value = i===0?'':''; });
@@ -2247,7 +2255,7 @@ function addFromSearch() {
   const addMatOv = document.getElementById('add-mat-override-link'); if(addMatOv){addMatOv.style.display='none';addMatOv.textContent='override';}
   const addMatIn = document.getElementById('add-mat'); if(addMatIn) addMatIn.style.display='none';
   document.getElementById('lab-preview').textContent='';
-  toast('Added: '+qty+' × '+nm);
+  toast('Added: '+qty+' × '+nm+groupNote);
 }
 
 
@@ -11787,6 +11795,10 @@ function moveLinesToGroup(lineIds, groupId) {
   const members = lines.filter(x => x.groupMember === groupId);
   header.unitPrice = members.reduce((s, x) => s + amt(x), 0);
   header.labTotal = members.reduce((s, x) => s + (x.labTotal || 0), 0);
+  // Always show what just happened: a line added into a COLLAPSED group used to be
+  // invisible (only the grey "n items" counter ticked), so it got added twice
+  // (QT-0090, 2026-08-17 — a duplicate £1,111 line). Expand the group on add.
+  header.groupExpanded = true;
   isDirty = true;
   renderLines();
 }
