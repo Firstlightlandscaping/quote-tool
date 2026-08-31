@@ -8152,6 +8152,37 @@ function sigInjectIntoDoc(doc, row) {
 // Rows are NOT clickable (Sales-report ruling) — explicit buttons only. Manage opens
 // the signing dialog IN PLACE (no builder jump).
 function removeContractsPanel() { const m = document.getElementById('sigp-dialog'); if (m) m.remove(); }
+// Discard a generated-but-NEVER-SENT contract — a stale artefact (e.g. from the old
+// un-gated topbar Generate button, removed 2026-08-06) that otherwise squats in the
+// panel's Needs-attention list forever. HARD GATE: allowed only when ZERO signing
+// rows exist for the ref — even a revoked row means it was once sent, and anything
+// sent or signed is never erased. Paper-signed and Signed states refuse too (belt
+// and braces; both imply history). The quote itself is untouched; regeneration any
+// time picks up the CURRENT terms.
+async function sigDiscardContract(ref, isDesign) {
+  let rows = [];
+  try { rows = await sigFetchRows(ref); }
+  catch (e) { toast('Could not check the signing history — not discarding: ' + e.message); return; }
+  if (rows.length) { toast('This contract has signing history — it cannot be discarded'); return; }
+  const a = sigRecordFor(ref);
+  if (!a || !a.cm) { removeContractsPanel(); openContractsPanel(isDesign); return; }
+  if (a.cm.paperSigned || a.cm.status === 'Signed') { toast('A signed contract is never discarded'); return; }
+  if (!confirm('Discard the generated contract for ' + ref + '?\n\nGenerated ' + (a.cm.generatedAt ? sigDateOnly(a.cm.generatedAt) : '(date unknown)') + ' but never sent — nothing was agreed or signed, so nothing is lost. The quote is untouched, and a fresh contract can be generated any time (it will use the CURRENT terms).')) return;
+  try { await sb('PATCH', isDesign ? 'design_contracts' : 'quotes', { contract_meta: null }, '?ref=eq.' + encodeURIComponent(ref)); }
+  catch (e) { toast('Discard failed: ' + e.message); return; }
+  if (isDesign) {
+    const dc = designContracts.find(d => d.ref === ref);
+    if (dc) dc.contract_meta = null;
+    renderDesignContracts();
+  } else {
+    const sq = savedQuotes.find(q => q.ref === ref);
+    if (sq) sq.contractMeta = null;
+    renderSaved();
+  }
+  toast(ref + ' — generated contract discarded');
+  removeContractsPanel();
+  openContractsPanel(isDesign);
+}
 // designMode: the SAME panel filtered to the design arm (DC- refs), opened from the
 // Design tab — the two arms never mix (Neal's ruling), so the Saved Quotes panel
 // shows only QT- refs and this one only DC-.
@@ -8182,14 +8213,14 @@ async function openContractsPanel(designMode) {
       const cmd = dc.contract_meta;
       if (!cmd || latest[dc.ref]) return;
       if (cmd.paperSigned) { signedList.push({ ref: dc.ref, customer: dc.customer || '', when: cmd.paperSigned.date + 'T00:00:00', paper: true }); return; }
-      if (cmd.status !== 'Signed') attention.push({ kind: 'Never sent for signature', ref: dc.ref, customer: dc.customer || '', when: cmd.generatedAt, note: 'contract generated ' + sigDateOnly(cmd.generatedAt) });
+      if (cmd.status !== 'Signed') attention.push({ kind: 'Never sent for signature', discardable: true, ref: dc.ref, customer: dc.customer || '', when: cmd.generatedAt, note: 'contract generated ' + sigDateOnly(cmd.generatedAt) });
     });
   } else {
     savedQuotes.forEach(sq => {
       const cmq = sq.contractMeta;
       if (!cmq || latest[sq.ref]) return;
       if (cmq.paperSigned) { signedList.push({ ref: sq.ref, customer: sq.customer || '', when: cmq.paperSigned.date + 'T00:00:00', paper: true }); return; }
-      if (cmq.status !== 'Signed' && !isDead(sq)) attention.push({ kind: 'Never sent for signature', ref: sq.ref, customer: sq.customer || '', when: cmq.generatedAt, note: 'contract generated ' + sigDateOnly(cmq.generatedAt) });
+      if (cmq.status !== 'Signed' && !isDead(sq)) attention.push({ kind: 'Never sent for signature', discardable: true, ref: sq.ref, customer: sq.customer || '', when: cmq.generatedAt, note: 'contract generated ' + sigDateOnly(cmq.generatedAt) });
     });
   }
   Object.values(latest).forEach(r => {
@@ -8293,7 +8324,7 @@ async function openContractsPanel(designMode) {
       '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
         '<h3>✍ ' + (wantDesign ? 'Design contracts' : 'Contracts') + ' — e-signature overview</h3>' +
         '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No ' + (wantDesign ? 'design ' : '') + 'contracts sent for signature yet') + '</div>' +
-        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.live ? copyBtns(e.r) : '') + (e.orphanRevoke ? '<button class="btn btn-red btn-sm" onclick="sigOrphanRevoke(' + e.r.id + ',' + wantDesign + ')">Revoke</button>' : manageBtn(e.ref)))).join('') : '') +
+        section('⚠ Needs attention', '#B45309', attention.length ? attention.map(e => rowHtml({ ...e, note: e.kind + (e.note ? ' — ' + e.note : '') }, (e.live ? copyBtns(e.r) : '') + (e.orphanRevoke ? '<button class="btn btn-red btn-sm" onclick="sigOrphanRevoke(' + e.r.id + ',' + wantDesign + ')">Revoke</button>' : manageBtn(e.ref) + (e.discardable ? '<button class="btn btn-red btn-sm" onclick="sigDiscardContract(\'' + e.ref + '\',' + wantDesign + ')" title="Remove this generated-but-never-sent contract — nothing was agreed or signed, so nothing is lost">🗑 Discard</button>' : '')))).join('') : '') +
         section('✍ Out for signature', '#2563EB', out.length ? out.map(e => rowHtml(e, copyBtns(e.r) + manageBtn(e.ref))).join('') : '') +
         section('✓ Signed', '#15803D', (gWeek.length + gMonth.length + gOlder.length)
           ? fold('This week', gWeek, true) + fold('Earlier this month', gMonth, false) + fold('Earlier', gOlder, false) : '') +
