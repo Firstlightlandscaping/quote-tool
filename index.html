@@ -9052,6 +9052,10 @@ function crmPendingEvents(rec) {
   const newer = (src, ev) => src && (!p[ev] || new Date(src) > new Date(p[ev]));
   const ev = rec.isDesign ? null : CRM_PUSH_EVENT_FOR_STATUS[rec.status];
   if (ev && newer(rec.statusChangedAt, ev)) out.push(ev);
+  // Contract events only while the quote is Accepted (a contract on a quote that has since
+  // gone back to Draft / Declined is stale — pushing its Job Number would be wrong; Neal's
+  // QT-0060 case). Design contracts have no quote status, so they always count.
+  if (!rec.isDesign && rec.status !== 'Accepted') return out;
   if (rec.cm && rec.cm.generatedAt && newer(rec.cm.generatedAt, 'contract_generated')) out.push('contract_generated');
   const sig = sigStatusMap[rec.ref];
   if (sig && sig.status === 'signed' && newer(sig.signed_at, 'contract_signed')) out.push('contract_signed');
