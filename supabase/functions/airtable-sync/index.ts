@@ -51,14 +51,22 @@ const Q = {
 const P = {
   name: "fldoGJkWMYyZuHQeu", card: "fldiJjezHUzJ9Aael", amount: "fldQwX5mVfQcTUTD8", trigger: "fldZsRzUQgyR8Sjjf",
   triggerList: "fld4HqE9lpB6tBmPP", terms: "fldE0l2zKsDNyXBil", triggerDate: "fldKH5OaJWm6OBV59",
-  invoiceSent: "fldiHkoBIlajLleVc", completed: "fldU9fUOIbmSXe4Gl",
+  invoiceSent: "fldiHkoBIlajLleVc", completed: "fldU9fUOIbmSXe4Gl", datePaid: "fldvzx8CPyuJjeZAq",
 };
+// A milestone is a FACT (never updated, never deleted) once any of these is set.
+const paymentLocked = (f: any) => !!f[P.invoiceSent] || !!f[P.completed] || !!f[P.datePaid];
 // "CONTRACT SENT or beyond" — the explicit set (CRM, 05/09/26). Option order is NOT workflow order.
 const BEYOND = new Set([
   "CONTRACT SENT", "JOBS > Main Jobs Scheduled", "JOBS > Small Jobs to Schedule", "JOBS > Snags to Schedule",
   "JOBS > Planning (post-handover)", "JOBS > In Progress", "JOBS > On Hold", "JOBS > Waiting Planting",
   "COMPLETION PAYMENT DUE > No Feedback", "COMPLETION PAYMENT DUE > Request Feedback", "COMPLETION > Job Report", "COMPLETE",
 ]);
+// "Work started" (CRM + Neal, 05/09 — the SUPERSEDE boundary): CONTRACT SENT and the four
+// pre-start JOBS columns still count as "before work starts" — a supersede there is a
+// re-quote and the card goes back to Amendments regardless of signed/paid. From
+// JOBS > In Progress onward the push HOLDS and asks.
+const PRE_START = new Set(["CONTRACT SENT", "JOBS > Main Jobs Scheduled", "JOBS > Small Jobs to Schedule", "JOBS > Snags to Schedule", "JOBS > Planning (post-handover)"]);
+const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_START.has(list);
 const LIST = { quoteSent: "QUOTE SENT", accepted: "QUOTE ACCEPTED", amendments: "QUOTES > Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
@@ -147,6 +155,11 @@ function at() {
       if (!r.ok) throw new Error(`Airtable create ${table}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
       return await r.json();
     },
+    async remove(table: string, id: string) {   // only ever Payments rows that are plans, never facts (see paymentLocked)
+      const r = await fetch(url(table, `/${id}`), { method: "DELETE", headers: H });
+      if (!r.ok) throw new Error(`Airtable delete ${table}/${id}: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+      return await r.json();
+    },
   };
 }
 
@@ -155,15 +168,19 @@ const str = (v: unknown) => (v == null ? null : String(v));
 const num = (v: unknown) => (typeof v === "number" ? v : Number(v) || 0);
 
 // ── The plan ────────────────────────────────────────────────────────────────────
-type Write = { table: string; op: "patch" | "create"; id?: string; label: string; fields: Record<string, unknown> };
+type Write = { table: string; op: "patch" | "create" | "delete"; id?: string; label: string; fields: Record<string, unknown> };
 type Plan = {
   ref: string; event: string; card: { id: string; name: string; list: string | null; beyond: boolean; redirectedFrom?: string | null };
   quotesRow: { id: string | null; status: string | null; found: boolean; ref: string };
   siblings: { ref: string; status: string | null; value: number }[];
   writes: Write[]; notes: string[]; warnings: string[]; skipped?: string;
+  // Hold semantics (Neal, 05/09): clean plans execute automatically; anything below makes
+  // the app HOLD (amber banner) until a person reviews. blocked = can never execute as is;
+  // needsDecision = the person must pick an option; hold = every reason it isn't clean.
+  blocked: string[]; needsDecision: { key: string; question: string; options: { value: string; label: string }[] } | null; hold: string[];
 };
 
-async function buildPlan(ref: string, event: string, cardOverride?: string): Promise<Plan | { skipped: string; ref: string; event: string } | { orphan: true; ref: string; event: string; warning: string }> {
+async function buildPlan(ref: string, event: string, cardOverride?: string, decision?: string): Promise<Plan | { skipped: string; ref: string; event: string } | { orphan: true; ref: string; event: string; warning: string }> {
   const rec = await loadRecord(ref);
   if (!rec) throw new Error("Record not found: " + ref);
   const forcedCard = Deno.env.get("AIRTABLE_TEST_CARD") || "";
@@ -182,7 +199,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
     ref, event,
     card: { id: cardId, name: str(cf[CARD.name]) || "", list, beyond, ...(forcedCard && !cardOverride ? { redirectedFrom: rec.cardId } : {}) },
     quotesRow: { id: null, status: null, found: false, ref: refPrefix + ref },
-    siblings: [], writes: [], notes: [], warnings: [],
+    siblings: [], writes: [], notes: [], warnings: [], blocked: [], needsDecision: null, hold: [],
   };
   // Quotes rows on this card (the CRM's durable memory) + this ref's own row (by Ref, which
   // may live on a different card if the link was changed — still the upsert target).
@@ -228,11 +245,22 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
     return round2(pool.reduce((s, a) => s + a.value, 0));
   };
   const cardPatch: Record<string, unknown> = {};
-  const move = (to: string, why: string) => {
-    if (beyond) { plan.notes.push(`Card is at "${list}" (CONTRACT SENT or beyond) — values written, stage NOT moved (${why})`); return; }
+  // ignoreGuard: the supersede re-quote rule moves the card even from CONTRACT SENT / the
+  // pre-start JOBS columns (Neal + CRM, 05/09) — every other move respects the 12-list guard.
+  const move = (to: string, why: string, ignoreGuard = false) => {
+    if (beyond && !ignoreGuard) { plan.notes.push(`Card is at "${list}" (CONTRACT SENT or beyond) — values written, stage NOT moved (${why})`); return; }
     if (list === to) { plan.notes.push(`Card already at "${to}"`); return; }
     cardPatch[CARD.list] = to;
     plan.notes.push(`Card "${list || "(no list)"}" → "${to}" (${why})`);
+  };
+  // Stranding fix (CRM, 05/09): after a supersede or decline, if an Accepted row exists,
+  // no Sent rows remain, and the card isn't past the guard → QUOTE ACCEPTED. Without it the
+  // options flow leaves a won job in QUOTE SENT forever (proven at walk-through steps 3–4).
+  const strandingCheck = (all: { status: string | null }[]) => {
+    if (!all.some(a => a.status === "Accepted") || all.some(a => a.status === "Sent")) return false;
+    if (beyond) { plan.notes.push("Accepted quote remains but the card is past the guard — not moved"); return false; }
+    move(LIST.accepted, "an accepted quote remains and nothing is still out — the job is won");
+    return true;
   };
   const otherAccepted = plan.siblings.some(s => s.status === "Accepted");
   const otherSent = plan.siblings.some(s => s.status === "Sent");
@@ -257,10 +285,43 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
       const prior = str(own.fields[Q.status]);
       upsertRow({ [Q.status]: "Superseded" }, `Quotes row ${prior} → Superseded`);
       if (prior === "Sent" || prior === "Accepted") {
-        if (otherAccepted) plan.notes.push("Another quote on this card is Accepted — the job is won, card not moved");
-        else move(LIST.amendments, prior === "Sent" ? "sent quote superseded — revision owed" : "accepted quote superseded — post-acceptance amendment");
+        if (otherAccepted) {
+          // Options flow: the losing option goes; the re-check below concludes the story.
+          plan.notes.push("Another quote on this card is Accepted — the job is won");
+          strandingCheck(statusAfter("Superseded"));
+        } else if (!workStarted(list)) {
+          // Re-quote rule (Neal, 05/09): signed or paid makes no difference before work starts.
+          move(LIST.amendments, prior === "Sent" ? "sent quote superseded — revision owed" : "accepted quote superseded — re-quote", true);
+        } else if (decision === "amendments") {
+          move(LIST.amendments, "superseded after work started — you chose to re-quote", true);
+        } else if (decision === "leave") {
+          plan.notes.push(`Card left at "${list}" — you chose to treat this as a variation`);
+        } else {
+          plan.needsDecision = {
+            key: "inProgressSupersede",
+            question: `This job is at "${list}" — work has started. Move the card back to QUOTES > Amendments (re-quote) or leave it in place (variation)?`,
+            options: [{ value: "amendments", label: "Back to Amendments — we are re-quoting" }, { value: "leave", label: "Leave in place — it's a variation" }],
+          };
+        }
       } else plan.notes.push(`Prior status ${prior} — card not moved`);
       plan.notes.push("No financial write on supersede (figure stays until a replacement is sent)");
+      // Payments (CRM + Neal, 05/09): DELETE the superseded contract's own milestones that are
+      // still just plans — uninvoiced, uncompleted, unpaid, name-matched to THIS quote's
+      // schedule. Facts (Invoice Sent / Completed / Date Paid) are never deleted; hand-added
+      // rows survive because the scope is this schedule's names only.
+      const sched: any[] = rec.cm && Array.isArray(rec.cm.scheduleStructured) ? rec.cm.scheduleStructured : [];
+      if (sched.length) {
+        const names = new Set(sched.map(e => String(e.label || "").trim().toLowerCase()).filter(Boolean));
+        const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+        for (const id of payIds) {
+          const p = await A.get(T.payments, id);
+          if (!p) continue;
+          const nm = String(p.fields[P.name] || "").trim();
+          if (!names.has(nm.toLowerCase())) continue;
+          if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
+          plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (superseded schedule, never invoiced)`, fields: {} });
+        }
+      }
       break;
     }
     case "accepted": {
@@ -284,7 +345,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
       if (rec.isDesign) throw new Error("A design contract is not marked Declined through this event");
       upsertRow({ [Q.status]: "Declined" }, "Quotes row → Declined");
       cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter("Declined"));
-      plan.notes.push("Stage left alone — archiving is a human tick (Quote Rejected - Approved to Archive)");
+      if (!strandingCheck(statusAfter("Declined"))) plan.notes.push("Stage left alone — archiving is a human tick (Quote Rejected - Approved to Archive)");
       break;
     }
     case "contract_generated": {
@@ -318,9 +379,16 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
         if (e.triggerList) fields[P.triggerList] = e.triggerList;
         const ex = byName.get(key);
         if (!ex) { plan.writes.push({ table: T.payments, op: "create", label: `Payment "${e.label}" £${fields[P.amount]} (${trigger})`, fields }); continue; }
-        const locked = !!ex.fields[P.invoiceSent] || !!ex.fields[P.completed];
+        const locked = paymentLocked(ex.fields);
         const curAmt = num(ex.fields[P.amount]);
-        if (locked) { plan.warnings.push(`"${e.label}": already ${ex.fields[P.completed] ? "completed" : "invoiced"} at £${curAmt} — not changed (schedule says £${fields[P.amount]})`); continue; }
+        if (locked) {
+          const what = ex.fields[P.datePaid] ? "paid" : ex.fields[P.completed] ? "completed" : "invoiced";
+          if (Math.abs(curAmt - Number(fields[P.amount])) < 0.005) { plan.notes.push(`Payment "${e.label}" already ${what} at £${curAmt} — unchanged`); continue; }
+          // BLOCK, not warn (Neal, 05/09): pushing past this always leaves the milestones not
+          // summing to the contract. The way through is to make the fact untrue first.
+          plan.blocked.push(`"${e.label}" is already ${what} at £${curAmt} but the regenerated schedule says £${fields[P.amount]}. If that invoice was voided in Xero, untick Invoice Sent on the milestone in the CRM, then push again. Otherwise keep the deposit as invoiced and regenerate without changing it.`);
+          continue;
+        }
         if (curAmt !== fields[P.amount]) plan.writes.push({ table: T.payments, op: "patch", id: ex.id, label: `Payment "${e.label}" £${curAmt} → £${fields[P.amount]}`, fields: { [P.amount]: fields[P.amount] } });
         else plan.notes.push(`Payment "${e.label}" unchanged at £${curAmt}`);
       }
@@ -352,6 +420,9 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
   }
   if (Object.keys(changed).length) plan.writes.unshift({ table: T.cards, op: "patch", id: cardId, label: "Card", fields: changed });
   else plan.notes.push("Card fields already up to date");
+  // Everything that stops this plan executing on its own.
+  plan.hold = [...plan.warnings, ...plan.blocked.map(b => "BLOCKED: " + b)];
+  if (plan.needsDecision) plan.hold.push("DECISION NEEDED: " + plan.needsDecision.question);
   return plan;
 }
 
@@ -361,6 +432,7 @@ async function execute(plan: Plan) {
   let createdRowId: string | null = null;
   for (const w of plan.writes) {
     if (w.op === "patch") { await A.patch(w.table, w.id!, w.fields); done.push(w.label); }
+    else if (w.op === "delete") { await A.remove(w.table, w.id!); done.push(w.label); }
     else {
       const r = await A.create(w.table, w.fields);
       if (w.table === T.quotes) createdRowId = r.id;
@@ -399,7 +471,8 @@ Deno.serve(async (req: Request) => {
     if (!/^(QT|DC)-\d+$/.test(ref)) return json(400, { error: "Bad ref." });
     if (!EVENTS.has(event)) return json(400, { error: "Bad event." });
     const cardOverride = typeof body.cardOverride === "string" && /^rec[A-Za-z0-9]{14}$/.test(body.cardOverride) ? body.cardOverride : undefined;
-    const plan = await buildPlan(ref, event, cardOverride);
+    const decision = typeof body.decision === "string" ? body.decision : undefined;
+    const plan = await buildPlan(ref, event, cardOverride, decision);
     if ("orphan" in plan) return json(200, { ok: true, orphan: true, ref, event, warning: plan.warning });
     if ("skipped" in plan && !("writes" in plan)) {
       if (body.dryRun !== true) await stamp(ref, event);   // a decided no-op still clears the pending badge
@@ -407,6 +480,11 @@ Deno.serve(async (req: Request) => {
     }
     const p = plan as Plan;
     if (body.dryRun === true) return json(200, { ok: true, dryRun: true, ...p });
+    // Execute gates: a blocked plan never runs; a decision must be supplied; anything on
+    // hold needs an explicit confirm from the review panel (the auto path never confirms).
+    if (p.blocked.length) return json(409, { ok: false, held: true, reason: "blocked", ...p });
+    if (p.needsDecision) return json(409, { ok: false, held: true, reason: "decision", ...p });
+    if (p.hold.length && body.confirm !== true) return json(409, { ok: false, held: true, reason: "warnings", ...p });
     const result = await execute(p);
     const stampWarn = await stamp(ref, event);
     if (stampWarn) p.warnings.push(stampWarn);

@@ -7618,7 +7618,7 @@ async function doGenerateContract(){
   renderContract(opts);
   await saveContractSnapshot(opts);
   sigRefreshStatuses();   // badges + derived labels follow (covers the regenerate-revoke path)
-  crmPushPanel(dref || g('in-ref'), 'contract_generated');   // CRM Phase 3: Job Number / Project Value / Payments
+  crmPushAuto(dref || g('in-ref'), 'contract_generated');   // CRM Phase 3: Job Number / Project Value / Payments — automatic when clean
 }
 // Persist a snapshot of the contract on the quote (best-effort — the PDF is unaffected if this fails).
 async function saveContractSnapshot(opts){
@@ -8666,7 +8666,7 @@ async function dcCreate(existingRef) {
     sigRefreshStatuses();      // badges + derived labels follow (covers the regenerate-revoke path)
     toast('✓ ' + ref + (prev ? ' regenerated' : ' created'));
     viewDesignContract(ref);   // straight into the preview, like Generate & Preview does
-    crmPushPanel(ref, 'contract_generated');   // CRM Phase 3: Quotes row + Payments (DC- writes no Job Number / Project Value)
+    crmPushAuto(ref, 'contract_generated');   // CRM Phase 3: Quotes row + Payments (DC- writes no Job Number / Project Value) — automatic when clean
   } catch (e) {
     toast('Create failed: ' + e.message + ' (run supabase/design-contracts.sql?)');
     if (btn) { btn.disabled = false; btn.textContent = existingRef ? 'Regenerate contract' : 'Create contract'; }
@@ -9068,16 +9068,58 @@ function crmPushBadge(ref) {
   if (!rec.cardId) return { label: '📇 CRM · link first', col: '#B45309', n: pend.length };
   return { label: '📇 CRM · ' + pend.length + ' to push', col: '#7C3AED', n: pend.length };
 }
-async function crmPushCall(ref, event, dryRun) {
+// opts: {dryRun, confirm, decision}. A 409 "held" reply is a structured result (the plan
+// plus why it won't run on its own), not an error — the auto path turns it into a banner.
+async function crmPushCall(ref, event, opts) {
+  opts = typeof opts === 'boolean' ? { dryRun: opts } : (opts || {});
   await ensureFreshToken();
   const res = await fetch(SUPABASE_URL + '/functions/v1/airtable-sync', {
     method: 'POST',
     headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ref, event, dryRun: !!dryRun }),
+    body: JSON.stringify({ ref, event, dryRun: !!opts.dryRun, confirm: !!opts.confirm, decision: opts.decision || undefined }),
   });
   const d = await res.json().catch(() => ({}));
+  if (res.status === 409 && d && d.held) return d;
   if (!res.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + res.status));
   return d;
+}
+function crmMarkPushed(ref, event) {
+  const now = new Date().toISOString();
+  const sq = savedQuotes.find(q => q.ref === ref); if (sq) (sq.crmPushed = sq.crmPushed || {})[event] = now;
+  const dc = designContracts.find(d => d.ref === ref); if (dc) (dc.crm_pushed = dc.crm_pushed || {})[event] = now;
+  renderSaved(); renderDesignContracts();
+}
+// ── Automatic path (Neal, 05/09: "if it's sent, it's sent") ──────────────────────
+// Every trigger point calls this. Clean plan → executes now, toast only, nothing covers
+// the screen. Anything that needs a person (warnings, a decision, a block, no card, a
+// failed write) → NOTHING is written and the amber banner appears; Review opens the panel.
+async function crmPushAuto(ref, event) {
+  if (!USE_SUPABASE) return;
+  let d;
+  try { d = await crmPushCall(ref, event, { dryRun: true }); }
+  catch (e) { crmHoldBanner(ref, event, 'Could not read the CRM: ' + e.message); return; }
+  if (d.orphan) { crmHoldBanner(ref, event, d.warning); return; }
+  if (d.skipped) { try { await crmPushCall(ref, event, {}); crmMarkPushed(ref, event); } catch (e) {} return; }   // decided no-op — stamp quietly
+  if ((d.hold || []).length || (d.blocked || []).length || d.needsDecision) { crmHoldBanner(ref, event, d.hold[0] || 'needs a look'); return; }
+  try {
+    const r = await crmPushCall(ref, event, {});
+    if (r.held) { crmHoldBanner(ref, event, (r.hold || [])[0] || 'needs a look'); return; }
+    crmMarkPushed(ref, event);
+    toast('📇 CRM updated — ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ((r.warnings || []).length ? ' (with notes — see 📇 CRM)' : ''));
+  } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); }
+}
+// The amber top banner (unsaved-print pattern) — never a modal, so a contract preview or
+// the quote you're reading is never covered. One banner; a newer hold replaces it.
+function crmHoldBanner(ref, event, reason) {
+  const old = document.getElementById('crm-hold-banner'); if (old) old.remove();
+  const d = document.createElement('div');
+  d.id = 'crm-hold-banner';
+  d.className = 'no-print';
+  d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:#FFFBEB;border-bottom:2px solid #F59E0B;color:#92400E;font-size:13px;font-weight:600;padding:9px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
+  d.innerHTML = '<span>📇 CRM push held for <strong>' + cwEsc(ref) + '</strong> · ' + cwEsc(CRM_PUSH_EVENT_LABEL[event] || event) + ' — ' + cwEsc(String(reason || '').slice(0, 140)) + '</span>' +
+    '<button onclick="document.getElementById(\'crm-hold-banner\').remove();crmPushPanel(\'' + ref + '\',\'' + event + '\')" style="background:#F59E0B;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">Review</button>' +
+    '<button onclick="document.getElementById(\'crm-hold-banner\').remove()" title="Hide — it stays pending; find it under 📇 CRM in Saved Quotes" style="background:none;border:1px solid #F59E0B;border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:#92400E">later</button>';
+  document.body.appendChild(d);
 }
 function crmFieldsHtml(fields) {
   return Object.entries(fields).map(([k, v]) => {
@@ -9150,12 +9192,18 @@ async function crmPushPanel(ref, event) {
       : '<div style="font-size:13px;color:var(--i3)">Nothing to write — the CRM already matches.</div>') +
     ((plan.notes || []).length ? '<div style="font-size:12px;color:var(--i3);margin-top:8px">' + plan.notes.map(n => '· ' + cwEsc(n)).join('<br>') + '</div>' : '') +
     ((plan.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px;padding:8px 10px;background:#FFFBEB;border-radius:6px">' + plan.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +
-    btns('<button class="btn btn-primary" id="crm-push-go">▶ Push to CRM</button><button class="btn btn-outline" onclick="crmRemovePushPanel()">Not now</button>');
+    (plan.needsDecision ? '<div style="font-size:13px;margin-top:10px;padding:10px 12px;background:#FFFBEB;border:1px solid #F59E0B;border-radius:6px"><div style="font-weight:700;margin-bottom:6px">' + cwEsc(plan.needsDecision.question) + '</div>' +
+        plan.needsDecision.options.map((o, i) => '<label style="display:block;margin:3px 0;cursor:pointer"><input type="radio" name="crm-decision" value="' + cwEsc(o.value) + '"' + (i === 0 ? '' : '') + '> ' + cwEsc(o.label) + '</label>').join('') + '</div>' : '') +
+    ((plan.blocked || []).length ? '<div style="font-size:13px;color:#991B1B;margin-top:10px;padding:10px 12px;background:#FEF2F2;border:1px solid #FCA5A5;border-radius:6px">' + plan.blocked.map(n => '⛔ ' + cwEsc(n)).join('<br>') + '<div style="margin-top:6px;font-size:12px">Nothing can be pushed until this is resolved.</div></div>' : '') +
+    btns(((plan.blocked || []).length ? '' : '<button class="btn btn-primary" id="crm-push-go">▶ Push to CRM</button>') + '<button class="btn btn-outline" onclick="crmRemovePushPanel()">Not now</button>');
   const go = document.getElementById('crm-push-go');
   if (go) go.onclick = async () => {
+    const chosen = plan.needsDecision ? (document.querySelector('input[name=crm-decision]:checked') || {}).value : undefined;
+    if (plan.needsDecision && !chosen) { toast('Pick one of the two options first'); return; }
     go.disabled = true; go.textContent = 'Pushing…';
     try {
-      const r = await crmPushCall(ref, event, false);
+      const r = await crmPushCall(ref, event, { confirm: true, decision: chosen });
+      if (r.held) { throw new Error((r.blocked || [])[0] || (r.hold || [])[0] || 'held'); }
       markPushed();
       bodyEl().innerHTML = '<div style="padding:10px 12px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:8px;font-size:13px">✓ Pushed to the card for <strong>' + cwEsc((r.card && r.card.name) || '') + '</strong></div>' +
         '<div style="font-size:12px;margin-top:8px">' + (r.executed || []).map(x => '· ' + cwEsc(x)).join('<br>') + '</div>' +
@@ -9781,6 +9829,13 @@ function sigDeadStatusDialog(ref, status) {
 async function updateQuoteStatus(ref, status, opts) {
   const q = savedQuotes.find(x => x.ref === ref);
   if (!q) return;
+  // Draft block (Neal ↔ CRM, 05/09): once a quote has been pushed to the CRM it can never
+  // return to Draft — the CRM row would say Sent/Accepted forever. Superseded is the undo.
+  if (status === 'Draft' && q.crmPushed && Object.keys(q.crmPushed).length) {
+    toast('⛔ ' + ref + ' has been pushed to the CRM — it can\'t go back to Draft. Mark it Superseded instead (that\'s the undo).');
+    renderSaved();                                   // snap the dropdown back
+    return;
+  }
   // A dead status must not leave a live signing link out there. Decided BEFORE anything
   // is written, so Cancel genuinely cancels; revoke + status change succeed or fail
   // together, so "declined but signable" can never arise from this path.
@@ -9813,7 +9868,7 @@ async function updateQuoteStatus(ref, status, opts) {
   sigRefreshStatuses();   // badges + derived labels follow
   // CRM Phase 3: a genuine change to a CRM-relevant status opens the manual-confirm panel
   // (Draft / Estimate never push; Superseded on a never-pushed option is a one-click no-op).
-  if (statusChanged && CRM_PUSH_EVENT_FOR_STATUS[status]) crmPushPanel(ref, CRM_PUSH_EVENT_FOR_STATUS[status]);
+  if (statusChanged && CRM_PUSH_EVENT_FOR_STATUS[status]) crmPushAuto(ref, CRM_PUSH_EVENT_FOR_STATUS[status]);
 }
 
 // Returns the effective amount for a line within a saved quote's lines array
