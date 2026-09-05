@@ -9174,16 +9174,21 @@ async function crmPushSkip(ref, event) {
 // 📇 CRM overview — the cross-record worklist: pending pushes + the unlinked backlog
 // (Sent/Accepted quotes with no card — the standing report the CRM asked for).
 function crmPushOverview() {
-  const pending = [], unlinked = [];
+  const pending = [], unlinked = [], pushed = [];
+  // "Push again" = re-run the last event (idempotent by contract — the CRM's push-twice check).
+  const lastPush = rec => Object.entries(rec.crmPushed || {}).sort((a, b) => new Date(b[1]) - new Date(a[1]))[0] || null;
   savedQuotes.forEach(sq => {
     const rec = crmPushRec(sq.ref), pend = crmPendingEvents(rec);
     if (!sq.airtableCardId && ['Sent', 'Accepted'].includes(sq.status)) unlinked.push(sq);
     else if (pend.length && sq.airtableCardId) pending.push({ ref: sq.ref, customer: sq.customer || '', events: pend });
+    const lp = lastPush(rec); if (lp && sq.airtableCardId) pushed.push({ ref: sq.ref, customer: sq.customer || '', event: lp[0], at: lp[1] });
   });
   designContracts.forEach(dc => {
-    const pend = crmPendingEvents(crmPushRec(dc.ref));
+    const rec = crmPushRec(dc.ref), pend = crmPendingEvents(rec);
     if (pend.length && dc.airtable_card_id) pending.push({ ref: dc.ref, customer: dc.customer || '', events: pend });
+    const lp = lastPush(rec); if (lp && dc.airtable_card_id) pushed.push({ ref: dc.ref, customer: dc.customer || '', event: lp[0], at: lp[1] });
   });
+  pushed.sort((a, b) => new Date(b.at) - new Date(a.at));
   const row = (ref, customer, note, btn) =>
     '<div style="display:grid;grid-template-columns:74px minmax(0,180px) minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd);font-size:12px">' +
       '<span style="font-family:\'DM Mono\',monospace;font-weight:600">' + cwEsc(ref) + '</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + cwEsc(customer) + '</span>' +
@@ -9196,6 +9201,7 @@ function crmPushOverview() {
   wrap.innerHTML = '<div class="cw-modal-back"><div class="cw-modal" style="width:620px;max-width:95vw;max-height:88vh;overflow-y:auto"><h3>📇 CRM sync</h3>' +
     section('Pushes waiting', pending.map(p => row(p.ref, p.customer, p.events.map(e => CRM_PUSH_EVENT_LABEL[e]).join(' → '), '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmPushPanel(\'' + p.ref + '\')">▶ Push</button>')), true) +
     section('Not linked to a client', unlinked.map(sq => row(sq.ref, sq.customer || '', sq.status + ' — no CRM card, nothing can push', '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmListLink(\'' + sq.ref + '\')">📇 Link</button>')), true) +
+    section('Recently pushed', pushed.slice(0, 15).map(p => row(p.ref, p.customer, 'last: ' + (CRM_PUSH_EVENT_LABEL[p.event] || p.event) + ' · ' + sigDateOnly(p.at), '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmPushPanel(\'' + p.ref + '\',\'' + p.event + '\')" title="Re-run the last push — safe to repeat, the CRM ends up the same">↻ Push again</button>')), false) +
     '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="document.getElementById(\'crm-overview\').remove()">Close</button></div></div></div>';
   document.body.appendChild(wrap);
 }
