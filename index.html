@@ -989,6 +989,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div style="display:flex;gap:8px">
         <button class="btn btn-outline btn-sm" onclick="openSalesCheck()" title="Quick sales report — totals by period and status">📊 Sales report</button>
         <button class="btn btn-outline btn-sm" onclick="openContractsPanel()" title="E-signature overview — what needs chasing, what's out for signature, what's been signed">✍ Contracts</button>
+        <button class="btn btn-outline btn-sm" onclick="crmPushOverview()" title="CRM sync — pushes waiting for your OK, and quotes with no CRM card">📇 CRM</button>
         <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
       </div>
     </div>
@@ -1700,6 +1701,8 @@ async function loadFromSupabase() {
       supersedesRef: q.supersedes_ref || '',
       contractMeta: q.contract_meta || null,
       schedulePlan: q.schedule_plan || null,
+      lastPushedAt: q.last_pushed_at || null,       // CRM Phase 3 (crm-push.sql) — absent pre-cutover → null
+      crmPushed: q.crm_pushed || {},
       lines: lineMap[q.ref] || []
     }));
   }
@@ -7615,6 +7618,7 @@ async function doGenerateContract(){
   renderContract(opts);
   await saveContractSnapshot(opts);
   sigRefreshStatuses();   // badges + derived labels follow (covers the regenerate-revoke path)
+  crmPushPanel(dref || g('in-ref'), 'contract_generated');   // CRM Phase 3: Job Number / Project Value / Payments
 }
 // Persist a snapshot of the contract on the quote (best-effort — the PDF is unaffected if this fails).
 async function saveContractSnapshot(opts){
@@ -8662,6 +8666,7 @@ async function dcCreate(existingRef) {
     sigRefreshStatuses();      // badges + derived labels follow (covers the regenerate-revoke path)
     toast('✓ ' + ref + (prev ? ' regenerated' : ' created'));
     viewDesignContract(ref);   // straight into the preview, like Generate & Preview does
+    crmPushPanel(ref, 'contract_generated');   // CRM Phase 3: Quotes row + Payments (DC- writes no Job Number / Project Value)
   } catch (e) {
     toast('Create failed: ' + e.message + ' (run supabase/design-contracts.sql?)');
     if (btn) { btn.disabled = false; btn.textContent = existingRef ? 'Regenerate contract' : 'Create contract'; }
@@ -8727,6 +8732,7 @@ function renderDesignContracts() {
       '<button class="btn btn-outline btn-sm" onclick="viewDesignContract(\'' + d.ref + '\')">📄 View</button>' +
       '<button class="btn btn-outline btn-sm" onclick="sigOpenSendDialog(\'' + d.ref + '\')" title="E-signature — send, check status, view signed">✍ ' + cmStatus + '</button>' +
       (st ? '<button class="btn btn-outline btn-sm" onclick="sigOpenSendDialog(\'' + d.ref + '\')" style="border-color:' + st.col + ';color:' + st.col + '">' + st.label + '</button>' : '') +
+      (function () { const b = crmPushBadge(d.ref); return b && d.airtable_card_id ? '<button class="btn btn-outline btn-sm" onclick="crmPushPanel(\'' + d.ref + '\')" style="border-color:' + b.col + ';color:' + b.col + '" title="Changes not yet pushed to the CRM — click to review and push">' + b.label + '</button>' : ''; })() +
       '<button class="btn btn-outline btn-sm" onclick="dcOpenEditor(\'' + d.ref + '\')">✎ Edit</button>' +
       '<button class="btn btn-red btn-sm" style="margin-left:6px" onclick="dcDelete(\'' + d.ref + '\')">Delete</button>' +
     '</div>';
@@ -9008,6 +9014,192 @@ function crmSplitAddress(blob) {
   else addr1 = segs.join(', ');
   return { addr1, city, post };
 }
+// ══ CRM PUSH — Airtable Phase 3 (branch crm-push, 2026-09-05) ═══════════════════
+// MANUAL-CONFIRM by contract (agreed 04/08 — deliberately NOT the event-driven RAMS
+// push): every CRM-relevant event opens the "Push to CRM" panel, which asks the
+// airtable-sync edge fn for a DRY-RUN (it reads the live card + Quotes rows, computes the
+// full write plan, writes nothing), shows the plan with the card NAME as the sanity check,
+// then Push executes that same plan / "Not now" leaves the record pending. Pending is
+// per EVENT (quotes.crm_pushed jsonb, stamped by the fn) because one quote can owe several
+// pushes in a row (accepted → contract generated → signed). The panel walks them in order.
+// Orphans (no linked card) warn and deep-link to the picker; nothing is written.
+const CRM_PUSH_EVENT_FOR_STATUS = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded' };
+const CRM_PUSH_EVENT_LABEL = { sent: 'Quote sent', superseded: 'Quote superseded', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_signed: 'Contract signed' };
+// Readable names for the plan (ids are the wire format; names are for the human).
+const CRM_FIELD_NAMES = {
+  fldqEdoSsR6whYUXd: 'List', fld6I3tOHbq8DNG69: 'Quote Value', fldUxILTHcPALSZax: 'Quote Sent Date', fldTN5Sto5WIP9x8I: 'Job Number',
+  fldlBfNkxOUZS7mvV: 'Project Value', fldKqw7Qgx0ae2Ala: 'Contract Signed', fldl15deSE4g5eLPc: 'Design Contract Signed',
+  fldYOmdI0Sf59IVIv: 'Ref', fldC007UYNlt2v7uR: 'Type', fldUAOSbWy1LP9jjK: 'Card', fldAt1fIqtuED67u1: 'Value', flddiZWb1tAoiUqYe: 'Scope',
+  fldM3ovzmOliPJC63: 'Status', fldsLDEQLn5OAOu5l: 'Date Sent', flddo51TtLkOmGE2J: 'Quoted By', fldz8wvktIqMF2Mb5: 'Signing Status',
+  fldZYmQH5s4YiggpB: 'Signed', fldru1tIQZ8q02iGi: 'Contract Generated', fldXmzVIJwGnmtDHC: 'Supersedes',
+  fldoGJkWMYyZuHQeu: 'Milestone', fldiJjezHUzJ9Aael: 'Card', fldQwX5mVfQcTUTD8: 'Amount', fldZsRzUQgyR8Sjjf: 'Trigger', fld4HqE9lpB6tBmPP: 'Trigger List', fldE0l2zKsDNyXBil: 'Terms',
+};
+const CRM_MONEY_FIELDS = new Set(['fld6I3tOHbq8DNG69', 'fldlBfNkxOUZS7mvV', 'fldAt1fIqtuED67u1', 'fldQwX5mVfQcTUTD8']);
+// A quote / design contract as the push sees it: {ref, isDesign, cardId, status, statusChangedAt, cm, crmPushed}.
+function crmPushRec(ref) {
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (sq) return { ref, isDesign: false, cardId: sq.airtableCardId || '', status: sq.status || 'Draft', statusChangedAt: sq.statusChangedAt || null, cm: sq.contractMeta || null, crmPushed: sq.crmPushed || {}, customer: sq.customer || '' };
+  const dc = designContracts.find(d => d.ref === ref);
+  if (dc) return { ref, isDesign: true, cardId: dc.airtable_card_id || '', status: null, statusChangedAt: null, cm: dc.contract_meta || null, crmPushed: dc.crm_pushed || {}, customer: dc.customer || '' };
+  return null;
+}
+// Events this record still owes the CRM, in the order they should go. A status event needs
+// a status_changed_at (Phase 2 stamps genuine changes — legacy quotes without one are not
+// dragged into the backlog). A skipped supersede is stamped by the fn, so it clears too.
+function crmPendingEvents(rec) {
+  if (!rec) return [];
+  const p = rec.crmPushed || {}, out = [];
+  const newer = (src, ev) => src && (!p[ev] || new Date(src) > new Date(p[ev]));
+  const ev = rec.isDesign ? null : CRM_PUSH_EVENT_FOR_STATUS[rec.status];
+  if (ev && newer(rec.statusChangedAt, ev)) out.push(ev);
+  if (rec.cm && rec.cm.generatedAt && newer(rec.cm.generatedAt, 'contract_generated')) out.push('contract_generated');
+  const sig = sigStatusMap[rec.ref];
+  if (sig && sig.status === 'signed' && newer(sig.signed_at, 'contract_signed')) out.push('contract_signed');
+  return out;
+}
+function crmPushBadge(ref) {
+  const rec = crmPushRec(ref);
+  const pend = crmPendingEvents(rec);
+  if (!pend.length) return null;
+  if (!rec.cardId) return { label: '📇 CRM · link first', col: '#B45309', n: pend.length };
+  return { label: '📇 CRM · ' + pend.length + ' to push', col: '#7C3AED', n: pend.length };
+}
+async function crmPushCall(ref, event, dryRun) {
+  await ensureFreshToken();
+  const res = await fetch(SUPABASE_URL + '/functions/v1/airtable-sync', {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref, event, dryRun: !!dryRun }),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + res.status));
+  return d;
+}
+function crmFieldsHtml(fields) {
+  return Object.entries(fields).map(([k, v]) => {
+    const name = CRM_FIELD_NAMES[k] || k;
+    let val = Array.isArray(v) ? v.join(', ') : (typeof v === 'boolean' ? (v ? '☑' : '☐') : String(v));
+    if (CRM_MONEY_FIELDS.has(k) && typeof v === 'number') val = '£' + v.toFixed(2);
+    if (val.length > 90) val = val.slice(0, 88) + '…';
+    return '<span style="display:inline-block;margin:1px 8px 1px 0"><span style="color:var(--i3)">' + cwEsc(name) + ':</span> ' + cwEsc(val) + '</span>';
+  }).join('');
+}
+function crmRemovePushPanel() { const m = document.getElementById('crm-push-dialog'); if (m) m.remove(); }
+// event omitted → the first pending event. Re-entered by "Next ▶" until nothing is owed.
+async function crmPushPanel(ref, event) {
+  if (!USE_SUPABASE) return;
+  const rec = crmPushRec(ref);
+  if (!rec) return;
+  const pend = crmPendingEvents(rec);
+  event = event || pend[0];
+  if (!event) { toast('Nothing to push for ' + ref); return; }
+  const remaining = pend.filter(e => e !== event);
+  crmRemovePushPanel();
+  const wrap = document.createElement('div');
+  wrap.id = 'crm-push-dialog';
+  const shell = body => '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:640px;max-width:95vw;max-height:88vh;overflow-y:auto">' +
+    '<h3 style="margin-bottom:2px">📇 Push to CRM — ' + cwEsc(ref) + ' · ' + cwEsc(CRM_PUSH_EVENT_LABEL[event] || event) + '</h3>' +
+    '<div style="font-size:12px;color:var(--i3);margin-bottom:10px">' + cwEsc(rec.customer) + (remaining.length ? ' · then ' + remaining.map(e => CRM_PUSH_EVENT_LABEL[e]).join(', ') : '') + '</div>' +
+    '<div id="crm-push-body">' + body + '</div></div></div>';
+  wrap.innerHTML = shell('<div style="font-size:13px;color:var(--i3)">⏳ Reading the CRM…</div>');
+  document.body.appendChild(wrap);
+  const bodyEl = () => document.getElementById('crm-push-body');
+  const btns = inner => '<div class="cw-modal-btns" style="flex-wrap:wrap">' + inner + '</div>';
+  const closeBtn = '<button class="btn btn-outline" onclick="crmRemovePushPanel()">Close</button>';
+  const nextBtn = remaining.length ? '<button class="btn btn-primary" onclick="crmPushPanel(\'' + ref + '\',\'' + remaining[0] + '\')">Next: ' + cwEsc(CRM_PUSH_EVENT_LABEL[remaining[0]]) + ' ▶</button>' : '';
+  const markPushed = () => {
+    const now = new Date().toISOString();
+    const sq = savedQuotes.find(q => q.ref === ref); if (sq) (sq.crmPushed = sq.crmPushed || {})[event] = now;
+    const dc = designContracts.find(d => d.ref === ref); if (dc) (dc.crm_pushed = dc.crm_pushed || {})[event] = now;
+    renderSaved(); renderDesignContracts();
+  };
+  let plan;
+  try { plan = await crmPushCall(ref, event, true); }
+  catch (e) {
+    if (bodyEl()) bodyEl().innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ Could not read the CRM: ' + cwEsc(e.message) + '</div>' + btns('<button class="btn btn-primary" onclick="crmPushPanel(\'' + ref + '\',\'' + event + '\')">Retry</button>' + closeBtn);
+    return;
+  }
+  if (!bodyEl()) return;
+  if (plan.orphan) {
+    bodyEl().innerHTML = '<div style="padding:10px 12px;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;font-size:13px">⚠ ' + cwEsc(plan.warning) + '</div>' +
+      btns((rec.isDesign ? '<span style="font-size:12px;color:var(--i3)">Open the design contract (✎ Edit) and pick the client there.</span>'
+                        : '<button class="btn btn-primary" onclick="crmRemovePushPanel();crmListLink(\'' + ref + '\')">📇 Link to a client</button>') + closeBtn);
+    return;
+  }
+  if (plan.skipped) {
+    bodyEl().innerHTML = '<div style="font-size:13px">' + cwEsc(plan.skipped) + '</div>' +
+      btns('<button class="btn btn-primary" onclick="crmPushSkip(\'' + ref + '\',\'' + event + '\')">OK — nothing to push</button>' + closeBtn);
+    return;
+  }
+  const c = plan.card || {};
+  const writes = plan.writes || [];
+  bodyEl().innerHTML =
+    '<div style="padding:10px 12px;background:#F5F3FF;border:1px solid #C4B5FD;border-radius:8px;font-size:13px;margin-bottom:10px">' +
+      'This will update the card for: <strong>' + cwEsc(c.name || '(unnamed card)') + '</strong>' +
+      (c.redirectedFrom !== undefined ? ' <span style="color:#B45309;font-size:12px">(sandbox test card — redirected from ' + cwEsc(c.redirectedFrom || 'no card') + ')</span>' : '') +
+      '<div style="font-size:12px;color:var(--i3);margin-top:3px">Card stage: ' + cwEsc(c.list || '(none)') + (c.beyond ? ' · <span style="color:#B45309">at CONTRACT SENT or beyond — values only, no move</span>' : '') +
+      (plan.quotesRow && plan.quotesRow.found ? ' · CRM row: ' + cwEsc(plan.quotesRow.status || '') : ' · no CRM row yet') + '</div>' +
+    '</div>' +
+    (writes.length
+      ? '<div style="font-size:12px;font-weight:700;margin-bottom:4px">Writes (' + writes.length + ')</div>' +
+        writes.map(w => '<div style="padding:5px 0;border-bottom:1px solid var(--bd);font-size:12px"><strong>' + cwEsc(w.label) + '</strong> <span style="color:var(--i3)">· ' + (w.op === 'create' ? 'new row' : 'update') + '</span><div>' + crmFieldsHtml(w.fields) + '</div></div>').join('')
+      : '<div style="font-size:13px;color:var(--i3)">Nothing to write — the CRM already matches.</div>') +
+    ((plan.notes || []).length ? '<div style="font-size:12px;color:var(--i3);margin-top:8px">' + plan.notes.map(n => '· ' + cwEsc(n)).join('<br>') + '</div>' : '') +
+    ((plan.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px;padding:8px 10px;background:#FFFBEB;border-radius:6px">' + plan.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +
+    btns('<button class="btn btn-primary" id="crm-push-go">▶ Push to CRM</button><button class="btn btn-outline" onclick="crmRemovePushPanel()">Not now</button>');
+  const go = document.getElementById('crm-push-go');
+  if (go) go.onclick = async () => {
+    go.disabled = true; go.textContent = 'Pushing…';
+    try {
+      const r = await crmPushCall(ref, event, false);
+      markPushed();
+      bodyEl().innerHTML = '<div style="padding:10px 12px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:8px;font-size:13px">✓ Pushed to the card for <strong>' + cwEsc((r.card && r.card.name) || '') + '</strong></div>' +
+        '<div style="font-size:12px;margin-top:8px">' + (r.executed || []).map(x => '· ' + cwEsc(x)).join('<br>') + '</div>' +
+        ((r.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px">' + r.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +
+        btns(nextBtn + closeBtn);
+      toast('📇 CRM updated — ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event));
+    } catch (e) {
+      bodyEl().innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ Push failed: ' + cwEsc(e.message) + '</div>' + btns('<button class="btn btn-primary" onclick="crmPushPanel(\'' + ref + '\',\'' + event + '\')">Retry</button>' + closeBtn);
+    }
+  };
+}
+// A decided no-op (e.g. superseding a never-pushed option): the fn stamps it so the badge clears.
+async function crmPushSkip(ref, event) {
+  try { await crmPushCall(ref, event, false); } catch (e) { toast('⚠ ' + e.message); return; }
+  const now = new Date().toISOString();
+  const sq = savedQuotes.find(q => q.ref === ref); if (sq) (sq.crmPushed = sq.crmPushed || {})[event] = now;
+  const dc = designContracts.find(d => d.ref === ref); if (dc) (dc.crm_pushed = dc.crm_pushed || {})[event] = now;
+  crmRemovePushPanel(); renderSaved(); renderDesignContracts();
+}
+// 📇 CRM overview — the cross-record worklist: pending pushes + the unlinked backlog
+// (Sent/Accepted quotes with no card — the standing report the CRM asked for).
+function crmPushOverview() {
+  const pending = [], unlinked = [];
+  savedQuotes.forEach(sq => {
+    const rec = crmPushRec(sq.ref), pend = crmPendingEvents(rec);
+    if (!sq.airtableCardId && ['Sent', 'Accepted'].includes(sq.status)) unlinked.push(sq);
+    else if (pend.length && sq.airtableCardId) pending.push({ ref: sq.ref, customer: sq.customer || '', events: pend });
+  });
+  designContracts.forEach(dc => {
+    const pend = crmPendingEvents(crmPushRec(dc.ref));
+    if (pend.length && dc.airtable_card_id) pending.push({ ref: dc.ref, customer: dc.customer || '', events: pend });
+  });
+  const row = (ref, customer, note, btn) =>
+    '<div style="display:grid;grid-template-columns:74px minmax(0,180px) minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd);font-size:12px">' +
+      '<span style="font-family:\'DM Mono\',monospace;font-weight:600">' + cwEsc(ref) + '</span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + cwEsc(customer) + '</span>' +
+      '<span style="color:var(--i2)">' + cwEsc(note) + '</span><span style="white-space:nowrap">' + btn + '</span></div>';
+  const section = (title, list, open) => '<details ' + (open ? 'open' : '') + ' style="margin-bottom:12px"><summary style="cursor:pointer;font-weight:700;font-size:13px;padding:4px 0">' + title + ' (' + list.length + ')</summary>' +
+    (list.length ? list.join('') : '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing here.</div>') + '</details>';
+  const old = document.getElementById('crm-overview'); if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'crm-overview';
+  wrap.innerHTML = '<div class="cw-modal-back"><div class="cw-modal" style="width:620px;max-width:95vw;max-height:88vh;overflow-y:auto"><h3>📇 CRM sync</h3>' +
+    section('Pushes waiting', pending.map(p => row(p.ref, p.customer, p.events.map(e => CRM_PUSH_EVENT_LABEL[e]).join(' → '), '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmPushPanel(\'' + p.ref + '\')">▶ Push</button>')), true) +
+    section('Not linked to a client', unlinked.map(sq => row(sq.ref, sq.customer || '', sq.status + ' — no CRM card, nothing can push', '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmListLink(\'' + sq.ref + '\')">📇 Link</button>')), true) +
+    '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="document.getElementById(\'crm-overview\').remove()">Close</button></div></div></div>';
+  document.body.appendChild(wrap);
+}
+
 function crmRemovePicker() { const m = document.getElementById('crm-pick-dialog'); if (m) m.remove(); }
 // target 'quote'|'dc' = the open builder/dialog (fills fields). target 'list' = link an
 // EXISTING saved quote straight from the Saved Quotes list (Neal, 2026-08-10): link-only
@@ -9609,6 +9801,9 @@ async function updateQuoteStatus(ref, status, opts) {
   renderSaved();
   toast('\u2713 ' + ref + ' marked as ' + status);
   sigRefreshStatuses();   // badges + derived labels follow
+  // CRM Phase 3: a genuine change to a CRM-relevant status opens the manual-confirm panel
+  // (Draft / Estimate never push; Superseded on a never-pushed option is a one-click no-op).
+  if (statusChanged && CRM_PUSH_EVENT_FOR_STATUS[status]) crmPushPanel(ref, CRM_PUSH_EVENT_FOR_STATUS[status]);
 }
 
 // Returns the effective amount for a line within a saved quote's lines array
@@ -9865,6 +10060,7 @@ function renderSaved() {
         </select>
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract · To create'}</button>` : ''}
         ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
+        ${(() => { const b = crmPushBadge(sq.ref); return b ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();${sq.airtableCardId ? `crmPushPanel('${sq.ref}')` : `crmListLink('${sq.ref}')`}" style="margin-left:4px;border-color:${b.col};color:${b.col}" title="${sq.airtableCardId ? 'Changes not yet pushed to the CRM — click to review and push' : 'Changes waiting, but this quote has no CRM card — link it first'}">${b.label}</button>` : ''; })()}
         <button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();duplicateQuote('${sq.ref}')" style="margin-left:4px" title="Duplicate this quote with a new reference number">⧉ Duplicate</button>
         <button class="btn btn-red btn-sm no-print" onclick="event.stopPropagation();deleteQuote('${sq.ref}')" style="margin-left:4px">Delete</button>
       </div>

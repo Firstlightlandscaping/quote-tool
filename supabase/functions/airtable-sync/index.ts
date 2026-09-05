@@ -98,16 +98,16 @@ function quoteValueInc(lines: any[]): number {
 async function loadRecord(ref: string) {
   const isDesign = ref.startsWith("DC-");
   if (isDesign) {
-    const row = (await sbGet(`design_contracts?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,airtable_card_id,contract_meta,last_pushed_at`))[0];
+    const row = (await sbGet(`design_contracts?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,airtable_card_id,contract_meta,last_pushed_at,crm_pushed`))[0];
     if (!row) return null;
     const cm = row.contract_meta || {};
-    return { ref, isDesign, customer: row.customer || "", cardId: row.airtable_card_id || null, cm,
+    return { ref, isDesign, customer: row.customer || "", cardId: row.airtable_card_id || null, cm, crmPushed: row.crm_pushed || {},
              valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRef: null };
   }
-  const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,contract_meta,last_pushed_at`))[0];
+  const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,contract_meta,last_pushed_at,crm_pushed`))[0];
   if (!q) return null;
   const lines = await sbGet(`quote_lines?quote_ref=eq.${encodeURIComponent(ref)}&select=qty,unit_price,vat,group_id,group_member,is_note,is_discount&limit=1000`);
-  return { ref, isDesign, customer: q.customer || "", cardId: q.airtable_card_id || null, cm: q.contract_meta || null,
+  return { ref, isDesign, customer: q.customer || "", cardId: q.airtable_card_id || null, cm: q.contract_meta || null, crmPushed: q.crm_pushed || {},
            valueInc: quoteValueInc(lines), status: q.status || "Draft",
            scope: stripHtml(q.summary_html || q.sum || "") || null,
            dateSent: dateOnly(q.status_changed_at) || dateOnly(q.date), quotedBy: q.sign || null, supersedesRef: q.supersedes_ref || null };
@@ -370,6 +370,24 @@ async function execute(plan: Plan) {
   return { done, createdRowId };
 }
 
+// Our-side push record (supabase/crm-push.sql): last_pushed_at / last_push_event for the
+// CRM's nightly diff, crm_pushed[event] for the app's per-event pending badge. Stamped after
+// a successful execute AND after a deliberate skip (a never-pushed option being superseded is
+// a completed decision — the badge must clear). Never on orphan (still needs linking).
+async function stamp(ref: string, event: string): Promise<string | null> {
+  try {
+    const table = ref.startsWith("DC-") ? "design_contracts" : "quotes";
+    const cur = (await sbGet(`${table}?ref=eq.${encodeURIComponent(ref)}&select=crm_pushed`))[0] || {};
+    const now = new Date().toISOString();
+    const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/${table}?ref=eq.${encodeURIComponent(ref)}`, {
+      method: "PATCH", headers: { ...sbHeaders(), Prefer: "return=minimal" },
+      body: JSON.stringify({ last_pushed_at: now, last_push_event: event, crm_pushed: { ...(cur.crm_pushed || {}), [event]: now } }),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return null;
+  } catch (e) { return "Pushed, but the push record was not saved on our side: " + (e as Error).message; }
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "Method not allowed." });
@@ -383,18 +401,15 @@ Deno.serve(async (req: Request) => {
     const cardOverride = typeof body.cardOverride === "string" && /^rec[A-Za-z0-9]{14}$/.test(body.cardOverride) ? body.cardOverride : undefined;
     const plan = await buildPlan(ref, event, cardOverride);
     if ("orphan" in plan) return json(200, { ok: true, orphan: true, ref, event, warning: plan.warning });
-    if ("skipped" in plan && !("writes" in plan)) return json(200, { ok: true, skipped: (plan as any).skipped, ref, event });
+    if ("skipped" in plan && !("writes" in plan)) {
+      if (body.dryRun !== true) await stamp(ref, event);   // a decided no-op still clears the pending badge
+      return json(200, { ok: true, skipped: (plan as any).skipped, ref, event, dryRun: body.dryRun === true });
+    }
     const p = plan as Plan;
     if (body.dryRun === true) return json(200, { ok: true, dryRun: true, ...p });
     const result = await execute(p);
-    // Pending marker on our side (Phase 3 schema: supabase/crm-push.sql).
-    try {
-      const table = ref.startsWith("DC-") ? "design_contracts" : "quotes";
-      await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/${table}?ref=eq.${encodeURIComponent(ref)}`, {
-        method: "PATCH", headers: { ...sbHeaders(), Prefer: "return=minimal" },
-        body: JSON.stringify({ last_pushed_at: new Date().toISOString(), last_push_event: event }),
-      });
-    } catch (e) { p.warnings.push("Pushed, but last_pushed_at not recorded: " + (e as Error).message); }
+    const stampWarn = await stamp(ref, event);
+    if (stampWarn) p.warnings.push(stampWarn);
     return json(200, { ok: true, ...p, executed: result.done, createdRowId: result.createdRowId });
   } catch (e) {
     console.error("airtable-sync error:", (e as Error).message);
