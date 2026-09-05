@@ -40,6 +40,7 @@ const CARD = {
   quoteSentDate: "fldUxILTHcPALSZax", projectValue: "fldlBfNkxOUZS7mvV", jobNumber: "fldTN5Sto5WIP9x8I",
   contractSigned: "fldKqw7Qgx0ae2Ala", designContractSigned: "fldl15deSE4g5eLPc",
   quotesLink: "fld1NVqi5tSRBZMLV",        // reverse link → Quotes rows on this card
+  paymentsLink: "fld8tUhJLwxpK11DM",      // reverse link → Payments rows on this card (CRM, 05/09)
 };
 const Q = {
   ref: "fldYOmdI0Sf59IVIv", type: "fldC007UYNlt2v7uR", card: "fldUAOSbWy1LP9jjK", value: "fldAt1fIqtuED67u1",
@@ -167,8 +168,10 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
   if (!rec) throw new Error("Record not found: " + ref);
   const forcedCard = Deno.env.get("AIRTABLE_TEST_CARD") || "";
   const refPrefix = Deno.env.get("AIRTABLE_TEST_REF_PREFIX") || "";
+  // Orphan test on the REAL link even when the sandbox redirect is on — the redirect only
+  // changes the destination, never whether a push is allowed.
+  if (!rec.cardId && !cardOverride) return { orphan: true, ref, event, warning: "No CRM card linked to " + ref + " — pick the client first (📇), then push." };
   const cardId = cardOverride || forcedCard || rec.cardId;
-  if (!cardId) return { orphan: true, ref, event, warning: "No CRM card linked to " + ref + " — pick the client first (📇), then push." };
   const A = at();
   const card = await A.get(T.cards, cardId);
   if (!card) throw new Error("Card " + cardId + " not found in the CRM");
@@ -294,8 +297,11 @@ async function buildPlan(ref: string, event: string, cardOverride?: string): Pro
         cardPatch[CARD.jobNumber] = ref;
         cardPatch[CARD.projectValue] = round2(Number(cm.total) || rec.valueInc);
       } else plan.notes.push("Design contract — Job Number / Project Value are build-contract facts, not written");
-      // Payments: existing rows on this card, matched by milestone name.
-      const existing = await A.list(T.payments, { filterByFormula: `FIND(${JSON.stringify(cardId)}, ARRAYJOIN({Card}))` }).catch(() => [] as any[]);
+      // Payments: existing rows on this card via the card's reverse link (ids — a formula over
+      // {Card} would see names, not ids), matched by milestone name.
+      const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+      const existing: any[] = [];
+      for (const id of payIds) { const p = await A.get(T.payments, id); if (p) existing.push(p); }
       const byName = new Map<string, any>();
       existing.forEach(p => byName.set(String(p.fields[P.name] || "").trim().toLowerCase(), p));
       const sched: any[] = Array.isArray(cm.scheduleStructured) ? cm.scheduleStructured : [];
