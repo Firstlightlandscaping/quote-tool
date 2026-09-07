@@ -7989,8 +7989,10 @@ async function sigDoSend(ref) {
       if (a.isDesign) renderDesignContracts(); else renderSaved();
     }
     toast('✓ Contract frozen — ' + saved.signers.length + ' signing link' + (saved.signers.length > 1 ? 's' : '') + ' created');
+    sigStatusMap[ref] = saved;           // so the CRM pending check sees this send before the refresh lands
     sigRefreshStatuses();                // badge follows along
     sigRenderDialog(a, [saved]);         // re-open in "outstanding" state with the Copy buttons
+    crmPushAuto(ref, 'contract_sent');   // CRM event 7: card → CONTRACT SENT / DESIGNS > Contract Sent (automatic when clean)
   } catch (e) {
     toast('Send failed: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '✍ Freeze contract & create link'; }
@@ -9024,7 +9026,7 @@ function crmSplitAddress(blob) {
 // pushes in a row (accepted → contract generated → signed). The panel walks them in order.
 // Orphans (no linked card) warn and deep-link to the picker; nothing is written.
 const CRM_PUSH_EVENT_FOR_STATUS = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded' };
-const CRM_PUSH_EVENT_LABEL = { sent: 'Quote sent', superseded: 'Quote superseded', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_signed: 'Contract signed' };
+const CRM_PUSH_EVENT_LABEL = { sent: 'Quote sent', superseded: 'Quote superseded', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed' };
 // Readable names for the plan (ids are the wire format; names are for the human).
 const CRM_FIELD_NAMES = {
   fldqEdoSsR6whYUXd: 'List', fld6I3tOHbq8DNG69: 'Quote Value', fldUxILTHcPALSZax: 'Quote Sent Date', fldTN5Sto5WIP9x8I: 'Job Number',
@@ -9058,6 +9060,8 @@ function crmPendingEvents(rec) {
   if (!rec.isDesign && rec.status !== 'Accepted') return out;
   if (rec.cm && rec.cm.generatedAt && newer(rec.cm.generatedAt, 'contract_generated')) out.push('contract_generated');
   const sig = sigStatusMap[rec.ref];
+  // Event 7: a live signing link (sent / viewed / signed) moves the card into the contract stage.
+  if (sig && sig.status !== 'revoked' && newer(sig.sent_at, 'contract_sent')) out.push('contract_sent');
   if (sig && sig.status === 'signed' && newer(sig.signed_at, 'contract_signed')) out.push('contract_signed');
   return out;
 }

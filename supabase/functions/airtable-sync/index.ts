@@ -70,7 +70,10 @@ const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_
 const LIST = { quoteSent: "QUOTE SENT", accepted: "QUOTE ACCEPTED", amendments: "QUOTES > Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
-const EVENTS = new Set(["sent", "superseded", "accepted", "declined", "contract_generated", "contract_signed"]);
+const EVENTS = new Set(["sent", "superseded", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
+// Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
+// QT- → CONTRACT SENT, DC- → DESIGNS > Contract Sent — unless it's already past the guard.
+const LIST_CONTRACT_SENT = { qt: "CONTRACT SENT", dc: "DESIGNS > Contract Sent" };
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -398,11 +401,22 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       });
       break;
     }
+    case "contract_sent": {
+      const sig = (await sbGet(`contract_signing?quote_ref=eq.${encodeURIComponent(ref)}&select=status,signed_at,sent_at&order=id.desc&limit=1`))[0];
+      if (!sig) throw new Error("No signing record for " + ref);
+      if (sig.status === "revoked") { plan.notes.push("Latest signing link is revoked — nothing to move"); break; }
+      const f: Record<string, unknown> = { [Q.signingStatus]: sig.status };
+      if (rec.isDesign) f[Q.status] = rec.status;          // DC rows mirror contract_meta.status (Generated → Sent)
+      upsertRow(f, `Quotes row → signing ${sig.status}`);
+      move(rec.isDesign ? LIST_CONTRACT_SENT.dc : LIST_CONTRACT_SENT.qt, "signing link sent");
+      break;
+    }
     case "contract_signed": {
       const sig = (await sbGet(`contract_signing?quote_ref=eq.${encodeURIComponent(ref)}&select=status,signed_at,sent_at&order=id.desc&limit=1`))[0];
       if (!sig) throw new Error("No signing record for " + ref);
       const f: Record<string, unknown> = { [Q.signingStatus]: sig.status };
       if (sig.signed_at) f[Q.signed] = dateOnly(sig.signed_at);
+      if (rec.isDesign) f[Q.status] = rec.status;          // DC rows mirror contract_meta.status (→ Signed)
       upsertRow(f, `Quotes row → signing ${sig.status}`);
       if (sig.status === "signed") {
         cardPatch[rec.isDesign ? CARD.designContractSigned : CARD.contractSigned] = true;
