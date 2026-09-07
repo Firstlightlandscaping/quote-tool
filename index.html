@@ -5241,17 +5241,34 @@ function spResetMatEdit() {
 // materials at once), from the price list (search), or free-typed with a supplier.
 // Items land in THEIR supplier's row (created if needed), not necessarily the row
 // the dialog was opened from; blank supplier → the amber Unassigned row.
-function spAxPush(arr) {
+// targetRowId (2026-09-07, Neal's QT-0061 case): the DELIVERY the item should land on —
+// the row the dialog was opened from, or the drop picked in Option 3's dropdown. It only
+// applies when that row belongs to the item's supplier; otherwise (and for the standalone
+// button with no pick) the item goes to its supplier's first row as before. A split
+// supplier used to swallow every added item on its first drop — "GH Brooks — 1" was
+// unreachable, everything landed on "Collect ballast".
+// The delivery the open add-items dialog was launched from ('' for the standalone button).
+function spAxHostRowId() {
+  const d = document.getElementById('sp-extra-dialog');
+  return d && d.dataset.rowId ? d.dataset.rowId : null;
+}
+function spAxPush(arr, targetRowId) {
   const p = spEnsurePlan();
   p.extraItems = p.extraItems || [];
+  const landed = [];
   arr.forEach((e, k) => {
     const id = Date.now() + k + Math.floor(Math.random() * 100);
     const sup = (e.supplier || '').trim();
     p.extraItems.push({ id, supplier: sup, desc: e.desc, qty: Math.round(e.qty * 1000) / 1000, unit: e.unit || '', price: e.price || 0, url: e.url ? normSupplierUrl(e.url) : '' });
     const rows = spRowsOf(sup || SUP_UNASSIGNED);
-    if (rows.length) (rows[0].alloc = rows[0].alloc || []).push({ lineId: -1, key: 'extra:' + id, qty: Math.round(e.qty * 1000) / 1000 });
+    const target = (targetRowId != null && rows.find(r => String(r.id) === String(targetRowId))) || rows[0];
+    if (target) {
+      (target.alloc = target.alloc || []).push({ lineId: -1, key: 'extra:' + id, qty: Math.round(e.qty * 1000) / 1000 });
+      if (rows.length > 1) landed.push(target.label || sup);
+    }
   });
   spMark(); renderSchedule();
+  return [...new Set(landed)];
 }
 // Standalone entry for order-only extras (Neal 2026-07-15): adding an item shouldn't
 // require opening some other supplier's ☰ dialog. The confirm is deliberate — an extra
@@ -5283,6 +5300,11 @@ function spAddExtraDialog(rowIdx) {
   const isUnRow = !row || row.supplier === SUP_UNASSIGNED;
   const panel = document.createElement('div');
   panel.id = 'sp-extra-dialog';
+  panel.dataset.rowId = row && !isUnRow ? String(row.id) : '';   // host delivery — items of its supplier land HERE
+  // Option 3 picks a DELIVERY, not just a supplier (the Unassigned row's dropdown, aa057eb):
+  // a split supplier's drops are listed by name + date, the host row pre-selected.
+  const axRaw = spAssignOptionsHtml();
+  const axOpts = isUnRow ? axRaw : axRaw.replace('value="row:' + cwEsc(String(row.id)) + '"', 'value="row:' + cwEsc(String(row.id)) + '" selected');
   panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:600px;max-width:95vw;max-height:90vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
@@ -5316,7 +5338,7 @@ function spAddExtraDialog(rowIdx) {
           <div class="fg" style="flex:2;min-width:170px;margin:0"><label>Description</label><input type="text" id="sp-ax-desc" placeholder="e.g. Postcrete 20kg" style="width:100%"></div>
           <div class="fg" style="margin:0"><label>Qty</label><input type="number" id="sp-ax-qty" value="1" min="0" step="any" style="width:64px"></div>
           <div class="fg" style="margin:0"><label>Unit</label><input type="text" id="sp-ax-unit" placeholder="bag" style="width:70px"></div>
-          <div class="fg" style="flex:1;min-width:130px;margin:0"><label>Supplier</label><select id="sp-ax-sup" onchange="supplierSelResolve(this)" data-prev="${isUnRow ? '' : cwEsc(row.supplier)}" style="width:100%">${supplierOptionsHtml(isUnRow ? '' : row.supplier, spKnownSuppliers(), '— unassigned —')}</select></div>
+          <div class="fg" style="flex:1;min-width:170px;margin:0"><label>Delivery / supplier</label><select id="sp-ax-sup" onchange="supplierSelResolve(this)" data-prev="${isUnRow ? '' : 'row:' + cwEsc(String(row.id))}" style="width:100%"><option value="">— unassigned —</option>${axOpts}</select></div>
           <div class="fg" style="margin:0"><label>£ each <span style="font-weight:400;color:var(--i3)">(opt.)</span></label><input type="number" id="sp-ax-price" min="0" step="0.01" placeholder="0" style="width:76px"></div>
         </div>
         <div class="fg" style="margin:8px 0 0"><label>Link (URL) <span style="font-weight:400;color:var(--i3)">(opt. — shown on the item, pushed to the TeamGantt note)</span></label><input type="text" id="sp-ax-url" placeholder="https://..." style="width:100%"></div>
@@ -5374,23 +5396,23 @@ function spAxAddDeliverable() {
     url: mplUrl[m.stockCode] || ''
   })).filter(it => it.qty > 0);
   if (!items.length) { toast('That deliverable has no materials to add'); return; }
-  spAxPush(items);
+  const landed = spAxPush(items, spAxHostRowId());
   document.getElementById('sp-ax-del').value = '';
   document.getElementById('sp-ax-dsearch').value = '';
   spAxFilterDels();
-  toast('✓ ' + items.length + ' item' + (items.length!==1?'s':'') + ' added from ' + (d.name || code));
+  toast('✓ ' + items.length + ' item' + (items.length!==1?'s':'') + ' added from ' + (d.name || code) + (landed.length ? ' → "' + landed.join('", "') + '"' : ''));
 }
 function spAxAddMplSel() {
   const code = document.getElementById('sp-ax-mat').value;
   const m = mpl.find(x => x.code === code);
   if (!m) { toast('Select a material first'); return; }
   const qty = parseFloat(document.getElementById('sp-ax-mqty').value) || 1;
-  spAxPush([{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0, url: m.supplierUrl || '' }]);
+  const landed = spAxPush([{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0, url: m.supplierUrl || '' }], spAxHostRowId());
   document.getElementById('sp-ax-mat').value = '';
   document.getElementById('sp-ax-msearch').value = '';
   document.getElementById('sp-ax-mqty').value = '1';
   spAxFilterMpl();
-  toast('✓ ' + qty + ' × ' + (m.description||code) + (m.supplier ? ' → ' + m.supplier : ' → Unassigned'));
+  toast('✓ ' + qty + ' × ' + (m.description||code) + (landed.length ? ' → "' + landed[0] + '"' : (m.supplier ? ' → ' + m.supplier : ' → Unassigned')));
 }
 function spAxAddManual() {
   const desc = document.getElementById('sp-ax-desc').value.trim();
@@ -5399,10 +5421,17 @@ function spAxAddManual() {
   const price = parseFloat(document.getElementById('sp-ax-price').value) || 0;
   // An unpriced item counts £0 in the materials check, silently flattering the margin.
   if (!(price > 0) && !confirm('No £ entered — "' + desc + '" will count as £0 cost in the materials check, making the margin look better than it is.\n\nAdd without a price?')) return;
-  spAxPush([{ supplier: document.getElementById('sp-ax-sup').value, desc, qty,
+  // The dropdown value is a DELIVERY ("row:<id>") or a supplier with no row yet.
+  const pick = document.getElementById('sp-ax-sup').value;
+  let supplier = pick, targetRow = null;
+  if (pick.indexOf('row:') === 0) {
+    targetRow = (spEnsurePlan().deliveries || []).find(r => String(r.id) === pick.slice(4)) || null;
+    supplier = targetRow ? targetRow.supplier : '';
+  }
+  const landed = spAxPush([{ supplier, desc, qty,
     unit: document.getElementById('sp-ax-unit').value.trim(),
-    price, url: (document.getElementById('sp-ax-url')||{value:''}).value.trim() }]);
-  toast('✓ ' + qty + ' × ' + desc + ' added');
+    price, url: (document.getElementById('sp-ax-url')||{value:''}).value.trim() }], targetRow ? targetRow.id : spAxHostRowId());
+  toast('✓ ' + qty + ' × ' + desc + ' added' + (landed.length ? ' → "' + landed[0] + '"' : ''));
   ['sp-ax-desc','sp-ax-unit','sp-ax-price','sp-ax-url'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('sp-ax-qty').value = '1';
   document.getElementById('sp-ax-desc').focus();
