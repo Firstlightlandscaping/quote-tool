@@ -9122,6 +9122,7 @@ async function crmPushAuto(ref, event) {
     const r = await crmPushCall(ref, event, {});
     if (r.held) { crmHoldBanner(ref, event, (r.hold || [])[0] || 'needs a look'); return; }
     crmMarkPushed(ref, event);
+    if (r.parked) { crmNoticeBanner('busy', '📇 Recorded — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + '. Live CRM pushing starts on switch-on day; Trello is the truth until then.', 6000); return; }
     crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's') + (r.card && r.card.name ? ' · ' + r.card.name : ''), 8000);
   } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); }
 }
@@ -9241,6 +9242,7 @@ async function crmPushPanel(ref, event) {
       const r = await crmPushCall(ref, event, { confirm: true, decision: chosen });
       if (r.held) { throw new Error((r.blocked || [])[0] || (r.hold || [])[0] || 'held'); }
       markPushed();
+      if (r.parked) { crmRemovePushPanel(); crmNoticeBanner('busy', '📇 Recorded — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + '. Live CRM pushing starts on switch-on day; Trello is the truth until then.', 6000); return; }
       bodyEl().innerHTML = '<div style="padding:10px 12px;background:#F0FDF4;border:1px solid #86EFAC;border-radius:8px;font-size:13px">✓ Pushed to the card for <strong>' + cwEsc((r.card && r.card.name) || '') + '</strong></div>' +
         '<div style="font-size:12px;margin-top:8px">' + (r.executed || []).map(x => '· ' + cwEsc(x)).join('<br>') + '</div>' +
         ((r.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px">' + r.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +

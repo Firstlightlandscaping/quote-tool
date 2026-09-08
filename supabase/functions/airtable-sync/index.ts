@@ -495,6 +495,15 @@ Deno.serve(async (req: Request) => {
       const w = await stamp(ref, event);
       return w ? json(500, { ok: false, error: w }) : json(200, { ok: true, cleared: true, ref, event });
     }
+    // PARKED MODE (CRM, 08/09): until the shadow-run switch-on, Trello owns card stages and
+    // the CRM's final full sync overwrites List — so the app must not move cards before then.
+    // With CRM_PUSH_PARKED set on LIVE, every real push is recorded as cleared (no Airtable
+    // write); dry-runs still work. Unset the secret on switch-on day and normal service starts.
+    // Never set on the sandbox (verification needs real writes to the test card).
+    if (Deno.env.get("CRM_PUSH_PARKED") && body.dryRun !== true) {
+      const w = await stamp(ref, event);
+      return w ? json(500, { ok: false, error: w }) : json(200, { ok: true, cleared: true, parked: true, ref, event });
+    }
     const cardOverride = typeof body.cardOverride === "string" && /^rec[A-Za-z0-9]{14}$/.test(body.cardOverride) ? body.cardOverride : undefined;
     const decision = typeof body.decision === "string" ? body.decision : undefined;
     const plan = await buildPlan(ref, event, cardOverride, decision);
