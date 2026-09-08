@@ -70,7 +70,7 @@ async function main() {
   const now = new Date().toISOString();
   let n = 0;
   for (const t of targets) {
-    const crm_pushed = { ...t.prev }; t.events.forEach(e => { crm_pushed[e] = now; });
+    const crm_pushed = { ...t.prev }; t.events.forEach(e => { crm_pushed[e] = now; crm_pushed['~' + e] = 'cleared'; });   // ~event = never sent (app hides it from Recently pushed)
     const r = await fetch(URL_ + '/rest/v1/' + t.table + '?ref=eq.' + encodeURIComponent(t.ref), {
       method: 'PATCH', headers: { ...H, Prefer: 'return=representation' },
       body: JSON.stringify({ crm_pushed, last_pushed_at: now, last_push_event: 'cleared:' + t.events.join('+') }),

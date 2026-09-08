@@ -9295,7 +9295,12 @@ async function crmPushSkip(ref, event) {
 function crmPushOverview() {
   const pending = [], unlinked = [], pushed = [];
   // "Push again" = re-run the last event (idempotent by contract — the CRM's push-twice check).
-  const lastPush = rec => Object.entries(rec.crmPushed || {}).sort((a, b) => new Date(b[1]) - new Date(a[1]))[0] || null;
+  // Only REAL sends count: crm_pushed["~<event>"] marks cleared / parked / skipped stamps,
+  // which never reached Airtable (Neal, 08/09: the 46 cleared records read as "pushed").
+  const lastPush = rec => {
+    const p = rec.crmPushed || {};
+    return Object.entries(p).filter(([k]) => k[0] !== '~' && !p['~' + k]).sort((a, b) => new Date(b[1]) - new Date(a[1]))[0] || null;
+  };
   savedQuotes.forEach(sq => {
     const rec = crmPushRec(sq.ref), pend = crmPendingEvents(rec);
     // Only quotes that have moved since the CRM plumbing (status_changed_at) — pre-CRM history

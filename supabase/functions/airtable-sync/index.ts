@@ -464,14 +464,19 @@ async function execute(plan: Plan) {
 // CRM's nightly diff, crm_pushed[event] for the app's per-event pending badge. Stamped after
 // a successful execute AND after a deliberate skip (a never-pushed option being superseded is
 // a completed decision — the badge must clear). Never on orphan (still needs linking).
-async function stamp(ref: string, event: string): Promise<string | null> {
+// kind: undefined = a real send; "cleared" / "parked" / "skipped" = acknowledged, nothing sent.
+// The kind is kept beside the timestamp as crm_pushed["~<event>"] so the app's Recently
+// pushed list can show only real sends (Neal, 08/09: 46 cleared records looked "pushed").
+async function stamp(ref: string, event: string, kind?: string): Promise<string | null> {
   try {
     const table = ref.startsWith("DC-") ? "design_contracts" : "quotes";
     const cur = (await sbGet(`${table}?ref=eq.${encodeURIComponent(ref)}&select=crm_pushed`))[0] || {};
     const now = new Date().toISOString();
+    const pushed: Record<string, unknown> = { ...(cur.crm_pushed || {}), [event]: now };
+    if (kind) pushed["~" + event] = kind; else delete pushed["~" + event];
     const r = await fetch(`${Deno.env.get("SUPABASE_URL")}/rest/v1/${table}?ref=eq.${encodeURIComponent(ref)}`, {
       method: "PATCH", headers: { ...sbHeaders(), Prefer: "return=minimal" },
-      body: JSON.stringify({ last_pushed_at: now, last_push_event: event, crm_pushed: { ...(cur.crm_pushed || {}), [event]: now } }),
+      body: JSON.stringify({ last_pushed_at: now, last_push_event: (kind ? kind + ":" : "") + event, crm_pushed: pushed }),
     });
     if (!r.ok) throw new Error("HTTP " + r.status);
     return null;
@@ -492,7 +497,7 @@ Deno.serve(async (req: Request) => {
     // already has it (day-one backlog after the Trello import, or a hand-made change).
     // Stamps crm_pushed so the badge clears; nothing else happens.
     if (body.clear === true) {
-      const w = await stamp(ref, event);
+      const w = await stamp(ref, event, "cleared");
       return w ? json(500, { ok: false, error: w }) : json(200, { ok: true, cleared: true, ref, event });
     }
     // PARKED MODE (CRM, 08/09): until the shadow-run switch-on, Trello owns card stages and
@@ -501,7 +506,7 @@ Deno.serve(async (req: Request) => {
     // write); dry-runs still work. Unset the secret on switch-on day and normal service starts.
     // Never set on the sandbox (verification needs real writes to the test card).
     if (Deno.env.get("CRM_PUSH_PARKED") && body.dryRun !== true) {
-      const w = await stamp(ref, event);
+      const w = await stamp(ref, event, "parked");
       return w ? json(500, { ok: false, error: w }) : json(200, { ok: true, cleared: true, parked: true, ref, event });
     }
     const cardOverride = typeof body.cardOverride === "string" && /^rec[A-Za-z0-9]{14}$/.test(body.cardOverride) ? body.cardOverride : undefined;
@@ -509,7 +514,7 @@ Deno.serve(async (req: Request) => {
     const plan = await buildPlan(ref, event, cardOverride, decision);
     if ("orphan" in plan) return json(200, { ok: true, orphan: true, ref, event, warning: plan.warning });
     if ("skipped" in plan && !("writes" in plan)) {
-      if (body.dryRun !== true) await stamp(ref, event);   // a decided no-op still clears the pending badge
+      if (body.dryRun !== true) await stamp(ref, event, "skipped");   // a decided no-op still clears the pending badge
       return json(200, { ok: true, skipped: (plan as any).skipped, ref, event, dryRun: body.dryRun === true });
     }
     const p = plan as Plan;
