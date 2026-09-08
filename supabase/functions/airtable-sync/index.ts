@@ -488,6 +488,13 @@ Deno.serve(async (req: Request) => {
     const event = String(body.event || "");
     if (!/^(QT|DC)-\d+$/.test(ref)) return json(400, { error: "Bad ref." });
     if (!EVENTS.has(event)) return json(400, { error: "Bad event." });
+    // clear:true (Neal, 08/09): acknowledge an event WITHOUT writing to Airtable — the CRM
+    // already has it (day-one backlog after the Trello import, or a hand-made change).
+    // Stamps crm_pushed so the badge clears; nothing else happens.
+    if (body.clear === true) {
+      const w = await stamp(ref, event);
+      return w ? json(500, { ok: false, error: w }) : json(200, { ok: true, cleared: true, ref, event });
+    }
     const cardOverride = typeof body.cardOverride === "string" && /^rec[A-Za-z0-9]{14}$/.test(body.cardOverride) ? body.cardOverride : undefined;
     const decision = typeof body.decision === "string" ? body.decision : undefined;
     const plan = await buildPlan(ref, event, cardOverride, decision);

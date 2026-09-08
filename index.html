@@ -9080,12 +9080,24 @@ async function crmPushCall(ref, event, opts) {
   const res = await fetch(SUPABASE_URL + '/functions/v1/airtable-sync', {
     method: 'POST',
     headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ref, event, dryRun: !!opts.dryRun, confirm: !!opts.confirm, decision: opts.decision || undefined }),
+    body: JSON.stringify({ ref, event, dryRun: !!opts.dryRun, confirm: !!opts.confirm, decision: opts.decision || undefined, clear: !!opts.clear }),
   });
   const d = await res.json().catch(() => ({}));
   if (res.status === 409 && d && d.held) return d;
   if (!res.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + res.status));
   return d;
+}
+// "Clear without pushing" (Neal, 08/09): the CRM already has this — acknowledge the event,
+// write nothing. event omitted = every event the record currently owes.
+async function crmPushClear(ref, event) {
+  const events = event ? [event] : crmPendingEvents(crmPushRec(ref));
+  if (!events.length) return;
+  if (!confirm('Clear ' + ref + ' · ' + events.map(e => CRM_PUSH_EVENT_LABEL[e] || e).join(', ') + ' WITHOUT pushing?\n\nThe CRM is not written — use this only when the CRM already has it.')) return;
+  try { for (const e of events) { await crmPushCall(ref, e, { clear: true }); crmMarkPushed(ref, e); } }
+  catch (e) { toast('⚠ Could not clear: ' + e.message); return; }
+  crmRemovePushPanel();
+  const ov = document.getElementById('crm-overview'); if (ov) { ov.remove(); crmPushOverview(); }
+  crmNoticeBanner('ok', '✓ Cleared without pushing — ' + ref + ' · ' + events.map(e => CRM_PUSH_EVENT_LABEL[e] || e).join(', '), 6000);
 }
 function crmMarkPushed(ref, event) {
   const now = new Date().toISOString();
@@ -9190,7 +9202,8 @@ async function crmPushPanel(ref, event) {
   if (plan.orphan) {
     bodyEl().innerHTML = '<div style="padding:10px 12px;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;font-size:13px">⚠ ' + cwEsc(plan.warning) + '</div>' +
       btns((rec.isDesign ? '<span style="font-size:12px;color:var(--i3)">Open the design contract (✎ Edit) and pick the client there.</span>'
-                        : '<button class="btn btn-primary" onclick="crmRemovePushPanel();crmListLink(\'' + ref + '\')">📇 Link to a client</button>') + closeBtn);
+                        : '<button class="btn btn-primary" onclick="crmRemovePushPanel();crmListLink(\'' + ref + '\')">📇 Link to a client</button>') +
+           '<button class="btn btn-outline" onclick="crmPushClear(\'' + ref + '\',\'' + event + '\')" title="The CRM already has this — acknowledge without writing">Clear without pushing</button>' + closeBtn);
     return;
   }
   if (plan.skipped) {
@@ -9216,7 +9229,9 @@ async function crmPushPanel(ref, event) {
     (plan.needsDecision ? '<div style="font-size:13px;margin-top:10px;padding:10px 12px;background:#FFFBEB;border:1px solid #F59E0B;border-radius:6px"><div style="font-weight:700;margin-bottom:6px">' + cwEsc(plan.needsDecision.question) + '</div>' +
         plan.needsDecision.options.map((o, i) => '<label style="display:block;margin:3px 0;cursor:pointer"><input type="radio" name="crm-decision" value="' + cwEsc(o.value) + '"' + (i === 0 ? '' : '') + '> ' + cwEsc(o.label) + '</label>').join('') + '</div>' : '') +
     ((plan.blocked || []).length ? '<div style="font-size:13px;color:#991B1B;margin-top:10px;padding:10px 12px;background:#FEF2F2;border:1px solid #FCA5A5;border-radius:6px">' + plan.blocked.map(n => '⛔ ' + cwEsc(n)).join('<br>') + '<div style="margin-top:6px;font-size:12px">Nothing can be pushed until this is resolved.</div></div>' : '') +
-    btns(((plan.blocked || []).length ? '' : '<button class="btn btn-primary" id="crm-push-go">▶ Push to CRM</button>') + '<button class="btn btn-outline" onclick="crmRemovePushPanel()">Not now</button>');
+    btns(((plan.blocked || []).length ? '' : '<button class="btn btn-primary" id="crm-push-go">▶ Push to CRM</button>') +
+         '<button class="btn btn-outline" onclick="crmPushClear(\'' + ref + '\',\'' + event + '\')" title="The CRM already has this — acknowledge without writing">Clear without pushing</button>' +
+         '<button class="btn btn-outline" onclick="crmRemovePushPanel()">Not now</button>');
   const go = document.getElementById('crm-push-go');
   if (go) go.onclick = async () => {
     const chosen = plan.needsDecision ? (document.querySelector('input[name=crm-decision]:checked') || {}).value : undefined;
@@ -9252,7 +9267,9 @@ function crmPushOverview() {
   const lastPush = rec => Object.entries(rec.crmPushed || {}).sort((a, b) => new Date(b[1]) - new Date(a[1]))[0] || null;
   savedQuotes.forEach(sq => {
     const rec = crmPushRec(sq.ref), pend = crmPendingEvents(rec);
-    if (!sq.airtableCardId && ['Sent', 'Accepted'].includes(sq.status)) unlinked.push(sq);
+    // Only quotes that have moved since the CRM plumbing (status_changed_at) — pre-CRM history
+    // is Trello's, not a linking backlog (46 of them on live, 08/09).
+    if (!sq.airtableCardId && ['Sent', 'Accepted'].includes(sq.status) && sq.statusChangedAt) unlinked.push(sq);
     else if (pend.length && sq.airtableCardId) pending.push({ ref: sq.ref, customer: sq.customer || '', events: pend });
     const lp = lastPush(rec); if (lp && sq.airtableCardId) pushed.push({ ref: sq.ref, customer: sq.customer || '', event: lp[0], at: lp[1] });
   });
@@ -9272,7 +9289,9 @@ function crmPushOverview() {
   const wrap = document.createElement('div');
   wrap.id = 'crm-overview';
   wrap.innerHTML = '<div class="cw-modal-back"><div class="cw-modal" style="width:620px;max-width:95vw;max-height:88vh;overflow-y:auto"><h3>📇 CRM sync</h3>' +
-    section('Pushes waiting', pending.map(p => row(p.ref, p.customer, p.events.map(e => CRM_PUSH_EVENT_LABEL[e]).join(' → '), '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmPushPanel(\'' + p.ref + '\')">▶ Push</button>')), true) +
+    section('Pushes waiting', pending.map(p => row(p.ref, p.customer, p.events.map(e => CRM_PUSH_EVENT_LABEL[e]).join(' → '),
+      '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmPushPanel(\'' + p.ref + '\')">▶ Push</button> ' +
+      '<button class="btn btn-outline btn-sm" onclick="crmPushClear(\'' + p.ref + '\')" title="The CRM already has this — clear every waiting event without writing">✕ Clear</button>')), true) +
     section('Not linked to a client', unlinked.map(sq => row(sq.ref, sq.customer || '', sq.status + ' — no CRM card, nothing can push', '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmListLink(\'' + sq.ref + '\')">📇 Link</button>')), true) +
     section('Recently pushed', pushed.slice(0, 15).map(p => row(p.ref, p.customer, 'last: ' + (CRM_PUSH_EVENT_LABEL[p.event] || p.event) + ' · ' + sigDateOnly(p.at), '<button class="btn btn-outline btn-sm" onclick="document.getElementById(\'crm-overview\').remove();crmPushPanel(\'' + p.ref + '\',\'' + p.event + '\')" title="Re-run the last push — safe to repeat, the CRM ends up the same">↻ Push again</button>')), false) +
     '<div class="cw-modal-btns"><button class="btn btn-outline" onclick="document.getElementById(\'crm-overview\').remove()">Close</button></div></div></div>';
