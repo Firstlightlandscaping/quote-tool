@@ -158,6 +158,22 @@ async function handlePost(req: Request): Promise<Response> {
   else if (row.status === "sent") patch.status = "viewed";
   await patchRow(row.id, patch);
 
+  // CRM push (2026-09-08): the client signs with the app closed, so the "contract signed"
+  // event fires from HERE — the service-role key is a valid JWT for the airtable-sync fn.
+  // Best-effort: a CRM failure is logged and never fails the signature; a HELD plan stays
+  // pending (the app's badge shows it) because there's no person here to confirm.
+  if (allSigned) {
+    try {
+      const URL_ = Deno.env.get("SUPABASE_URL"), KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+      const r = await fetch(`${URL_}/functions/v1/airtable-sync`, {
+        method: "POST", headers: { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" },
+        body: JSON.stringify({ ref: row.quote_ref, event: "contract_signed" }),
+      });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) console.error("sign-contract CRM push not executed:", r.status, d.error || d.reason || (d.hold || []).join(" | "));
+    } catch (e) { console.error("sign-contract CRM push threw:", (e as Error).message); }
+  }
+
   return json(200, { ok: true, allSigned, signedAt: now });
 }
 
