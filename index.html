@@ -9105,11 +9105,12 @@ async function crmPushAuto(ref, event) {
   if (d.orphan) { crmHoldBanner(ref, event, d.warning); return; }
   if (d.skipped) { try { await crmPushCall(ref, event, {}); crmMarkPushed(ref, event); } catch (e) {} return; }   // decided no-op — stamp quietly
   if ((d.hold || []).length || (d.blocked || []).length || d.needsDecision) { crmHoldBanner(ref, event, d.hold[0] || 'needs a look'); return; }
+  crmNoticeBanner('busy', '📇 Pushing ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' to the CRM…', 0);
   try {
     const r = await crmPushCall(ref, event, {});
     if (r.held) { crmHoldBanner(ref, event, (r.hold || [])[0] || 'needs a look'); return; }
     crmMarkPushed(ref, event);
-    toast('📇 CRM updated — ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ((r.warnings || []).length ? ' (with notes — see 📇 CRM)' : ''));
+    crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's') + (r.card && r.card.name ? ' · ' + r.card.name : ''), 8000);
   } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); }
 }
 // The amber top banner (unsaved-print pattern) — never a modal, so a contract preview or
@@ -9124,6 +9125,22 @@ function crmHoldBanner(ref, event, reason) {
     '<button onclick="document.getElementById(\'crm-hold-banner\').remove();crmPushPanel(\'' + ref + '\',\'' + event + '\')" style="background:#F59E0B;border:none;border-radius:5px;cursor:pointer;font-size:13px;font-weight:700;padding:5px 14px;color:white">Review</button>' +
     '<button onclick="document.getElementById(\'crm-hold-banner\').remove()" title="Hide — it stays pending; find it under 📇 CRM in Saved Quotes" style="background:none;border:1px solid #F59E0B;border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:#92400E">later</button>';
   document.body.appendChild(d);
+}
+// Result strip (Neal, 07/09: the toast "isn't prominent"): grey while pushing, green when
+// done, same top-of-page slot as the hold banner so the eye has one place to look. One
+// notice at a time; autoHide ms (0 = stays until replaced/closed).
+function crmNoticeBanner(kind, text, autoHide) {
+  const old = document.getElementById('crm-notice-banner'); if (old) { clearTimeout(old._t); old.remove(); }
+  const hold = document.getElementById('crm-hold-banner'); if (hold && kind === 'ok') hold.remove();
+  const d = document.createElement('div');
+  d.id = 'crm-notice-banner';
+  d.className = 'no-print';
+  const col = kind === 'ok' ? { bg: '#F0FDF4', bd: '#22C55E', fg: '#166534' } : { bg: '#F4F4F5', bd: '#A1A1AA', fg: '#3F3F46' };
+  d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:' + col.bg + ';border-bottom:2px solid ' + col.bd + ';color:' + col.fg + ';font-size:14px;font-weight:700;padding:10px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
+  d.innerHTML = '<span>' + cwEsc(text) + '</span>' +
+    (kind === 'ok' ? '<button onclick="document.getElementById(\'crm-notice-banner\').remove()" style="background:none;border:1px solid ' + col.bd + ';border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:' + col.fg + '">ok</button>' : '');
+  document.body.appendChild(d);
+  if (autoHide) d._t = setTimeout(() => { if (d.parentNode) d.remove(); }, autoHide);
 }
 function crmFieldsHtml(fields) {
   return Object.entries(fields).map(([k, v]) => {
@@ -9213,7 +9230,7 @@ async function crmPushPanel(ref, event) {
         '<div style="font-size:12px;margin-top:8px">' + (r.executed || []).map(x => '· ' + cwEsc(x)).join('<br>') + '</div>' +
         ((r.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px">' + r.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +
         btns(nextBtn + closeBtn);
-      toast('📇 CRM updated — ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event));
+      crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's'), 8000);
     } catch (e) {
       bodyEl().innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ Push failed: ' + cwEsc(e.message) + '</div>' + btns('<button class="btn btn-primary" onclick="crmPushPanel(\'' + ref + '\',\'' + event + '\')">Retry</button>' + closeBtn);
     }

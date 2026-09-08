@@ -416,7 +416,9 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!sig) throw new Error("No signing record for " + ref);
       const f: Record<string, unknown> = { [Q.signingStatus]: sig.status };
       if (sig.signed_at) f[Q.signed] = dateOnly(sig.signed_at);
-      if (rec.isDesign) f[Q.status] = rec.status;          // DC rows mirror contract_meta.status (→ Signed)
+      // DC rows mirror the contract lifecycle. When this fires server-side at signing time the
+      // app hasn't yet derived contract_meta.status = Signed, so use the signing truth directly.
+      if (rec.isDesign) f[Q.status] = sig.status === "signed" ? "Signed" : rec.status;
       upsertRow(f, `Quotes row → signing ${sig.status}`);
       if (sig.status === "signed") {
         cardPatch[rec.isDesign ? CARD.designContractSigned : CARD.contractSigned] = true;
@@ -434,9 +436,11 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   }
   if (Object.keys(changed).length) plan.writes.unshift({ table: T.cards, op: "patch", id: cardId, label: "Card", fields: changed });
   else plan.notes.push("Card fields already up to date");
-  // Everything that stops this plan executing on its own.
-  plan.hold = [...plan.warnings, ...plan.blocked.map(b => "BLOCKED: " + b)];
+  // Everything that stops this plan executing on its own — hardest reason FIRST, because
+  // the app's banner shows hold[0] (Neal, 07/09: a soft note was hiding the real block).
+  plan.hold = [...plan.blocked.map(b => "BLOCKED: " + b)];
   if (plan.needsDecision) plan.hold.push("DECISION NEEDED: " + plan.needsDecision.question);
+  plan.hold.push(...plan.warnings);
   return plan;
 }
 
