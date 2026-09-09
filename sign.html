@@ -88,11 +88,24 @@
 // The signing function is the ONLY thing this page talks to. No database access, no keys.
 // The localStorage override mirrors the app's own DB switch, so testing against the
 // sandbox uses the same mechanism; a client's browser never has it set → live.
+// TWO document kinds share this page: ?t= = contract (sign-contract fn),
+// ?r= = RAMS crew signing (sign-rams fn). Same pad, same evidence flow — only the
+// endpoint, wording and signature-injection targets differ.
+var qs = new URLSearchParams(location.search);
+var IS_RAMS = !!qs.get('r');
+var FN_PATH = IS_RAMS ? '/functions/v1/sign-rams' : '/functions/v1/sign-contract';
+var TOKEN_PARAM = IS_RAMS ? 'r' : 't';
 var FN;
-try { FN = (localStorage.getItem('fl_supabase_url') || 'https://zqowzcmyvaudgyfncfrz.supabase.co') + '/functions/v1/sign-contract'; }
-catch (e) { FN = 'https://zqowzcmyvaudgyfncfrz.supabase.co/functions/v1/sign-contract'; }
+try { FN = (localStorage.getItem('fl_supabase_url') || 'https://zqowzcmyvaudgyfncfrz.supabase.co') + FN_PATH; }
+catch (e) { FN = 'https://zqowzcmyvaudgyfncfrz.supabase.co' + FN_PATH; }
 
-var token = new URLSearchParams(location.search).get('t') || '';
+var token = qs.get(TOKEN_PARAM) || '';
+if (IS_RAMS) {
+  document.title = 'Site documents — First Light Landscaping';
+  var hdrSub = document.querySelector('header .sub');
+  if (hdrSub) hdrSub.textContent = 'LANDSCAPING DESIGN & BUILD — SITE DOCUMENTS';
+}
+var DOC_WORD = IS_RAMS ? 'document' : 'contract';
 var state = null;         // last GET payload
 var padCtx = null, padDrawn = false;
 var nameAdopted = false;  // true = name entered via the chip (recorded honestly in the audit)
@@ -131,10 +144,10 @@ async function init() {
   if (!token) { statusCard('This signing link is incomplete — please use the exact link you were sent.' + contactLine(), 'err'); return; }
   var res, body;
   try {
-    res = await fetch(FN + '?t=' + encodeURIComponent(token));
+    res = await fetch(FN + '?' + TOKEN_PARAM + '=' + encodeURIComponent(token));
     body = await res.json();
   } catch (e) {
-    statusCard('Could not load the contract — please check your internet connection and try again.' + contactLine(), 'err');
+    statusCard('Could not load the ' + DOC_WORD + ' — please check your internet connection and try again.' + contactLine(), 'err');
     return;
   }
   if (!res.ok || !body.ok) {
@@ -148,16 +161,20 @@ async function init() {
   } else {
     var waiting = (body.coSigners || []).filter(function (c) { return !c.signed; });
     var done = (body.coSigners || []).filter(function (c) { return c.signed; });
-    // Design contracts (DC- refs) get their own greeting (Neal's wording, 2026-07-28);
-    // build contracts keep the original.
+    // Three greetings: RAMS (crew, plain instruction), design contracts (DC- refs,
+    // Neal's wording 2026-07-28), build contracts (the original).
     var isDesign = /^DC-/.test(String(body.quoteRef || ''));
-    var intro = isDesign
-      ? 'Thank you for choosing First Light Landscaping to design your garden &mdash; we&rsquo;re looking forward to getting started. Below you&rsquo;ll find your Contract of Works, detailing everything included in your chosen design package. Please read through it carefully, and sign at the bottom of the page when you&rsquo;re happy.'
-      : 'Please find your contract below for your upcoming project. Have a read through, check everything, and sign at the bottom of the page.';
+    var intro = IS_RAMS
+      ? 'This is the Risk Assessment &amp; Method Statement for the <strong>' + esc(body.customer || '') + '</strong> job. Read it through before you start work on site &mdash; it covers how we build, what the risks are, and what’s different about this site. When you’ve read and understood it, sign at the bottom.'
+      : (isDesign
+        ? 'Thank you for choosing First Light Landscaping to design your garden &mdash; we&rsquo;re looking forward to getting started. Below you&rsquo;ll find your Contract of Works, detailing everything included in your chosen design package. Please read through it carefully, and sign at the bottom of the page when you&rsquo;re happy.'
+        : 'Please find your contract below for your upcoming project. Have a read through, check everything, and sign at the bottom of the page.');
     statusCard(
       '<h2>Hi ' + esc(firstName(body.signerName)) + ',</h2>' +
       '<div class="notice">' + intro + '</div>' +
-      '<div class="notice" style="margin-top:8px">Any questions about any aspect of the contract — please just let us know on <strong>0113 2580428</strong>, or reply to the email this link came in.</div>' +
+      '<div class="notice" style="margin-top:8px">' + (IS_RAMS
+        ? 'Not sure about anything in it, or think something’s missing or wrong? <strong>Raise it before you start</strong> — call the office on <strong>0113 2580428</strong>.'
+        : 'Any questions about any aspect of the contract — please just let us know on <strong>0113 2580428</strong>, or reply to the email this link came in.') + '</div>' +
       (done.length ? '<div class="muted" style="margin-top:8px">✓ Already signed by ' + done.map(function (c) { return esc(c.name); }).join(' and ') + '.</div>' : '') +
       (waiting.length ? '<div class="muted" style="margin-top:8px">' + waiting.map(function (c) { return esc(c.name); }).join(' and ') + ' will also be asked to sign.</div>' : '') +
       '<div style="margin-top:14px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">' +
@@ -167,6 +184,13 @@ async function init() {
       '<div class="muted" style="margin-top:10px">To keep an electronic copy, choose &ldquo;Save as PDF&rdquo; in the print window.</div>' +
       '<div class="muted" style="margin-top:6px">Ref ' + esc(body.quoteRef) + ' · This private link was created for you by First Light Landscaping. If anything looks unfamiliar, call us on 0113 2580428.</div>');
     document.getElementById('sign-panel').style.display = 'block';
+    if (IS_RAMS) {
+      document.querySelector('#sign-panel h2').textContent = 'Sign this document';
+      document.querySelector('#sign-panel .notice').textContent = 'Please read the whole document above before signing.';
+      document.querySelector('.agree span').textContent =
+        'I have read and understood this Risk Assessment & Method Statement. Anything I was unsure of has been explained to me. I agree to work to the controls and methods it describes, and to stop and raise it with the site lead or the office if conditions on site do not match what it describes.';
+      document.getElementById('sign-btn').textContent = 'Sign document';
+    }
     // Deliberately EMPTY — the name is entered by a deliberate act: either typed, or
     // adopted via the chip (one tap, the same legal weight — a click is a choice; only
     // PASSIVE pre-fill was the problem). Never validated against the expected name:
@@ -193,11 +217,11 @@ function renderDoc(body) {
   var iframe = document.getElementById('doc');
   iframe.onload = function () {
     injectMobileStyles(iframe);
-    injectSignatures(iframe, body);
+    if (IS_RAMS) injectRamsSignatures(iframe, body); else injectSignatures(iframe, body);
     sizeIframe(iframe);
     setTimeout(function () { sizeIframe(iframe); }, 400);   // images settle
   };
-  iframe.srcdoc = body.contractHtml;
+  iframe.srcdoc = body.docHtml || body.contractHtml;
   document.getElementById('doc-wrap').style.display = 'block';
 }
 
@@ -219,6 +243,15 @@ function injectMobileStyles(iframe) {
     // (terms rendered ~2x while table content stayed small — Neal's iPhone find,
     // 2026-07-29). We set the mobile type scale deliberately below instead.
     st.textContent = 'html,body{-webkit-text-size-adjust:100%;text-size-adjust:100%}' +
+      // RAMS banner-fit at ALL widths (harmless for contracts — classes absent): the
+      // banner's ~1012px natural width inside the table header otherwise forces the
+      // document wider than its column and clips text on laptops. Keep in step with
+      // ramsInjectDisplayStyles / the ramsStyles block in index.html.
+      '.rams-doc .rwrap2{table-layout:fixed;width:100%}' +
+      '.rams-doc .q-brand-header{grid-template-columns:150px 1fr;width:100%}' +
+      '.rams-doc .q-brand-right{flex-wrap:wrap;justify-content:center;gap:6px;padding:6px}' +
+      '.rams-doc .q-brand-badge{height:40px;max-width:46px}' +
+      '.rams-doc .q-brand-badge-tall{height:48px;max-width:28px}' +
       '@media (max-width:760px){' +
       'body.contract-mode #contract-view{padding:8px 0}' +
       // table-layout:fixed stops the wide lines table dictating the document width
@@ -252,8 +285,76 @@ function injectMobileStyles(iframe) {
       '.cw-meta,.cw-meta .blk{font-size:14px}' +
       '.cw-bank{font-size:14px}' +
       '.cw-pay{font-size:14px}' +
+      // RAMS documents (harmless for contracts — the classes don't exist there):
+      // reflow the 4-column meta grid to stacked cells, ease the padding, and set
+      // the same deliberate 14px reading scale (font boosting is already off above).
+      '.rams-doc{padding:10px}' +
+      '.rams-doc .r-meta td{display:block;width:100%;border-top:0}' +
+      '.rams-doc .r-meta td.k{background:#f1f5f9}' +
+      '.rams-doc .r-meta tr:first-child td:first-child{border-top:1px solid #ddd}' +
+      '.rams-doc .r-body{font-size:14px;line-height:1.55}' +
+      '.rams-doc .r-sec h3{font-size:14px}' +
+      '.rams-doc h2{font-size:16px}' +
+      '.rams-doc .r-open,.rams-doc .r-declare{font-size:14px}' +
     '}';
     d.head.appendChild(st);
+  } catch (e) {}
+}
+
+// RAMS signature injection: signed operatives fill the sign-off grid rows (name /
+// drawn signature / date) and an audit block is appended after the grid. Signatures
+// are DATA — the stored doc_html and its hash are never touched. Keep this format in
+// step with ramsInjectIntoDoc() in index.html (the office copy must read identically).
+function injectRamsSignatures(iframe, body) {
+  try {
+    var doc = iframe.contentDocument;
+    var sigs = body.signatures || [];
+    if (!sigs.length) return;                      // not issued — blank wet-fallback grid stands
+    var signed = sigs.filter(function (s) { return s.signed; });
+    var tbl = doc.querySelector('.r-sign-tbl tbody');
+    if (tbl) {
+      // fix 25 (keep in step with ramsInjectIntoDoc): one row per issued operative —
+      // names always printed, blanks visible for the unsigned, + a signed-count line.
+      var html = '';
+      for (var k = 0; k < sigs.length + 2; k++) html += '<tr><td></td><td></td><td></td></tr>';
+      tbl.innerHTML = html;
+      var rows = tbl.querySelectorAll('tr');
+      sigs.forEach(function (s, i) {
+        var tds = rows[i].querySelectorAll('td');
+        tds[0].textContent = s.signed ? (s.typedName || s.name) : s.name;
+        tds[1].innerHTML = (s.image && s.signed) ? '<img src="' + s.image + '" alt="signature" style="max-height:34px;max-width:160px;display:block">' : '';
+        tds[2].textContent = s.signedAt ? new Date(s.signedAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+      });
+      var anchorTbl = doc.querySelector('.r-sign-tbl');
+      if (!doc.getElementById('rams-signed-count')) {
+        var cnt = doc.createElement('div');
+        cnt.id = 'rams-signed-count';
+        cnt.style.cssText = 'font-size:12px;font-weight:700;margin-top:6px;color:' + (signed.length === sigs.length ? '#15803D' : '#B45309');
+        cnt.textContent = signed.length + ' of ' + sigs.length + ' signed';
+        anchorTbl.parentNode.insertBefore(cnt, anchorTbl.nextSibling);
+      }
+    }
+    var anchor = doc.getElementById('rams-signed-count') || doc.querySelector('.r-sign-tbl');
+    if (anchor && !doc.getElementById('esign-audit')) {
+      var audit = doc.createElement('div');
+      audit.id = 'esign-audit';
+      audit.style.cssText = 'margin:16px 0 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid;overflow-wrap:anywhere';
+      audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + esc(body.quoteRef) + ' · revision ' + esc(body.revision) + '</div>' +
+        (body.issuedAt ? '<div>Issued to the crew: ' + esc(fmtDate(body.issuedAt)) + '</div>' : '') +
+        sigs.map(function (s) {
+          return '<div>' + esc(s.name) + ': ' +
+            (s.viewedAt ? 'opened ' + esc(fmtDate(s.viewedAt)) + ' · ' : '') +
+            (s.signed ? 'signed ' + esc(fmtDate(s.signedAt)) + (s.typedName ? ' (' + (s.nameAdopted ? 'confirmed name' : 'typed name') + ': ' + esc(s.typedName) + ')' : '') : 'not yet signed') + '</div>';
+        }).join('') +
+        '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
+        '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. ' +
+        'Full evidence (date, time, network address, device) is held on record.</div>';
+      anchor.parentNode.insertBefore(audit, anchor.nextSibling);
+      sha256Hex(body.docHtml).then(function (h) {
+        var el = doc.getElementById('esign-hash');
+        if (el) el.textContent = 'Document fingerprint (SHA-256): ' + h;
+      });
+    }
   } catch (e) {}
 }
 
@@ -315,14 +416,16 @@ function injectSignatures(iframe, body) {
 function showSignedState(body) {
   var waiting = (body.signatures || []).filter(function (s) { return !s.signed; });
   statusCard(
-    '<h2>✓ ' + (body.allSigned ? 'Contract signed' : 'Your signature is recorded') + '</h2>' +
+    '<h2>✓ ' + (body.allSigned ? (IS_RAMS ? 'Document signed by the whole team' : 'Contract signed') : 'Your signature is recorded') + '</h2>' +
     '<div class="notice">' +
-      (body.alreadySigned ? 'Thank you ' + esc(firstName(body.signerName)) + ' — you signed this contract' + (body.signedAt ? ' on ' + esc(fmtDate(body.signedAt)) : '') + '. ' : '') +
+      (body.alreadySigned ? 'Thank you ' + esc(firstName(body.signerName)) + ' — you signed this ' + DOC_WORD + (body.signedAt ? ' on ' + esc(fmtDate(body.signedAt)) : '') + '. ' : '') +
       (body.allSigned
-        ? 'All parties have signed — the agreement is complete.'
+        ? (IS_RAMS ? 'Everyone on the job has signed.' : 'All parties have signed — the agreement is complete.')
         : 'Waiting for ' + waiting.map(function (s) { return esc(s.name); }).join(' and ') + ' to sign.') +
     '</div>' +
-    '<div class="notice" style="margin-top:8px">You can come back to this page any time to view or print your copy. We\'ll be in touch about the next steps.</div>' +
+    '<div class="notice" style="margin-top:8px">' + (IS_RAMS
+      ? 'You can come back to this page any time to re-read it. If conditions on site change, you may be sent a revised version to sign.'
+      : 'You can come back to this page any time to view or print your copy. We\'ll be in touch about the next steps.') + '</div>' +
     '<div style="margin-top:12px"><button class="btn btn-ghost" onclick="printDoc()">🖨 Print or save a copy</button></div>' +
     '<div class="muted" style="margin-top:8px">To keep an electronic copy, choose &ldquo;Save as PDF&rdquo; in the print window.</div>',
     'ok-banner');
@@ -413,8 +516,9 @@ async function doSign() {
     return;
   }
   if (!img) { alert('Please draw your signature in the box.'); return; }
-  if (!agreed) { alert('Please tick the box to confirm you agree to the contract terms.'); return; }
+  if (!agreed) { alert(IS_RAMS ? 'Please tick the box to confirm you have read and understood the document.' : 'Please tick the box to confirm you agree to the contract terms.'); return; }
   var btn = document.getElementById('sign-btn');
+  var btnLabel = btn.textContent;
   btn.disabled = true; btn.textContent = 'Signing…';
   var res, body;
   try {
@@ -427,17 +531,17 @@ async function doSign() {
     body = await res.json();
   } catch (e) {
     alert('Could not reach the server — please check your connection and try again.');
-    btn.disabled = false; btn.textContent = 'Sign contract';
+    btn.disabled = false; btn.textContent = btnLabel;
     return;
   }
   if (!res.ok || !body.ok) {
     alert((body && body.error) || 'Signing failed — please try again.');
-    btn.disabled = false; btn.textContent = 'Sign contract';
+    btn.disabled = false; btn.textContent = btnLabel;
     return;
   }
   // reload the state so the signed copy (signature cells + audit block) renders
   try {
-    var r2 = await fetch(FN + '?t=' + encodeURIComponent(token));
+    var r2 = await fetch(FN + '?' + TOKEN_PARAM + '=' + encodeURIComponent(token));
     var b2 = await r2.json();
     if (r2.ok && b2.ok) { state = b2; renderDoc(b2); showSignedState(b2); window.scrollTo(0, 0); return; }
   } catch (e) {}

@@ -417,3 +417,7 @@ enabled = true
 # signing at home has no Supabase login). Everything else stays JWT-gated.
 [functions.sign-contract]
 verify_jwt = false
+
+# Same rule for RAMS operative signing — the per-operative token is the auth.
+[functions.sign-rams]
+verify_jwt = false

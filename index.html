@@ -989,6 +989,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div style="display:flex;gap:8px">
         <button class="btn btn-outline btn-sm" onclick="openSalesCheck()" title="Quick sales report — totals by period and status">📊 Sales report</button>
         <button class="btn btn-outline btn-sm" onclick="openContractsPanel()" title="E-signature overview — what needs chasing, what's out for signature, what's been signed">✍ Contracts</button>
+        <button class="btn btn-outline btn-sm" onclick="openRamsPanel()" title="RAMS overview — what needs approving or issuing, whose signatures are outstanding, what's signed">🦺 RAMS</button>
         <button class="btn btn-outline btn-sm" onclick="crmPushOverview()" title="CRM sync — pushes waiting for your OK, and quotes with no CRM card">📇 CRM</button>
         <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
       </div>
@@ -1126,6 +1127,8 @@ let ndMats = [];
 let miscComponents = [];
 let groupTemplates = [];
 let noteTemplates = [];
+let ramsLibrary = null;    // company_settings.rams_library (seeded by scripts/rams-seed.js); null = not seeded
+let ramsStatusMap = {};    // quote_ref -> latest rams_docs row (light select, ramsRefreshStatuses)
 let staffList = ['Neal Baker', 'Liam'];
 let showArchivedDels = false;
 let showArchivedMPL = false;
@@ -1288,6 +1291,8 @@ async function doLogin(ev) {
     syncH(); renderLines();
     updateAuthStatus();
     sigRefreshStatuses();   // fire-and-forget: e-signature badges + Signed sync
+    ramsRefreshStatuses();  // fire-and-forget: RAMS badges (no-ops until rams.sql has run)
+    ramsHandleDeepLink();   // ?rams=<ref> survived the gate — open it now
     toast('Logged in as ' + (SESSION && SESSION.email ? SESSION.email : email));
   } catch(e) {
     errEl.textContent = e.message || 'Login failed.';
@@ -1310,11 +1315,11 @@ function updateAuthStatus() {
 }
 
 // ── DATA BACKUP (read-only export of all tables) ──────────────────────────────
-const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings','qt_counter','contract_signing','design_packages','design_contracts','dc_counter'];
+const BACKUP_TABLES = ['quotes','quote_lines','deliverables','materials','mpl','staff','group_templates','company_settings','qt_counter','contract_signing','design_packages','design_contracts','dc_counter','rams_docs'];
 // Tables that may legitimately not exist yet on the connected DB (schema rolls out
 // sandbox-first): skipped with a note instead of failing the whole backup.
 // Core tables above are NOT in this set — their failure must still abort the backup.
-const BACKUP_OPTIONAL = new Set(['contract_signing','design_packages','design_contracts','dc_counter']);
+const BACKUP_OPTIONAL = new Set(['contract_signing','design_packages','design_contracts','dc_counter','rams_docs']);
 
 // Fetch EVERY row of a table, paging in case it exceeds PostgREST's per-request cap (~1000).
 // Single-user app with no concurrent writes during a backup, so offset paging is reliable.
@@ -1379,8 +1384,8 @@ async function backupAllData() {
 
 // ── DATA RESTORE (import a backup file — write rows back per table) ────────────
 // Parents before children (matters only if FKs are ever added; harmless without).
-const RESTORE_ORDER = ['company_settings','qt_counter','dc_counter','deliverables','mpl','staff','group_templates','design_packages','quotes','materials','quote_lines','contract_signing','design_contracts'];
-const RESTORE_CONFLICT = { company_settings:'id', qt_counter:'id', dc_counter:'id', quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id', contract_signing:'id', design_packages:'id', design_contracts:'ref' };
+const RESTORE_ORDER = ['company_settings','qt_counter','dc_counter','deliverables','mpl','staff','group_templates','design_packages','quotes','materials','quote_lines','contract_signing','design_contracts','rams_docs'];
+const RESTORE_CONFLICT = { company_settings:'id', qt_counter:'id', dc_counter:'id', quotes:'ref', deliverables:'code', mpl:'code', quote_lines:'id', materials:'id', staff:'id', group_templates:'id', contract_signing:'id', design_packages:'id', design_contracts:'ref', rams_docs:'id' };
 let _restoreBackup = null;
 
 // Show which DB we'd write to, and flag if it's the baked-in LIVE url
@@ -1567,6 +1572,7 @@ async function loadFromSupabase() {
   if (document.getElementById('ct-editor')) initContractTermsEditor();
   noteTemplates = normalizeNoteTemplates(companySettings && companySettings.note_templates);
   renderNoteTemplates();
+  ramsLibrary = normalizeRamsLibrary(companySettings && companySettings.rams_library);
   companySigns = normalizeCompanySigns(companySettings && companySettings.company_signature);
   renderCompanySigns();
   designPackages = Array.isArray(dpRows) ? dpRows : [];
@@ -9812,7 +9818,7 @@ function loadQuote(ref) {
 }
 async function deleteQuote(ref) {
   const sq = savedQuotes.find(q => q.ref === ref);
-  if (!(await sigDeleteGuard(ref, false, sq && sq.customer))) return;
+  if (!(await quoteDeleteGuard(ref, sq && sq.customer))) return;
   savedQuotes=savedQuotes.filter(q=>q.ref!==ref);
   if (USE_SUPABASE) {
     try {
@@ -9877,6 +9883,1075 @@ function toggleStatusChip(btn) {
 // Resolves true = proceed (mark dead AND revoke), false = cancel (nothing changes).
 // Two buttons deliberately \u2014 "dead but still signable" is a contradiction the system
 // would then have to babysit, so it is not offered (Neal, 2026-07-28).
+// ── RAMS (Risk Assessment & Method Statement) ────────────────────────────────
+// Library lives in company_settings.rams_library (seeded by scripts/rams-seed.js,
+// NOT hardcoded here — 50KB of wording). Per-job documents live in rams_docs
+// (contract_signing patterns: no FK, latest row per ref wins, revision supersedes).
+// Status flow: draft (auto from contract) → approved (competent person) → issued → signed.
+function normalizeRamsLibrary(v) {
+  if (!v || !Array.isArray(v.core) || !Array.isArray(v.modifiers) || !Array.isArray(v.modules) || !Array.isArray(v.mapping)) return null;
+  return v;
+}
+async function ramsRefreshStatuses() {
+  if (!USE_SUPABASE) return;
+  let rows;
+  try { rows = await sbAllPages('rams_docs', '?select=id,quote_ref,status,revision,issued_at,expires_at,signed_at,signers&order=id'); }
+  catch (e) { return; }                                  // table absent — feature not cut over yet
+  ramsStatusMap = {};
+  rows.forEach(r => { ramsStatusMap[r.quote_ref] = r; }); // ascending id → latest row wins
+  renderSaved();
+}
+function ramsBadge(ref) {
+  const r = ramsStatusMap[ref];
+  if (!r) return { label: '🦺 RAMS · To create', col: '#6B7280' };
+  // Grammar matches the contract badges (Neal, test 14): "signed" only ever appears when
+  // TRUE (green ✓ Signed, the contract chip's exact wording); the partial state counts
+  // what's OUTSTANDING so a busy board never reads "signed" off an unsigned RAMS.
+  if (r.status === 'signed') return { label: '🦺 ✓ Signed', col: '#15803D' };
+  if (r.status === 'issued') {
+    const left = (r.signers || []).filter(s => !s.signed_at).length;
+    return { label: '🦺 RAMS · ' + left + ' to sign', col: '#2563EB' };
+  }
+  if (r.status === 'approved') return { label: '🦺 RAMS · Approved', col: '#B45309' };
+  return { label: '🦺 RAMS · Draft', col: '#6B7280' };
+}
+function ramsFromSaved(ref) { ramsOpenDialog(ref); }     // in place — never loads the builder
+
+// ?rams=<QT-ref> — the login-gated deep link pushed to the CRM as "RAMS Link" at Issued;
+// its chase task lands the admin one click from the buttons. Consumed ONCE after data has
+// loaded: switch to Saved Quotes and open that job's RAMS dialog (the badge's own entry —
+// review / manage / signed view by state). Only the ref travels in the URL, never a
+// token. The param is left in place while the login gate is up (so the post-login load
+// still sees it) and stripped once consumed so a refresh doesn't re-open the dialog.
+function ramsHandleDeepLink() {
+  let ref = null;
+  try { ref = new URLSearchParams(location.search).get('rams'); } catch (e) { return; }
+  if (!ref) return;
+  if (!savedQuotes.length) return;                        // gated / nothing loaded yet — keep the param
+  try { history.replaceState(null, '', location.pathname); } catch (e) {}
+  ref = ref.trim().toUpperCase();
+  if (!/^QT-\d+$/.test(ref)) { toast('Not a quote reference: ' + ref); return; }
+  const tabBtn = [...document.querySelectorAll('.tab')].find(t => (t.getAttribute('onclick') || '').indexOf("'saved'") >= 0);
+  if (tabBtn) showTab('saved', tabBtn);
+  if (!savedQuotes.find(q => q.ref === ref)) { toast('No saved quote ' + ref + ' on this database'); return; }
+  ramsOpenDialog(ref);
+}
+
+// Which work modules does this quote's contracted scope trigger?
+// Deliverable lines only (misc/notes/discounts have no category — the reviewer adds
+// modules by hand for those, and the always-on core covers most misc work anyway).
+// Mapping rules are evaluated top-down: first rule whose category matches AND whose
+// nameMatch (if any) matches the line name contributes its modules (the TURF split).
+function ramsAutoSelect(sq) {
+  const catOf = {};
+  dels.forEach(d => { catOf[d.code] = d.category || ''; });
+  const modules = new Map(), conditions = new Map();     // id → Set(provenance labels)
+  const add = (map, id, label) => { if (!map.has(id)) map.set(id, new Set()); map.get(id).add(label); };
+  // \b prefix so 'post' never fires on "compost"; open suffix so 'excavat' catches excavation
+  const kwHit = (kws, text) => (kws || []).some(k => new RegExp('\\b' + k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(text));
+  (sq.lines || []).forEach(l => {
+    if (l.note || l.discount) return;
+    if (l.groupId && !l.groupMember) return;             // group headers carry no work of their own
+    if (l.misc) {
+      // Misc lines have no category — keyword rules on the line's own words instead
+      // (name + client description). False matches are visible via provenance and pruned
+      // by the reviewer; a miss becomes a new keyword in the library.
+      const text = ((l.name || '') + ' ' + (l.xdesc || '')).toLowerCase();
+      const label = 'misc “' + ((l.name || '').slice(0, 26) || 'untitled') + '”';
+      ramsLibrary.modules.forEach(m => { if (kwHit(m.keywords, text)) add(modules, m.id, label); });
+      ramsLibrary.modifiers.forEach(m => { if (m.defaultOn === false && kwHit(m.keywords, text)) add(conditions, m.id, label); });
+      return;
+    }
+    if (!l.code) return;
+    const cat = catOf[l.code];
+    if (!cat) return;
+    const name = (l.name || '').toLowerCase();
+    const rule = ramsLibrary.mapping.find(r => r.category === cat && (!r.nameMatch || name.includes(r.nameMatch)));
+    if (rule) (rule.modules || []).forEach(id => add(modules, id, cat));
+  });
+  return { modules, conditions };
+}
+
+let ramsDialogRef = null, ramsDialogRow = null;
+async function ramsOpenDialog(ref) {
+  if (!ramsLibrary) { toast('RAMS library not found in the database — run scripts/rams-seed.js against this DB first'); return; }
+  const sq = savedQuotes.find(q => q.ref === ref);
+  if (!sq) return;
+  let row = null;
+  try {
+    const rows = await sb('GET', 'rams_docs', null, '?quote_ref=eq.' + encodeURIComponent(ref) + '&order=id.desc&limit=1');
+    row = (rows && rows[0]) || null;
+  } catch (e) { toast('Could not read RAMS records: ' + e.message); return; }
+  if (row && (row.status === 'issued' || row.status === 'signed')) { ramsManageDialog(row); return; }
+  ramsDialogRef = ref; ramsDialogRow = row;
+  const review = (row && row.review) || {};
+  const auto = ramsAutoSelect(sq);
+  // saved review wins; otherwise the auto-selection is the starting point
+  const chosen = new Set(review.modules || [...auto.modules.keys()]);
+  const modsOff = new Set(review.modifiersOff || []);    // default-ON conditions: deletions stored, so new library modifiers default ON
+  const modsOn = new Set(review.modifiersOn || [...auto.conditions.keys()]);  // opt-in (saved) conditions: additions stored
+  const old = document.getElementById('rams-dialog');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-dialog';
+  const modRow = m => {
+    const prov = auto.modules.has(m.id) ? `<span style="font-size:10px;color:var(--i3)"> — on the quote: ${cwEsc([...auto.modules.get(m.id)].join(', '))}</span>` : '';
+    return `<label style="display:flex;gap:8px;align-items:baseline;padding:3px 0;cursor:pointer;font-size:12px">
+      <input type="checkbox" id="rams-m-${m.id}" ${chosen.has(m.id) ? 'checked' : ''}>
+      <span><strong>${cwEsc(m.title)}</strong>${prov}</span></label>`;
+  };
+  const condRow = m => {
+    const optIn = m.defaultOn === false;                 // saved via the dialog — starts unticked
+    const checked = optIn ? modsOn.has(m.id) : !modsOff.has(m.id);
+    const prov = auto.conditions.has(m.id)
+      ? `<span style="font-size:10px;color:var(--i3)"> — on the quote: ${cwEsc([...auto.conditions.get(m.id)].join(', '))}</span>`
+      : (optIn ? '<span style="font-size:10px;color:var(--i3)"> — saved condition</span>' : '');
+    return `<label style="display:flex;gap:8px;align-items:baseline;padding:3px 0;cursor:pointer;font-size:12px">
+      <input type="checkbox" id="rams-mod-${m.id}" ${checked ? 'checked' : ''}>
+      <span><strong>${cwEsc(m.title)}</strong>${prov}</span></label>`;
+  };
+  wrap.innerHTML =
+    '<div class="cw-modal-back"><div class="cw-modal" style="width:680px;max-width:95vw;max-height:88vh;overflow-y:auto">' +
+      '<h3 style="margin-bottom:2px">🦺 Risk Assessment &amp; Method Statement — ' + cwEsc(ref) + '</h3>' +
+      '<div style="font-size:12px;color:var(--i3);margin-bottom:10px">' + cwEsc(sq.customer || '') +
+        (row && row.status === 'approved' ? ' · <span style="color:#B45309;font-weight:600">Approved by ' + cwEsc(row.approved_by || '') + ' on ' + new Date(row.approved_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) + '</span>' : ' · Draft — not yet approved') + '</div>' +
+      '<div style="font-size:11px;color:var(--i3);margin-bottom:12px">Work modules are picked automatically from the quote’s deliverables. Misc items carry no category — tick their modules by hand. Site conditions start ON — untick what doesn’t apply to this site (that pruning, done by someone who has seen the site, IS the review).</div>' +
+      '<div style="font-weight:700;font-size:12px;margin:8px 0 4px">Work modules</div>' +
+      '<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px">' + ramsLibrary.modules.map(modRow).join('') + '</div>' +
+      '<div style="font-weight:700;font-size:12px;margin:14px 0 4px">Site conditions (default on — untick to remove)</div>' +
+      '<div style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px">' + ramsLibrary.modifiers.map(condRow).join('') + '</div>' +
+      '<div style="font-weight:700;font-size:12px;margin:14px 0 4px">Site-specific hazards — for each one, say the hazard AND what we’re doing about it</div>' +
+      '<textarea id="rams-notes" rows="4" style="width:100%;resize:vertical" placeholder="e.g. Client’s greenhouse beside the excavation — that edge barriered, nothing stacked on the glass side.">' + cwEsc(review.extraNotes || '') + '</textarea>' +
+      // The note-templates pattern: one-off text can graduate into a reusable, tickable
+      // condition (opt-in on future jobs; keywords make it auto-tick from misc lines).
+      '<label style="display:flex;gap:8px;align-items:center;font-size:12px;margin-top:6px;cursor:pointer">' +
+        '<input type="checkbox" id="rams-save-cond" onchange="document.getElementById(\'rams-cond-fields\').style.display=this.checked?\'flex\':\'none\'">' +
+        '<span>Save this text for reuse on future jobs</span></label>' +
+      '<div id="rams-cond-fields" style="display:none;gap:8px;margin-top:6px;flex-wrap:wrap">' +
+        '<select id="rams-cond-type" style="width:150px"><option value="cond">site condition</option><option value="module">work module</option></select>' +
+        '<input type="text" id="rams-cond-name" placeholder="Name (e.g. Overhead cables / Pond construction)" style="flex:1;min-width:180px">' +
+        '<input type="text" id="rams-cond-kw" placeholder="Auto-tick keywords, comma-separated (optional)" style="flex:1;min-width:180px">' +
+      '</div>' +
+      (() => {
+        // Both per-job pickers draw from shared, extensible lists in rams_library
+        // ("+ add…" prompts and persists — the supplierOptionsHtml philosophy: never
+        // free-typed twice, legacy saved values stay selectable).
+        const attEsc = s => cwEsc(s).replace(/"/g, '&quot;');
+        const optList = (list, cur, addLabel) =>
+          '<option value="">— select —</option>' +
+          (cur && !list.includes(cur) ? '<option value="' + attEsc(cur) + '" selected>' + cwEsc(cur) + '</option>' : '') +
+          list.map(x => '<option value="' + attEsc(x) + '"' + (x === cur ? ' selected' : '') + '>' + cwEsc(x) + '</option>').join('') +
+          '<option value="__add">＋ ' + addLabel + '…</option>';
+        // saved emergency string → the lead half (handles both the new "Site lead:" form
+        // and older free-typed values that started with the office number)
+        const savedEmg = review.emergencyContacts || '';
+        const curLead = savedEmg.includes('Site lead: ') ? savedEmg.split('Site lead: ')[1]
+          : savedEmg.replace(/^Office 0113 2580428\s*·?\s*/, '');
+        return '<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">' +
+          '<div><div style="font-weight:700;font-size:12px;margin-bottom:3px">Nearest A&amp;E (required to approve)</div>' +
+            '<select id="rams-ae" style="width:100%" onchange="ramsListSelChanged(this,\'hospitals\',\'Hospital A&amp;E — name and address exactly as it should print on the document:\')">' +
+            optList(ramsLibrary.hospitals || [], review.nearestAE || '', 'add another hospital') + '</select></div>' +
+          '<div><div style="font-weight:700;font-size:12px;margin-bottom:3px">Emergency contacts — Office 0113 2580428, plus:</div>' +
+            '<select id="rams-lead" style="width:100%" onchange="ramsListSelChanged(this,\'leads\',\'Site lead — name and mobile (e.g. Neal 07700 900123):\')">' +
+            optList(ramsLibrary.leads || [], curLead, 'add a site lead') + '</select></div>' +
+        '</div>';
+      })() +
+      '<div style="margin-top:10px"><div style="font-weight:700;font-size:12px;margin-bottom:3px">Working hours</div>' +
+        '<input type="text" id="rams-hours" value="' + cwEsc(review.workingHours || (ramsLibrary.docText && ramsLibrary.docText.workingHours) || 'Mon–Fri 8am–4pm').replace(/"/g, '&quot;') + '" style="width:220px"></div>' +
+      // Approval is a NAMED competent person, chosen — not whoever happens to be logged
+      // in (the login stamped "sign@fl.co.uk" on Neal's sandbox test). Options = the
+      // staff list (directors, same as the quote sign-off dropdown); last pick remembered.
+      '<div style="margin-top:14px;display:flex;align-items:center;gap:8px">' +
+        '<span style="font-weight:700;font-size:12px">Approving as (competent person):</span>' +
+        '<select id="rams-approver" style="width:190px">' +
+          '<option value="">— select —</option>' +
+          staffList.map(n => '<option value="' + cwEsc(n).replace(/"/g, '&quot;') + '"' +
+            ((row && row.approved_by === n) || (!(row && row.approved_by) && localStorage.getItem('fl_rams_approver') === n) ? ' selected' : '') +
+            '>' + cwEsc(n) + '</option>').join('') +
+        '</select>' +
+      '</div>' +
+      '<div class="cw-modal-btns" style="margin-top:10px">' +
+        ((row && row.status === 'approved')
+          ? '<button class="btn btn-primary" onclick="ramsIssueDialog()">▶ Issue to crew…</button>' +
+            '<button class="btn btn-outline" onclick="ramsSaveReview(true)">✓ Save &amp; re-approve</button>'
+          : '<button class="btn btn-primary" onclick="ramsSaveReview(true)">✓ Approve</button>' +
+            '<button class="btn btn-outline" onclick="ramsSaveReview(false)">Save draft</button>') +
+        '<button class="btn btn-outline" onclick="ramsPreviewDoc()">👁 Preview document</button>' +
+        '<button class="btn btn-outline" onclick="document.getElementById(\'rams-dialog\').remove()">Cancel</button>' +
+      '</div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+}
+function ramsCollectReview() {
+  const lib = ramsLibrary;
+  const el = id => document.getElementById(id);
+  const modChecked = m => el('rams-mod-' + m.id) && el('rams-mod-' + m.id).checked;
+  return {
+    modules: lib.modules.filter(m => el('rams-m-' + m.id) && el('rams-m-' + m.id).checked).map(m => m.id),
+    modifiersOff: lib.modifiers.filter(m => m.defaultOn !== false && el('rams-mod-' + m.id) && !modChecked(m)).map(m => m.id),
+    modifiersOn: lib.modifiers.filter(m => m.defaultOn === false && modChecked(m)).map(m => m.id),
+    extraNotes: el('rams-notes').value.trim(),
+    nearestAE: el('rams-ae').value === '__add' ? '' : el('rams-ae').value,
+    emergencyContacts: 'Office 0113 2580428' +
+      (el('rams-lead').value && el('rams-lead').value !== '__add' ? ' · Site lead: ' + el('rams-lead').value : ''),
+    workingHours: el('rams-hours').value.trim(),
+  };
+}
+// Pasted/typed text → whitelist-safe HTML, preserving structure (the seed's mdToHtml
+// rules): "- " lines → bullets, "1. " lines → numbered steps, **bold**, blank-line breaks.
+// So a drafted module (hazards/controls/method) keeps its shape instead of flattening.
+function ramsTextToHtml(text) {
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const inline = s => esc(s).replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  const out = [];
+  let list = null;
+  const flush = () => { if (list) { out.push('<' + list.type + '>' + list.items.map(i => '<li>' + i + '</li>').join('') + '</' + list.type + '>'); list = null; } };
+  text.split(/\r?\n/).forEach(raw => {
+    const line = raw.trim();
+    if (!line) { flush(); return; }
+    let m;
+    if ((m = line.match(/^- (.+)$/))) {
+      if (!list || list.type !== 'ul') { flush(); list = { type: 'ul', items: [] }; }
+      list.items.push(inline(m[1]));
+    } else if ((m = line.match(/^\d+\. (.+)$/))) {
+      if (!list || list.type !== 'ol') { flush(); list = { type: 'ol', items: [] }; }
+      list.items.push(inline(m[1]));
+    } else { flush(); out.push(inline(line)); }
+  });
+  flush();
+  return out.join('<br>').replace(/(<\/(?:ul|ol)>)<br>/g, '$1');
+}
+// Shared "+ add…" handler for the library-backed pickers (hospitals / site leads):
+// prompt, persist to rams_library (shared across users, survives reload — re-seeds
+// preserve these lists), select the new entry in place.
+async function ramsListSelChanged(sel, listKey, promptText) {
+  if (sel.value !== '__add') return;
+  const v = (prompt(promptText.replace(/&amp;/g, '&')) || '').trim();
+  if (!v) { sel.value = ''; return; }
+  const list = ramsLibrary[listKey] = ramsLibrary[listKey] || [];
+  if (!list.includes(v)) { list.push(v); ramsPersistLibrary(); }
+  const opt = document.createElement('option');
+  opt.value = v; opt.textContent = v;
+  sel.insertBefore(opt, sel.querySelector('option[value="__add"]'));
+  sel.value = v;
+}
+async function ramsPersistLibrary() {
+  try { await sb('PATCH', 'company_settings', { rams_library: ramsLibrary }, '?id=eq.1'); }
+  catch (e) { toast('Could not save the list — the new entry will be lost on refresh: ' + e.message); }
+}
+async function ramsSaveReview(approve) {
+  const lib = ramsLibrary, ref = ramsDialogRef;
+  if (!lib || !ref) return;
+  const review = ramsCollectReview();
+  if (approve && !review.modules.length) { toast('Select at least one work module before approving'); return; }
+  if (approve && !review.nearestAE) { toast('Set the nearest A&E before approving — it prints on the document'); return; }
+  const approver = (document.getElementById('rams-approver') || { value: '' }).value;
+  if (approve && !approver) { toast('Pick who is approving — the name prints on the document'); return; }
+  // Graduate the free text into a reusable library entry (note-templates pattern): the
+  // text MOVES into the library (so it doesn't print twice) and this review ticks it on.
+  // Type choice (fix 16): site condition, or a full WORK MODULE (Neal's workflow: Claude
+  // drafts hazards/controls/method, he pastes + saves — structure survives via ramsTextToHtml).
+  const saveCond = document.getElementById('rams-save-cond');
+  if (saveCond && saveCond.checked) {
+    const nm = document.getElementById('rams-cond-name').value.trim();
+    const asModule = document.getElementById('rams-cond-type').value === 'module';
+    if (!nm) { toast('Name it first (e.g. Overhead cables / Pond construction)'); return; }
+    if (!review.extraNotes) { toast('The site-specific hazards text is empty — nothing to save'); return; }
+    const kw = document.getElementById('rams-cond-kw').value.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+    const html = ramsTextToHtml(review.extraNotes);
+    if (asModule) {
+      const id = 'CX' + Date.now();
+      ramsLibrary.modules.push({ id, title: nm, html, keywords: kw });
+      review.modules = [...(review.modules || []), id];
+      toast('Saved as a work module: ' + nm);
+    } else {
+      const id = 'BC' + Date.now();
+      ramsLibrary.modifiers.push({ id, title: nm, html, defaultOn: false, keywords: kw });
+      review.modifiersOn = [...(review.modifiersOn || []), id];
+      toast('Saved as a reusable site condition: ' + nm);
+    }
+    await ramsPersistLibrary();
+    review.extraNotes = '';
+  }
+  if (approve) {
+    try { localStorage.setItem('fl_rams_approver', approver); } catch (e) {}
+    review.approverLogin = (SESSION && SESSION.email) || '';   // audit: who was logged in
+  }
+  const sq = savedQuotes.find(q => q.ref === ref);
+  const body = {
+    quote_ref: ref, customer: (sq && sq.customer) || '', review,
+    status: approve ? 'approved' : 'draft',
+    approved_by: approve ? approver : null,
+    approved_at: approve ? new Date().toISOString() : null,
+  };
+  try {
+    if (ramsDialogRow) await sb('PATCH', 'rams_docs', body, '?id=eq.' + ramsDialogRow.id);
+    else await sb('POST', 'rams_docs', [body], '');
+  } catch (e) { toast('RAMS save failed: ' + e.message); return; }
+  ramsRefreshStatuses();
+  ramsPushCrm({ ref });                                    // Drafted / Approved → CRM
+  // BOTH paths stay open (fix 19 reversed fix 17's approve-closes ruling — Neal's Calvin
+  // test: approve→issue is one motion). The rebuilt dialog shows the fresh state; after
+  // an approve that means "▶ Issue to crew…" is sitting there as the primary button.
+  toast(approve ? 'RAMS approved — ready to issue' : 'Draft saved');
+  await ramsOpenDialog(ref);
+}
+
+// Render the full RAMS document for a quote from the library + a review.
+// meta: {approvedBy, approvedAt, revision, issuedAt} — absent approvedBy = DRAFT banner.
+// Standalone HTML (sigBuildFrozenDoc pattern: doctype + app styles + own block), so the
+// same string previews in an iframe today and becomes the FROZEN doc at issue time.
+function ramsDocHtml(ref, review, meta) {
+  const lib = ramsLibrary, esc = cwEsc;
+  const san = (typeof cwSanitizeHtml === 'function') ? cwSanitizeHtml : (h => h);
+  const sq = savedQuotes.find(q => q.ref === ref) || {};
+  review = review || {}; meta = meta || {};
+  const kept = lib.modifiers.filter(m => m.defaultOn === false
+    ? (review.modifiersOn || []).includes(m.id)          // opt-in saved conditions
+    : !(review.modifiersOff || []).includes(m.id));      // the standing default-on set
+  const mods = lib.modules.filter(m => (review.modules || []).includes(m.id));
+  const bannerEl = document.querySelector('#tab-quote .q-brand-header');
+  const banner = bannerEl ? bannerEl.outerHTML : '';
+  const addr = [sq.addr1, sq.city, sq.post].filter(Boolean).join(', ');
+  const fmtD = d => d ? new Date(d).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) : '';
+  const opening = esc(((lib.docText && lib.docText.opening) || '').replace('[ref]', ref));
+  const sec = s => {
+    let h = san(s.html);
+    // A11's per-job placeholders get the real values at render time
+    if (s.id === 'A11') {
+      h = h.replace(/\[set per job at review[^\]]*\]/, esc(review.nearestAE || '—'))
+           .replace(/\[office \+ site lead, per job\]/, esc(review.emergencyContacts || '—'));
+    }
+    // Ratings spelled out on every line (Neal's pick) — the library keeps the short
+    // "Risk: High → Low" form as the single thing to maintain; expanded at render only.
+    // Styled at expansion (fix 14): bold colour-coded levels + an Arial arrow with real
+    // spacing (the bare → glyph rendered scrappy in the document font).
+    const lvlCol = l => /^high/i.test(l) ? '#DC2626' : /^medium/i.test(l) ? '#B45309' : '#15803D';
+    h = h.replace(/Risk: ([A-Za-z\/]+) → ([A-Za-z\/]+)/g, (_, a, b) =>
+      'Risk: <b style="color:' + lvlCol(a) + '">' + a + '</b> before controls' +
+      '<span style="font-family:Arial,sans-serif;font-weight:700;padding:0 5px">→</span>' +
+      '<b style="color:' + lvlCol(b) + '">' + b + '</b> with controls in place');
+    return '<div class="r-sec"><h3>' + esc(s.title) + '</h3><div class="r-body">' + h + '</div></div>';
+  };
+  const metaRow = (k1, v1, k2, v2) =>
+    '<tr><td class="k">' + k1 + '</td><td>' + v1 + '</td><td class="k">' + k2 + '</td><td>' + v2 + '</td></tr>';
+  const appStyles = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
+  const ramsStyles =
+    '.rams-doc{max-width:820px;margin:0 auto;padding:18px;font-size:13px;color:#18181B}' +
+    '.rams-doc h1{font-size:20px;margin:16px 0 2px}' +
+    '.rams-doc h2{font-size:15px;margin:22px 0 8px;border-bottom:2px solid #18181B;padding-bottom:4px}' +
+    '.rams-doc .r-sec h3{font-size:13px;margin:12px 0 3px}' +
+    '.rams-doc .r-body{font-size:12.5px;line-height:1.55}' +
+    '.rams-doc .r-body ul,.rams-doc .r-body ol{margin:4px 0 6px 20px;padding-left:0}' +
+    '.rams-doc .r-body li{margin-bottom:3px}' +
+    '.r-meta{width:100%;border-collapse:collapse;font-size:12px;margin:10px 0}' +
+    '.r-meta td{border:1px solid #ddd;padding:5px 8px;vertical-align:top}' +
+    '.r-meta td.k{font-weight:700;width:120px;background:#fafafa}' +
+    '.r-open{font-size:12.5px;line-height:1.55;border:1px solid var(--bd,#ddd);border-radius:8px;padding:10px 14px;background:#FFFBEB}' +
+    '.r-draft{background:#FEF2F2;border:2px solid #DC2626;color:#991B1B;font-weight:700;text-align:center;padding:8px;border-radius:8px;margin:10px 0}' +
+    '.r-declare{border:1.5px solid #18181B;border-radius:8px;padding:10px 14px;margin-top:8px;font-size:12.5px;line-height:1.5}' +
+    '.r-sign-tbl{width:100%;border-collapse:collapse;margin-top:10px;font-size:12px}' +
+    '.r-sign-tbl th,.r-sign-tbl td{border:1px solid #bbb;padding:8px;height:30px;text-align:left}' +
+    '.r-sign-tbl th{background:#fafafa}' +
+    // Banner-fit: the brand banner's natural width (~1012px grid + badges) inside the
+    // table header would otherwise force the whole table past the 820px doc column and
+    // clip text on laptops (min-content bleed — the sign.html phone-reflow trap).
+    // table-layout:fixed caps the table at its container; the banner then shrinks to fit.
+    '.rwrap2{width:100%;table-layout:fixed}' +
+    '.rams-doc .q-brand-header{grid-template-columns:150px 1fr;width:100%}' +
+    '.rams-doc .q-brand-right{flex-wrap:wrap;justify-content:center;gap:6px;padding:6px}' +
+    '.rams-doc .q-brand-badge{height:40px;max-width:46px}' +
+    '.rams-doc .q-brand-badge-tall{height:48px;max-width:28px}' +
+    '@media print{.rwrap2{display:table;width:100%}.rwrap2>thead{display:table-header-group}.rams-doc h2{page-break-after:avoid}.r-sec{page-break-inside:avoid}}';
+  return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<title>RAMS — ' + esc(ref) + '</title><style>' + appStyles + '</style><style>' + ramsStyles + '</style></head>' +
+    '<body><div class="rams-doc"><table class="rwrap2"><thead><tr><td>' + banner + '</td></tr></thead><tbody><tr><td>' +
+    '<h1>Risk Assessment &amp; Method Statement</h1>' +
+    (meta.approvedBy ? '' : '<div class="r-draft">DRAFT — not yet approved. Not valid for use on site.</div>') +
+    '<table class="r-meta">' +
+      metaRow('Project', esc(ref), 'Client', esc(sq.customer || '')) +
+      metaRow('Site address', esc(addr || '—'), 'Working hours', esc(review.workingHours || '')) +
+      metaRow('Approved by', meta.approvedBy ? esc(meta.approvedBy) + ' — ' + fmtD(meta.approvedAt) : '—', 'Revision', esc(String(meta.revision || 1))) +
+      metaRow('Nearest A&amp;E', esc(review.nearestAE || '—'), 'Emergency contacts', esc(review.emergencyContacts || '—')) +
+    '</table>' +
+    '<div class="r-open">' + opening + '</div>' +
+    '<h2>Site arrangements and general precautions</h2>' + lib.core.map(sec).join('') +
+    '<h2>Site conditions for this job</h2>' +
+    (kept.length ? kept.map(sec).join('') : '<div class="r-body" style="color:#555">No standing site conditions apply to this job (removed at review).</div>') +
+    (review.extraNotes ? '<h2>Site-specific hazards and controls</h2><div class="r-body" style="white-space:pre-line">' + esc(review.extraNotes) + '</div>' : '') +
+    '<h2>Work activities — hazards, controls and method</h2>' +
+    (mods.length ? mods.map(sec).join('') : '<div class="r-body">No work modules selected.</div>') +
+    '<h2>' + esc((lib.ppe && lib.ppe.title) || 'PPE summary') + '</h2><div class="r-body">' + san((lib.ppe && lib.ppe.html) || '') + '</div>' +
+    '<h2>Sign-off</h2>' +
+    '<div class="r-declare">' + esc((lib.docText && lib.docText.declaration) || '') + '</div>' +
+    '<div class="r-body" style="margin-top:8px;font-style:italic">' + esc((lib.docText && lib.docText.revisionRule) || '') + '</div>' +
+    '<table class="r-sign-tbl"><thead><tr><th style="width:33%">Print name</th><th style="width:33%">Signature</th><th>Date</th></tr></thead>' +
+      '<tbody>' + '<tr><td></td><td></td><td></td></tr>'.repeat(5) + '</tbody></table>' +
+    '<div class="r-body" style="margin-top:6px;color:#555;font-size:11px">Signatures are collected electronically; each operative signs their own copy of this document on their phone. This grid is for wet-signature fallback only.</div>' +
+    '</td></tr></tbody></table></div></body></html>';
+}
+// Display-time banner-fit for documents FROZEN BEFORE the renderer carried these rules
+// (stored docs are immutable — hashes never change; styling is injected at view time,
+// the injectMobileStyles pattern). Keep in step with the ramsStyles block in ramsDocHtml
+// and the rams rules in sign.html's injectMobileStyles.
+function ramsInjectDisplayStyles(doc) {
+  try {
+    if (doc.getElementById('rams-fit')) return;
+    const st = doc.createElement('style');
+    st.id = 'rams-fit';
+    st.textContent = '.rwrap2{table-layout:fixed;width:100%}' +
+      '.rams-doc .q-brand-header{grid-template-columns:150px 1fr;width:100%}' +
+      '.rams-doc .q-brand-right{flex-wrap:wrap;justify-content:center;gap:6px;padding:6px}' +
+      '.rams-doc .q-brand-badge{height:40px;max-width:46px}' +
+      '.rams-doc .q-brand-badge-tall{height:48px;max-width:28px}';
+    doc.head.appendChild(st);
+  } catch (e) {}
+}
+// Full-screen viewer (sigViewSigned pattern: dark toolbar, iframe srcdoc, print via
+// contentWindow). onReady runs after the display styles — callers add signature injection.
+function ramsViewDoc(html, title, onReady) {
+  const old = document.getElementById('rams-view');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-view';
+  // 18000: ABOVE .cw-modal-back (17000) so the document is readable over the review/
+  // manage/panel dialogs it opens from, below the login gate (20001). The sigViewSigned
+  // 15000 this was copied from sat UNDER the dialogs — Neal's preview bug.
+  wrap.style.cssText = 'position:fixed;inset:0;background:#334155;z-index:18000;display:flex;flex-direction:column';
+  wrap.innerHTML =
+    '<div style="display:flex;gap:8px;justify-content:flex-end;align-items:center;padding:10px 14px;background:#1e293b">' +
+      '<span style="color:#cbd5e1;font-size:12px;margin-right:auto">' + cwEsc(title) + '</span>' +
+      '<button onclick="document.getElementById(\'rams-view-frame\').contentWindow.print()" style="background:#fff;border:0;border-radius:7px;padding:7px 12px;font-size:12px;font-weight:600;cursor:pointer">🖨 Print / PDF</button>' +
+      '<button onclick="document.getElementById(\'rams-view\').remove()" style="background:none;border:1px solid #64748b;color:#e2e8f0;border-radius:7px;padding:7px 12px;font-size:12px;cursor:pointer">✕ Close</button>' +
+    '</div>' +
+    '<iframe id="rams-view-frame" title="RAMS document" style="flex:1;border:0;background:#fff"></iframe>';
+  document.body.appendChild(wrap);
+  const iframe = document.getElementById('rams-view-frame');
+  iframe.onload = () => {
+    ramsInjectDisplayStyles(iframe.contentDocument);
+    if (onReady) onReady(iframe.contentDocument);
+  };
+  iframe.srcdoc = html;
+}
+// ── issue + management (per-operative signing links) ─────────────────────────
+// Links use sign.html?r=TOKEN (r, not t — sign.html branches to the sign-rams edge fn).
+function ramsLinkFor(token) {
+  return location.origin + location.pathname.replace(/[^/]*$/, '') + 'sign.html?r=' + token;
+}
+function ramsCopyLink(token, btn) {
+  navigator.clipboard.writeText(ramsLinkFor(token)).then(() => {
+    if (btn) { btn.textContent = '✓ Copied'; setTimeout(() => { btn.textContent = '📋 Copy link'; }, 1600); }
+  }, () => toast('Copy failed — clipboard blocked'));
+}
+// Pick the operatives. Staff come pre-listed; subbies are added by name. Issue freezes
+// the SAVED approved review — unsaved dialog edits are guarded with a confirm.
+// Canonical fingerprint — jsonb re-orders object keys, so a raw JSON.stringify of the
+// stored review never matches a freshly collected one even when nothing changed.
+function ramsReviewKey(r) {
+  r = r || {};
+  return JSON.stringify([(r.modules || []).slice().sort(), (r.modifiersOff || []).slice().sort(),
+    (r.modifiersOn || []).slice().sort(),
+    r.extraNotes || '', r.nearestAE || '', r.emergencyContacts || '', r.workingHours || '']);
+}
+function ramsIssueDialog() {
+  const row = ramsDialogRow;
+  if (!row || row.status !== 'approved') { toast('Approve the review first'); return; }
+  if (document.getElementById('rams-notes') &&
+      ramsReviewKey(ramsCollectReview()) !== ramsReviewKey(row.review) &&
+      !confirm('This review has UNSAVED changes — issuing freezes the saved, approved version. Continue with the saved version?')) return;
+  const old = document.getElementById('rams-issue-dialog');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-issue-dialog';
+  // Layer stack: review/manage dialogs 17000 (.cw-modal-back default) → THIS 17500 →
+  // document viewer 18000 → login gate 20001. The original inline 10000 OVERRODE the
+  // class and hid this picker under the review dialog ("button does nothing", QT-0085).
+  const opRow = (name, checked) => {
+    const em = ((ramsLibrary && ramsLibrary.operativeEmails) || {})[name];
+    // ✉ tag: click to set/change the person's email (saved to the library, DB-only —
+    // the personal-data rule). No email = link gets copied by hand for that person.
+    const tag = '<button type="button" class="no-print" onclick="event.preventDefault();ramsSetOpEmail(\'' + cwEsc(name).replace(/'/g, "\\'").replace(/"/g, '&quot;') + '\',this)" ' +
+      'style="margin-left:auto;font-size:10px;border:1px solid var(--bd);border-radius:8px;background:none;cursor:pointer;padding:1px 7px;color:' + (em ? 'var(--i3)' : '#B45309') + '" ' +
+      'title="' + (em ? cwEsc(em) + ' — click to change' : 'No email — link will need copying by hand. Click to add.') + '">' + (em ? '✉' : 'no email') + '</button>';
+    return '<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;font-size:13px">' +
+      '<input type="checkbox" data-name="' + cwEsc(name).replace(/"/g, '&quot;') + '" ' + (checked ? 'checked' : '') + '><span>' + cwEsc(name) + '</span>' + tag + '</label>';
+  };
+  wrap.innerHTML =
+    '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:420px;max-width:95vw">' +
+      '<h3>Issue to the crew — ' + cwEsc(row.quote_ref) + '</h3>' +
+      '<div style="font-size:12px;color:var(--i2);margin-bottom:10px">This freezes the approved document and creates a private signing link for each person. Links are valid for 90 days and can be re-issued any time.</div>' +
+      '<div style="font-weight:700;font-size:12px;margin-bottom:4px">Who is working on this job?</div>' +
+      '<div id="rams-ops" style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;max-height:220px;overflow-y:auto">' +
+        // staff (directors) + the crew list from the library (rams_library.operatives —
+        // NOT the staff table, which stays directors-only for the quote sign-off dropdown)
+        [...new Set([...staffList, ...((ramsLibrary && ramsLibrary.operatives) || [])])].map(n => opRow(n, false)).join('') +
+      '</div>' +
+      '<div style="display:flex;gap:6px;margin-top:8px">' +
+        '<input type="text" id="rams-op-new" placeholder="Add another (e.g. a subcontractor)" style="flex:1" onkeydown="if(event.key===\'Enter\')ramsAddOpRow()">' +
+        '<button class="btn btn-outline btn-sm" onclick="ramsAddOpRow()">＋ Add</button>' +
+      '</div>' +
+      '<div class="cw-modal-btns" style="margin-top:14px">' +
+        '<button class="btn btn-primary" onclick="ramsDoIssue()">▶ Create signing links</button>' +
+        '<button class="btn btn-outline" onclick="document.getElementById(\'rams-issue-dialog\').remove()">Cancel</button>' +
+      '</div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+}
+function ramsAddOpRow() {
+  const inp = document.getElementById('rams-op-new');
+  const name = (inp.value || '').trim();
+  if (!name) return;
+  const box = document.getElementById('rams-ops');
+  const label = document.createElement('label');
+  label.style.cssText = 'display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;font-size:13px';
+  label.innerHTML = '<input type="checkbox" checked><span></span>';
+  label.querySelector('input').dataset.name = name;
+  label.querySelector('span').textContent = name;
+  box.appendChild(label);
+  inp.value = ''; inp.focus();
+}
+// Set/change an operative's email — library map (name → email), DB-only.
+async function ramsSetOpEmail(name, btn) {
+  const cur = ((ramsLibrary.operativeEmails || {})[name]) || '';
+  const v = (prompt('Email address for ' + name + ':', cur) || '').trim();
+  if (!v || v === cur) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { toast('That doesn’t look like an email address'); return; }
+  (ramsLibrary.operativeEmails = ramsLibrary.operativeEmails || {})[name] = v;
+  await ramsPersistLibrary();
+  if (btn) { btn.textContent = '✉'; btn.style.color = 'var(--i3)'; btn.title = v + ' — click to change'; }
+  toast(name + ' — email saved');
+}
+// Fire the send-rams-links edge fn (staff session = the auth; the fn reads the row and
+// builds links itself). Failure is never fatal — links stay copyable from the dialog.
+// ── CRM push (2026-09-05, event-driven by contract — NOT the manual-confirm quote push) ──
+// Fires after every status change: draft saved / approved / issued / revision / un-issue /
+// operative added. Signature events push server-side from sign-rams. The edge fn looks the
+// card up from quotes.airtable_card_id and writes the four agreed fields; a quote with no
+// linked card is a silent skip. Failure is a toast, never a blocker — the CRM is a mirror.
+// sel = { id } (a rams_docs row) or { ref } (the latest row for that quote).
+async function ramsPushCrm(sel) {
+  if (!USE_SUPABASE) return;
+  try {
+    await ensureFreshToken();
+    const res = await fetch(SUPABASE_URL + '/functions/v1/push-rams-crm', {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
+      body: JSON.stringify(sel),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.ok) { toast('⚠ CRM not updated: ' + ((d && d.error) || 'HTTP ' + res.status)); return; }
+    if (d.skipped) return;                                 // no card linked — nothing to say
+    toast('📇 CRM updated — RAMS ' + (d.payload && d.payload.status || ''));
+  } catch (e) { toast('⚠ CRM not updated: ' + e.message); }
+}
+// opts.mode 'chase' (+ opts.signers = indices) re-sends the CHASE wording to unsigned
+// operatives who already have their link — the CRM-agreed human-click chase (2026-09-05).
+async function ramsSendLinks(id, opts) {
+  if (!USE_SUPABASE) return;
+  opts = opts || {};
+  const chase = opts.mode === 'chase';
+  try {
+    await ensureFreshToken();
+    const res = await fetch(SUPABASE_URL + '/functions/v1/send-rams-links', {
+      method: 'POST',
+      headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
+      body: JSON.stringify(chase ? { id, mode: 'chase', signers: opts.signers || undefined } : { id }),
+    });
+    const d = await res.json().catch(() => ({}));
+    if (!res.ok || !d.ok) { toast('⚠ ' + ((d && d.error) || 'Emails not sent') + (chase ? '' : ' — use the copy-link buttons')); return; }
+    const bits = [];
+    if (d.sent && d.sent.length) bits.push(chase ? '🔔 chased ' + d.sent.join(', ') : '✉ emailed ' + d.sent.length + ' link' + (d.sent.length === 1 ? '' : 's'));
+    if (d.noEmail && d.noEmail.length) bits.push(d.noEmail.join(', ') + ': no email — copy by hand');
+    if (d.failed && d.failed.length) bits.push('⚠ failed: ' + d.failed.join(', '));
+    toast(bits.join(' · ') || 'Nothing to email');
+    ramsRefreshStatuses();
+    try { const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + id); if (rows && rows[0] && document.getElementById('rams-dialog')) ramsManageDialog(rows[0]); } catch (e) {}
+  } catch (e) { toast('⚠ Email send failed: ' + e.message + ' — use the copy-link buttons'); }
+}
+async function ramsDoIssue() {
+  const row = ramsDialogRow;
+  // The a95ed31 typed-but-not-Added gate (third site in the app): text sitting in the
+  // add box would otherwise be silently dropped and that person never gets a link.
+  const pending = (document.getElementById('rams-op-new') || { value: '' }).value.trim();
+  if (pending && !confirm('You typed “' + pending + '” but didn’t press ＋ Add — issue WITHOUT them?\n\n(Cancel goes back so you can add them.)')) return;
+  const names = [...document.querySelectorAll('#rams-ops input[type=checkbox]:checked')].map(c => c.dataset.name).filter(Boolean);
+  if (!names.length) { toast('Pick at least one operative'); return; }
+  const now = new Date();
+  const meta = { approvedBy: row.approved_by, approvedAt: row.approved_at, revision: row.revision, issuedAt: now.toISOString() };
+  const doc = ramsDocHtml(row.quote_ref, row.review || {}, meta);
+  const hash = await sigSha256(doc);
+  const emails = (ramsLibrary && ramsLibrary.operativeEmails) || {};
+  const body = {
+    status: 'issued', doc_html: doc, doc_hash: hash,
+    signers: names.map(n => ({ name: n, token: sigToken(), email: emails[n] || null })),
+    issued_at: now.toISOString(),
+    expires_at: new Date(now.getTime() + 90 * 24 * 3600 * 1000).toISOString(),
+  };
+  try { await sb('PATCH', 'rams_docs', body, '?id=eq.' + row.id); }
+  catch (e) { toast('Issue failed: ' + e.message); return; }
+  ['rams-issue-dialog', 'rams-dialog'].forEach(id => { const d = document.getElementById(id); if (d) d.remove(); });
+  ramsRefreshStatuses();
+  try { const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + row.id); if (rows && rows[0]) ramsManageDialog(rows[0]); } catch (e) {}
+  ramsSendLinks(row.id);
+  ramsPushCrm({ id: row.id });                             // Issued + issued date + link → CRM
+}
+// Management view for an ISSUED / SIGNED document: per-signer state + links,
+// re-issue, add operative, un-issue (nothing signed yet), revise (supersedes).
+function ramsManageDialog(row) {
+  ramsDialogRef = row.quote_ref; ramsDialogRow = row;
+  const old = document.getElementById('rams-dialog');
+  if (old) old.remove();
+  const expired = row.expires_at && new Date(row.expires_at) < new Date();
+  const signers = row.signers || [];
+  const signedCount = signers.filter(s => s.signed_at).length;
+  const signerRow = (s, i) => {
+    const st = s.signed_at ? '<span style="color:#15803D;font-weight:600">✓ signed ' + sigDateOnly(s.signed_at) + '</span>'
+      : s.viewed_at ? '<span style="color:#B45309">👁 opened ' + sigDateOnly(s.viewed_at) + ' — not signed</span>'
+      : s.email_sent_at ? '<span style="color:var(--i3)">✉ emailed ' + sigDateOnly(s.email_sent_at) + ' — not opened</span>'
+      : '<span style="color:var(--i3)">' + (s.email ? '⏳ not emailed yet' : '⏳ no email') + '</span>';
+    // Chase trail sits beside the state so "opened 2 Sep · chased 9 Sep" reads as one line.
+    const chased = (!s.signed_at && s.chased_at)
+      ? ' <span style="color:#B45309;font-size:12px">· 🔔 chased ' + sigDateOnly(s.chased_at) + (s.chase_count > 1 ? ' (×' + s.chase_count + ')' : '') + '</span>' : '';
+    // fix 21: emails are manageable HERE, not just at issue — add an address and it
+    // sends immediately; an address that's never successfully sent gets a Send button.
+    // Already emailed + still unsigned → 🔔 Chase (same link, reminder wording; one click).
+    const act = s.signed_at || expired ? ''
+      : !s.email ? '<button class="btn btn-outline btn-sm" onclick="ramsSignerAddEmail(' + i + ')">✉ add email</button>'
+      : !s.email_sent_at ? '<button class="btn btn-outline btn-sm" onclick="ramsSendLinks(' + row.id + ')">✉ Send</button>'
+      : '<button class="btn btn-outline btn-sm" onclick="ramsChase(' + row.id + ',' + i + ')" title="Send a reminder with their existing link">🔔 Chase</button>';
+    const copy = (!s.signed_at && !expired)
+      ? '<button class="btn btn-outline btn-sm" onclick="ramsCopyLink(\'' + s.token + '\',this)">📋 Copy link</button>' : '';
+    return '<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--bd)">' +
+      '<span style="flex:1;font-weight:600;font-size:13px">' + cwEsc(s.name) + '</span>' + st + chased + act + copy + '</div>';
+  };
+  const chaseable = signers.filter(s => !s.signed_at && s.email && s.email_sent_at);
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back"><div class="cw-modal" style="width:560px;max-width:95vw;max-height:88vh;overflow-y:auto">' +
+      '<h3 style="margin-bottom:2px">🦺 RAMS — ' + cwEsc(row.quote_ref) + (row.status === 'signed' ? ' · <span style="color:#15803D">✓ all signed</span>' : '') + '</h3>' +
+      '<div style="font-size:12px;color:var(--i3);margin-bottom:10px">' + cwEsc(row.customer || '') +
+        ' · revision ' + row.revision + ' · issued ' + sigDateOnly(row.issued_at) +
+        (expired ? ' · <span style="color:#DC2626;font-weight:600">links EXPIRED ' + sigDateOnly(row.expires_at) + ' — re-issue below</span>'
+                 : ' · links valid until ' + sigDateOnly(row.expires_at)) + '</div>' +
+      '<div style="border:1px solid var(--bd);border-radius:8px;padding:4px 12px;margin-bottom:12px">' +
+        signers.map(signerRow).join('') +
+        '<div style="padding:6px 0;font-size:11px;color:var(--i3)">' + signedCount + ' of ' + signers.length + ' signed</div>' +
+      '</div>' +
+      '<div class="cw-modal-btns" style="flex-wrap:wrap">' +
+        (signers.some(s => !s.signed_at && s.email && !s.email_sent_at) && !expired
+          ? '<button class="btn btn-primary" onclick="ramsSendLinks(' + row.id + ')">✉ Send unsent links</button>' : '') +
+        (chaseable.length > 1 && !expired
+          ? '<button class="btn btn-outline" onclick="ramsChaseAll()" title="Reminder to everyone who has a link but hasn\'t signed">🔔 Chase all unsigned (' + chaseable.length + ')</button>' : '') +
+        '<button class="btn btn-outline" onclick="ramsViewIssued()">👁 View document</button>' +
+        (row.status !== 'signed' ? '<button class="btn btn-outline" onclick="ramsReissue()" title="New links for everyone not yet signed; validity restarts at 90 days">🔁 Re-issue links</button>' : '') +
+        (row.status !== 'signed' ? '<button class="btn btn-outline" onclick="ramsAddOperative()">＋ Add operative</button>' : '') +
+        (signedCount === 0 ? '<button class="btn btn-outline" onclick="ramsUnissue()" title="Nothing signed yet — withdraw the links and go back to the approved review">↩ Un-issue</button>' : '') +
+        '<button class="btn btn-outline" onclick="ramsRevise()" title="Site or scope changed? A revision supersedes ALL signatures and everyone re-signs">✎ Revise…</button>' +
+        '<button class="btn btn-outline" onclick="document.getElementById(\'rams-dialog\').remove()">Close</button>' +
+      '</div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+}
+// 🔔 Chase — the CRM's 7-day task deep-links here; a PERSON clicks, we send. One
+// operative from their row, or everyone unsigned from the footer (confirm names the
+// people because it's N emails from one click). Same links, reminder wording, no rotation.
+function ramsChase(id, idx) { ramsSendLinks(id, { mode: 'chase', signers: [idx] }); }
+function ramsChaseAll() {
+  const row = ramsDialogRow;
+  if (!row) return;
+  const who = (row.signers || []).filter(s => !s.signed_at && s.email && s.email_sent_at).map(s => s.name);
+  if (!who.length) { toast('Nobody to chase'); return; }
+  if (!confirm('Send a reminder email to ' + who.join(', ') + '?')) return;
+  ramsSendLinks(row.id, { mode: 'chase' });
+}
+function ramsViewIssued() {
+  const row = ramsDialogRow;
+  if (!row || !row.doc_html) { toast('No frozen document on this record'); return; }
+  ramsViewDoc(row.doc_html, 'RAMS — ' + row.quote_ref + ' · revision ' + row.revision + ' · issued ' + sigDateOnly(row.issued_at),
+    doc => ramsInjectIntoDoc(doc, row));
+}
+// Office-copy signature injection — the index.html PORT of sign.html's
+// injectRamsSignatures (⚠ KEEP THE TWO IN STEP; works from the raw row shape:
+// signature_image / typed_name / signed_at). Signatures are DATA — doc_html and
+// its hash are never touched; painting happens at display time only.
+function ramsInjectIntoDoc(doc, row) {
+  try {
+    const sigs = row.signers || [];
+    if (!sigs.length) return;                        // not issued — the blank wet-fallback grid stands
+    const signed = sigs.filter(s => s.signed_at);
+    const tbl = doc.querySelector('.r-sign-tbl tbody');
+    if (tbl) {
+      // fix 25: ONE row per issued operative — names always printed, signature/date
+      // filled when signed, visibly BLANK when not — so a printed copy is unambiguous
+      // about completeness. Two spare blank rows kept for wet-signature fallback.
+      tbl.innerHTML = '<tr><td></td><td></td><td></td></tr>'.repeat(sigs.length + 2);
+      const rows = tbl.querySelectorAll('tr');
+      sigs.forEach((s, i) => {
+        const tds = rows[i].querySelectorAll('td');
+        tds[0].textContent = s.signed_at ? (s.typed_name || s.name) : s.name;
+        tds[1].innerHTML = s.signature_image && s.signed_at ? '<img src="' + s.signature_image + '" alt="signature" style="max-height:34px;max-width:160px;display:block">' : '';
+        tds[2].textContent = s.signed_at ? new Date(s.signed_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+      });
+      const anchorTbl = doc.querySelector('.r-sign-tbl');
+      if (!doc.getElementById('rams-signed-count')) {
+        const cnt = doc.createElement('div');
+        cnt.id = 'rams-signed-count';
+        cnt.style.cssText = 'font-size:12px;font-weight:700;margin-top:6px;color:' + (signed.length === sigs.length ? '#15803D' : '#B45309');
+        cnt.textContent = signed.length + ' of ' + sigs.length + ' signed';
+        anchorTbl.parentNode.insertBefore(cnt, anchorTbl.nextSibling);
+      }
+    }
+    if (!signed.length && !row.issued_at) return;
+    const anchor = doc.getElementById('rams-signed-count') || doc.querySelector('.r-sign-tbl');
+    if (anchor && !doc.getElementById('esign-audit')) {
+      const fmt = iso => iso ? new Date(iso).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' }) +
+        ' at ' + new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }) : '';
+      const audit = doc.createElement('div');
+      audit.id = 'esign-audit';
+      audit.style.cssText = 'margin:16px 0 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid;overflow-wrap:anywhere';
+      audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + cwEsc(row.quote_ref) + ' · revision ' + row.revision + '</div>' +
+        (row.issued_at ? '<div>Issued to the crew: ' + fmt(row.issued_at) + '</div>' : '') +
+        sigs.map(s => '<div>' + cwEsc(s.name) + ': ' +
+          (s.viewed_at ? 'opened ' + fmt(s.viewed_at) + ' · ' : '') +
+          (s.signed_at ? 'signed ' + fmt(s.signed_at) + (s.typed_name ? ' (' + (s.name_adopted ? 'confirmed name' : 'typed name') + ': ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') + '</div>').join('') +
+        '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
+        '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. Full evidence (date, time, network address, device) is held on record.</div>';
+      anchor.parentNode.insertBefore(audit, anchor.nextSibling);
+      sigSha256(row.doc_html).then(h => {
+        const el = doc.getElementById('esign-hash');
+        if (el) el.textContent = 'Document fingerprint (SHA-256): ' + h;
+      });
+    }
+  } catch (e) {}
+}
+async function ramsReissue() {
+  const row = ramsDialogRow;
+  const unsigned = (row.signers || []).filter(s => !s.signed_at).length;
+  if (!confirm('Re-issue: ' + unsigned + ' unsigned operative(s) get NEW links (old ones stop working) and validity restarts at 90 days. Signed records are untouched. Continue?')) return;
+  // new token = new email: carry the address, reset email_sent_at so the send fn re-sends
+  const emails = (ramsLibrary && ramsLibrary.operativeEmails) || {};
+  const signers = (row.signers || []).map(s => s.signed_at ? s : { name: s.name, token: sigToken(), email: s.email || emails[s.name] || null });
+  const body = { signers, expires_at: new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString() };
+  try { await sb('PATCH', 'rams_docs', body, '?id=eq.' + row.id); }
+  catch (e) { toast('Re-issue failed: ' + e.message); return; }
+  const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + row.id);
+  ramsManageDialog(rows[0]); ramsRefreshStatuses();
+  ramsSendLinks(row.id);
+}
+// fix 21a: add an email to a signer on an already-issued RAMS — stores it on the signer,
+// offers it into the crew list for future jobs, then sends their link straight away.
+async function ramsSignerAddEmail(idx) {
+  const row = ramsDialogRow;
+  const s = (row.signers || [])[idx];
+  if (!s) return;
+  const v = (prompt('Email address for ' + s.name + ':') || '').trim();
+  if (!v) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { toast('That doesn’t look like an email address'); return; }
+  const signers = row.signers.map((x, i) => i === idx ? { ...x, email: v } : x);
+  try { await sb('PATCH', 'rams_docs', { signers }, '?id=eq.' + row.id); }
+  catch (e) { toast('Save failed: ' + e.message); return; }
+  if (!((ramsLibrary.operativeEmails || {})[s.name]) &&
+      confirm('Remember ' + v + ' for ' + s.name + ' on future jobs too?')) {
+    (ramsLibrary.operativeEmails = ramsLibrary.operativeEmails || {})[s.name] = v;
+    await ramsPersistLibrary();
+  }
+  ramsSendLinks(row.id);
+}
+async function ramsAddOperative() {
+  const name = (prompt('Operative name (e.g. a subcontractor joining the job):') || '').trim();
+  if (!name) return;
+  const known = ((ramsLibrary && ramsLibrary.operativeEmails) || {})[name] || '';
+  const email = (prompt('Their email for the signing link (blank = copy the link by hand):', known) || '').trim() || null;
+  const row = ramsDialogRow;
+  const signers = [...(row.signers || []), { name, token: sigToken(), email }];
+  try { await sb('PATCH', 'rams_docs', { signers, status: 'issued', signed_at: null }, '?id=eq.' + row.id); }
+  catch (e) { toast('Add failed: ' + e.message); return; }
+  const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + row.id);
+  ramsManageDialog(rows[0]); ramsRefreshStatuses();
+  if (email) ramsSendLinks(row.id); else toast(name + ' added — copy their link from the list');
+  ramsPushCrm({ id: row.id });                             // signatures string gains a name → CRM
+}
+async function ramsUnissue() {
+  const row = ramsDialogRow;
+  if ((row.signers || []).some(s => s.signed_at)) { toast('Signatures already given — use Revise instead'); return; }
+  if (!confirm('Withdraw all links and return this RAMS to Approved? Nothing has been signed, so nothing is lost.')) return;
+  try { await sb('PATCH', 'rams_docs', { status: 'approved', doc_html: null, doc_hash: null, signers: [], issued_at: null, expires_at: null }, '?id=eq.' + row.id); }
+  catch (e) { toast('Un-issue failed: ' + e.message); return; }
+  const d = document.getElementById('rams-dialog');
+  if (d) d.remove();
+  toast('Un-issued — back to Approved');
+  ramsRefreshStatuses();
+  ramsPushCrm({ id: row.id });                             // Approved + "Not yet issued" → CRM
+}
+async function ramsRevise() {
+  const row = ramsDialogRow;
+  if (!confirm('Create revision ' + (row.revision + 1) + '? The current document is superseded, ALL signatures with it, and everyone must sign the new version before continuing the affected work.')) return;
+  let newRow;
+  try {
+    const ins = await sb('POST', 'rams_docs', [{ quote_ref: row.quote_ref, customer: row.customer || '', revision: row.revision + 1, status: 'draft', review: row.review || {} }], '');
+    newRow = ins && ins[0];
+    await sb('PATCH', 'rams_docs', { status: 'superseded', superseded_by: newRow.id }, '?id=eq.' + row.id);
+  } catch (e) { toast('Revise failed: ' + e.message); return; }
+  const d = document.getElementById('rams-dialog');
+  if (d) d.remove();
+  toast('Revision ' + newRow.revision + ' created as a draft — review and approve it');
+  ramsRefreshStatuses();
+  ramsPushCrm({ id: newRow.id });                          // revision → Drafted, signatures reset → CRM
+  ramsOpenDialog(row.quote_ref);
+}
+
+// Unified delete guard for QUOTES (fix 24 — one dialog, one decision; supersedes the old
+// contract-then-RAMS double interrogation). Gathers the facts from BOTH signing systems,
+// lists everything that survives (kept-forever rule) and everything that gets disabled,
+// then acts atomically with the delete. sigDeleteGuard stays for DESIGN contracts.
+// RAMS records have NO FK to quotes — they survive deletion by design; live unsigned
+// crew links are superseded (edge fn then refuses them; signed keep read access).
+async function quoteDeleteGuard(ref, customer) {
+  let sigRows = [], ramsRows = [];
+  if (USE_SUPABASE) {
+    try { sigRows = await sigFetchRows(ref); } catch (e) {}
+    try { ramsRows = await sb('GET', 'rams_docs', null, '?quote_ref=eq.' + encodeURIComponent(ref) + '&select=id,status,signers,expires_at,revision,signed_at&order=id.desc'); } catch (e) {}
+  }
+  const a = sigRecordFor(ref);
+  const signedC = sigRows.find(r => r.status === 'signed');
+  const activeC = sigRows.find(sigIsActive);
+  const paper = a && a.cm && a.cm.paperSigned;
+  const ramsSignedRows = ramsRows.filter(r => (r.signers || []).some(s => s.signed_at));
+  const latestRams = ramsRows[0];
+  const ramsLive = latestRams && latestRams.status === 'issued' && !(latestRams.expires_at && new Date(latestRams.expires_at) < new Date());
+  if (!signedC && !activeC && !paper && !ramsSignedRows.length && !ramsLive) {
+    return confirm('Delete ' + ref + (customer ? ' (' + customer + ')' : '') + '? This cannot be undone.');
+  }
+  const kept = [], acts = [];
+  if (signedC) {
+    const names = (signedC.signers || []).filter(s => s.signed_at).map(s => s.typed_name || s.name).join(' and ');
+    kept.push('a <strong>signed contract</strong> (' + sigDateOnly(signedC.signed_at) + (names ? ', ' + cwEsc(names) : '') + ') — kept permanently, stays in the Contracts panel marked as deleted');
+  }
+  if (paper) kept.push('a contract <strong>signed on paper</strong> (' + cwEsc(paper.date || '') + ') — record kept');
+  if (ramsSignedRows.length) {
+    const n = (ramsSignedRows[0].signers || []).filter(s => s.signed_at).length;
+    kept.push('<strong>signed RAMS</strong> record' + (ramsSignedRows.length > 1 ? 's' : '') + ' (' + n + ' operative' + (n === 1 ? '' : 's') + ') — kept permanently, stays in the RAMS panel marked as deleted');
+  }
+  if (activeC) acts.push('the client’s live contract signing link is revoked');
+  if (ramsLive) acts.push('outstanding crew RAMS links are disabled');
+  const ok = await new Promise(resolve => {
+    const old = document.getElementById('q-del-dialog');
+    if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'q-del-dialog';
+    wrap.innerHTML =
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:500px;max-width:95vw">' +
+        '<h3>Delete ' + cwEsc(ref) + (customer ? ' — ' + cwEsc(customer) : '') + '?</h3>' +
+        (kept.length ? '<div style="font-size:13px;color:var(--i2);margin-bottom:8px">This quote has legal records, which deletion does NOT destroy:</div>' +
+          '<ul style="font-size:13px;color:var(--i2);margin:0 0 10px 18px">' + kept.map(k => '<li style="margin-bottom:4px">' + k + '</li>').join('') + '</ul>' : '') +
+        (acts.length ? '<div style="font-size:13px;color:var(--i2);margin-bottom:10px">As part of the delete: ' + acts.join('; ') + '.</div>' : '') +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:16px">The quote itself is removed from the app and cannot be recovered.</div>' +
+        '<div class="cw-modal-btns">' +
+          '<button class="btn btn-red" id="q-del-go">Delete quote anyway</button>' +
+          '<button class="btn btn-outline" id="q-del-cancel">Cancel</button>' +
+        '</div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('q-del-go').onclick = () => done(true);
+    document.getElementById('q-del-cancel').onclick = () => done(false);
+  });
+  if (!ok) return false;
+  if (activeC) { try { await sigRevokeRow(activeC.id); toast('Contract signing link revoked'); } catch (e) {} }
+  if (ramsLive) { try { await sb('PATCH', 'rams_docs', { status: 'superseded' }, '?id=eq.' + latestRams.id); toast('Crew RAMS links disabled'); } catch (e) {} }
+  return true;
+}
+
+// ── 🦺 RAMS panel — the cross-job worklist (openContractsPanel pattern) ───────
+// Sections: Needs attention (approved-not-issued, expired links, drafts, orphans
+// with live links) → Out for signature → Signed (newest first). Dead quotes
+// (Declined/Superseded) drop their unsigned noise; signed rows always show.
+async function openRamsPanel() {
+  if (!USE_SUPABASE) return;
+  let rows;
+  try { rows = await sbAllPages('rams_docs', '?select=id,quote_ref,customer,status,revision,signers,approved_at,issued_at,expires_at,signed_at&order=id'); }
+  catch (e) { toast('Could not load RAMS records: ' + e.message); return; }
+  const latest = {};
+  rows.forEach(r => { latest[r.quote_ref] = r; });     // ascending id → latest wins
+  const attention = [], out = [], signedList = [];
+  const dayCount = iso => Math.floor((Date.now() - new Date(iso).getTime()) / 86400000);
+  Object.values(latest).forEach(r => {
+    const sq = savedQuotes.find(q => q.ref === r.quote_ref);
+    const dead = sq && SIG_DEAD_STATUSES.includes(sq.status);
+    const base = { ref: r.quote_ref, customer: r.customer || (sq && sq.customer) || '', row: r };
+    const expired = r.expires_at && new Date(r.expires_at) < new Date();
+    if (r.status === 'signed') { signedList.push({ ...base, when: r.signed_at, note: 'signed ' + sigDateOnly(r.signed_at) + (sq ? '' : ' · (quote deleted — record kept)') + (dead ? ' · (quote since ' + sq.status + ')' : '') }); return; }
+    if (!sq) {
+      // orphan: quote deleted after issue — unsigned links were superseded by the
+      // delete guard; anything still live here predates the guard. Signed-partial kept.
+      if ((r.signers || []).some(s => s.signed_at)) signedList.push({ ...base, when: r.issued_at, note: 'partially signed · quote deleted — record kept' });
+      return;
+    }
+    if (dead) return;                                  // dead deal, nothing signed — closed story
+    if (r.status === 'draft') { attention.push({ ...base, when: r.approved_at || r.issued_at || new Date().toISOString(), kind: 'Draft — to review' }); return; }
+    if (r.status === 'approved') { attention.push({ ...base, when: r.approved_at, kind: 'Approved ' + sigDateOnly(r.approved_at) + ' — not issued' }); return; }
+    if (r.status === 'issued') {
+      const left = (r.signers || []).filter(s => !s.signed_at).length;
+      if (expired) { attention.push({ ...base, when: r.issued_at, kind: 'Links expired ' + sigDateOnly(r.expires_at) + ' — ' + left + ' to sign, re-issue' }); return; }
+      const d = dayCount(r.issued_at);
+      out.push({ ...base, when: r.issued_at, note: left + ' to sign · issued ' + (d <= 0 ? 'today' : d + 'd ago') });
+      return;
+    }
+  });
+  attention.sort((a, b) => new Date(a.when) - new Date(b.when));
+  out.sort((a, b) => new Date(a.when) - new Date(b.when));
+  signedList.sort((a, b) => new Date(b.when) - new Date(a.when));
+  const rowHtml = e =>
+    '<div style="display:grid;grid-template-columns:74px minmax(0,180px) minmax(0,1fr) auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--bd);font-size:12px">' +
+      '<span style="font-family:\'DM Mono\',monospace;font-weight:600">' + cwEsc(e.ref) + '</span>' +
+      '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="' + cwEsc(e.customer) + '">' + cwEsc(e.customer) + '</span>' +
+      '<span style="color:var(--i2);overflow-wrap:anywhere" title="' + cwEsc(e.kind || e.note || '') + '">' + cwEsc(e.kind || e.note || '') + '</span>' +
+      '<span style="white-space:nowrap">' +
+        (savedQuotes.some(q => q.ref === e.ref)
+          ? '<button class="btn btn-outline btn-sm" onclick="ramsFromSaved(\'' + e.ref + '\')">Manage</button>'
+          : '<button class="btn btn-outline btn-sm" onclick="ramsPanelView(' + e.row.id + ')">👁 View</button>') +
+      '</span>' +
+    '</div>';
+  const section = (title, list, open) =>
+    '<details ' + (open ? 'open' : '') + ' style="margin-bottom:12px"><summary style="cursor:pointer;font-weight:700;font-size:13px;padding:4px 0">' + title + ' (' + list.length + ')</summary>' +
+    (list.length ? list.map(rowHtml).join('') : '<div style="font-size:12px;color:var(--i3);padding:6px 0">Nothing here.</div>') + '</details>';
+  const old = document.getElementById('rams-panel');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-panel';
+  wrap.innerHTML =
+    '<div class="cw-modal-back"><div class="cw-modal" style="width:620px;max-width:95vw;max-height:88vh;overflow-y:auto">' +
+      '<h3>🦺 RAMS overview</h3>' +
+      section('Needs attention', attention, true) +
+      section('Out for signature', out, true) +
+      section('Signed', signedList, signedList.length > 0 && signedList.length <= 6) +
+      '<div class="cw-modal-btns">' +
+        '<button class="btn btn-outline" onclick="ramsEmailWordingDialog()" title="The issue and reminder emails the crew receive — edit once, used on every send">✉ Email wording</button>' +
+        '<button class="btn btn-outline" onclick="document.getElementById(\'rams-panel\').remove()">Close</button>' +
+      '</div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+}
+
+// ── ✉ Email wording editor (2026-09-05) ──────────────────────────────────────
+// The two crew emails (issue link / chase reminder) live in rams_library.emailTemplates
+// so Neal reviews the wording ONCE and every send merges name + link into it (the CRM-
+// agreed "standard templates in the editable library"). Sent by the send-rams-links edge
+// fn, which reads the library and falls back to ITS copy of these defaults — keep the two
+// default sets identical. Plain text; blank line = paragraph; a line that is only {link}
+// becomes the green button. Saving refuses a body without {link} (nobody could sign).
+const RAMS_EMAIL_FIELDS = '{name} = first name · {job} = client name · {link} = their private signing link · {expiry} = link expiry date · {office} = office number';
+const RAMS_EMAIL_DEFAULTS = {
+  issue: {
+    subject: 'Site documents to sign — {job} job',
+    body:
+      'Hi {name},\n\n' +
+      'The Risk Assessment & Method Statement for the {job} job is ready for you. Read it through before you start work on site, then sign at the bottom of the page.\n\n' +
+      'Your private link:\n{link}\n\n' +
+      'Not sure about anything in it, or think something\'s missing or wrong? Raise it before you start — call the office on {office}.\n\n' +
+      'First Light Landscaping',
+  },
+  chase: {
+    subject: 'Reminder: site documents still to sign — {job} job',
+    body:
+      'Hi {name},\n\n' +
+      'A quick reminder — the Risk Assessment & Method Statement for the {job} job still needs your signature. Please read it through and sign at the bottom of the page before you start work on site.\n\n' +
+      'Your private link (valid until {expiry}):\n{link}\n\n' +
+      'Not sure about anything in it, or think something\'s missing or wrong? Raise it before you start — call the office on {office}.\n\n' +
+      'First Light Landscaping',
+  },
+};
+function ramsEmailTemplate(mode) {
+  const t = ramsLibrary && ramsLibrary.emailTemplates && ramsLibrary.emailTemplates[mode];
+  return (t && typeof t.subject === 'string' && t.subject.trim() && typeof t.body === 'string' && t.body.includes('{link}'))
+    ? { subject: t.subject, body: t.body, custom: true } : { ...RAMS_EMAIL_DEFAULTS[mode], custom: false };
+}
+function ramsEmailWordingDialog() {
+  if (!ramsLibrary) { toast('RAMS library not loaded'); return; }
+  const old = document.getElementById('rams-email-dialog');
+  if (old) old.remove();
+  const block = (mode, title, hint) => {
+    const t = ramsEmailTemplate(mode);
+    return '<div style="border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:12px">' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px"><strong style="font-size:13px;flex:1">' + title + '</strong>' +
+        '<span id="rams-em-state-' + mode + '" style="font-size:11px;color:var(--i3)">' + (t.custom ? 'custom wording' : 'default wording') + '</span>' +
+        '<button class="btn btn-outline btn-sm" onclick="ramsEmailReset(\'' + mode + '\')">↺ Reset to default</button></div>' +
+      '<div style="font-size:11px;color:var(--i3);margin-bottom:6px">' + hint + '</div>' +
+      '<label style="font-size:11px;color:var(--i3)">Subject</label>' +
+      '<input id="rams-em-subject-' + mode + '" value="' + cwEsc(t.subject) + '" style="width:100%;margin-bottom:6px">' +
+      '<label style="font-size:11px;color:var(--i3)">Email</label>' +
+      '<textarea id="rams-em-body-' + mode + '" rows="9" style="width:100%;resize:vertical;font-family:inherit;font-size:13px">' + cwEsc(t.body) + '</textarea>' +
+      '<div style="margin-top:6px"><button class="btn btn-outline btn-sm" onclick="ramsEmailPreview(\'' + mode + '\')">👁 Preview</button></div>' +
+      '<div id="rams-em-preview-' + mode + '" style="display:none;margin-top:8px;padding:10px 12px;background:#F8FAFC;border:1px solid var(--bd);border-radius:6px;font-size:13px;white-space:pre-line"></div>' +
+    '</div>';
+  };
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-email-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:640px;max-width:95vw;max-height:88vh;overflow-y:auto">' +
+      '<h3 style="margin-bottom:2px">✉ Crew email wording</h3>' +
+      '<div style="font-size:12px;color:var(--i3);margin-bottom:10px">Used on every send. Fields filled in automatically: ' + cwEsc(RAMS_EMAIL_FIELDS) + '. Blank line = new paragraph; a line that is just {link} becomes the green button.</div>' +
+      block('issue', 'Issue email — when links go out', 'Sent to each operative the moment you issue (and on re-issue / add operative).') +
+      block('chase', 'Chase reminder', 'Sent when you press 🔔 Chase. Same link they already have.') +
+      '<div class="cw-modal-btns">' +
+        '<button class="btn btn-primary" onclick="ramsEmailSave()">Save wording</button>' +
+        '<button class="btn btn-outline" onclick="document.getElementById(\'rams-email-dialog\').remove()">Cancel</button>' +
+      '</div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+}
+function ramsEmailReset(mode) {
+  document.getElementById('rams-em-subject-' + mode).value = RAMS_EMAIL_DEFAULTS[mode].subject;
+  document.getElementById('rams-em-body-' + mode).value = RAMS_EMAIL_DEFAULTS[mode].body;
+  document.getElementById('rams-em-state-' + mode).textContent = 'default wording (unsaved)';
+}
+// Local preview with sample values — same merge rules as the edge fn's text version.
+function ramsEmailPreview(mode) {
+  const sample = { name: 'Kieran', job: 'Michael Vanderstock', link: 'https://firstlightlandscaping.github.io/quote-tool/sign.html?r=…', expiry: sigDateOnly(new Date(Date.now() + 90 * 86400000).toISOString()), office: '0113 2580428' };
+  const merge = s => s.replace(/\{(name|job|link|expiry|office)\}/g, (m, k) => sample[k]);
+  const el = document.getElementById('rams-em-preview-' + mode);
+  el.textContent = 'Subject: ' + merge(document.getElementById('rams-em-subject-' + mode).value).replace(/\s+/g, ' ').trim() + '\n\n' + merge(document.getElementById('rams-em-body-' + mode).value);
+  el.style.display = '';
+}
+async function ramsEmailSave() {
+  const out = {};
+  for (const mode of ['issue', 'chase']) {
+    const subject = document.getElementById('rams-em-subject-' + mode).value.trim();
+    const body = document.getElementById('rams-em-body-' + mode).value.replace(/\r\n/g, '\n').trim();
+    const label = mode === 'issue' ? 'issue email' : 'chase reminder';
+    if (!subject) { toast('The ' + label + ' needs a subject'); return; }
+    if (!body.includes('{link}')) { toast('The ' + label + ' must contain {link} — without it nobody can sign'); return; }
+    // Identical to the default → store nothing, so a future default improvement flows through.
+    const d = RAMS_EMAIL_DEFAULTS[mode];
+    if (subject !== d.subject || body !== d.body) out[mode] = { subject, body };
+  }
+  if (Object.keys(out).length) ramsLibrary.emailTemplates = out; else delete ramsLibrary.emailTemplates;
+  await ramsPersistLibrary();
+  document.getElementById('rams-email-dialog').remove();
+  toast(Object.keys(out).length ? '✉ Email wording saved — used from the next send' : '✉ Email wording back to the defaults');
+}
+// View a RAMS record straight from the panel (orphans — no quote to open a dialog for).
+async function ramsPanelView(id) {
+  let row;
+  try { const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + id + '&select=*'); row = rows && rows[0]; }
+  catch (e) { toast('Could not load the record: ' + e.message); return; }
+  if (!row || !row.doc_html) { toast('No frozen document on this record'); return; }
+  ramsViewDoc(row.doc_html, 'RAMS — ' + row.quote_ref + ' · revision ' + row.revision + ' (quote deleted — record kept)',
+    doc => ramsInjectIntoDoc(doc, row));
+}
+
+// Preview from the review dialog: renders what's CURRENTLY ticked (unsaved edits included).
+function ramsPreviewDoc() {
+  if (!ramsDialogRef || !document.getElementById('rams-notes')) return;   // review dialog only
+  const review = ramsCollectReview();
+  const row = ramsDialogRow;
+  const meta = (row && row.status === 'approved')
+    ? { approvedBy: row.approved_by, approvedAt: row.approved_at, revision: row.revision }
+    : { revision: (row && row.revision) || 1 };
+  ramsViewDoc(ramsDocHtml(ramsDialogRef, review, meta), 'RAMS preview — ' + ramsDialogRef + ' (as currently ticked)');
+}
+
 function sigDeadStatusDialog(ref, status) {
   return new Promise(resolve => {
     const old = document.getElementById('sig-dead-dialog');
@@ -10201,6 +11276,7 @@ function renderSaved() {
         </select>
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract · To create'}</button>` : ''}
         ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
+        ${(status==='Accepted'||ramsStatusMap[sq.ref]) ? (rSt => `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();ramsFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${rSt.col};color:${rSt.col}" title="Risk Assessment &amp; Method Statement — click to manage">${rSt.label}</button>`)(ramsBadge(sq.ref)) : ''}
         ${(() => { const b = crmPushBadge(sq.ref); return b ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();${sq.airtableCardId ? `crmPushPanel('${sq.ref}')` : `crmListLink('${sq.ref}')`}" style="margin-left:4px;border-color:${b.col};color:${b.col}" title="${sq.airtableCardId ? 'Changes not yet pushed to the CRM — click to review and push' : 'Changes waiting, but this quote has no CRM card — link it first'}">${b.label}</button>` : ''; })()}
         <button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();duplicateQuote('${sq.ref}')" style="margin-left:4px" title="Duplicate this quote with a new reference number">⧉ Duplicate</button>
         <button class="btn btn-red btn-sm no-print" onclick="event.stopPropagation();deleteQuote('${sq.ref}')" style="margin-left:4px">Delete</button>
@@ -11946,6 +13022,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   renderStaff();
   populateSignDropdown();
   sigRefreshStatuses();   // fire-and-forget: e-signature badges + Signed sync
+  ramsRefreshStatuses();  // fire-and-forget: RAMS badges (no-ops until rams.sql has run)
+  ramsHandleDeepLink();   // ?rams=<ref> (CRM "RAMS Link") — no-op unless present + data loaded
   // QT ref is assigned at save time, not on load — no ref generation here
 });
 

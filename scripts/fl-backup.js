@@ -20,9 +20,10 @@ const TABLES = {
   quotes: 'ref', quote_lines: 'id', deliverables: 'code', materials: 'id',
   mpl: 'code', staff: 'id', group_templates: 'id', company_settings: 'id', qt_counter: 'id',
   contract_signing: 'id', design_packages: 'id', design_contracts: 'ref', dc_counter: 'id',
+  rams_docs: 'id',
 };
 // May not exist yet on the target DB (schema rolls out sandbox-first) — skip, don't abort.
-const OPTIONAL = new Set(['contract_signing', 'design_packages', 'design_contracts', 'dc_counter']);
+const OPTIONAL = new Set(['contract_signing', 'design_packages', 'design_contracts', 'dc_counter', 'rams_docs']);
 
 async function main() {
   const auth = await fetch(URL_ + '/auth/v1/token?grant_type=password', {
