@@ -3983,7 +3983,8 @@ function renderLines() {
             <td class="no-print"></td>
             <td class="no-print" style="vertical-align:middle;padding-left:20px">
               <button class="btn btn-outline btn-sm" onclick="${gl.misc?`toggleMiscEdit(${gl.id})`:`toggleLabEdit(${gl.id})`}" style="font-size:10px;padding:2px 6px;margin-bottom:2px" title="Edit">✏️</button><br>
-              <button class="del-btn" onclick="rmFromGroup(${gl.id})">×</button>
+              <button class="btn btn-outline btn-sm" onclick="rmFromGroup(${gl.id})" style="font-size:10px;padding:2px 6px;margin-bottom:2px" title="Remove from group — keeps the line on the quote as a standalone item">↩</button><br>
+              <button class="del-btn" onclick="rmMemberLine(${gl.id})" title="Delete this line from the quote">×</button>
             </td>
             <td style="min-width:200px;padding-left:28px">
               <div class="l-code" style="opacity:.7">${gl.code||''}</div>
@@ -13249,26 +13250,47 @@ function removeGroup(groupId) {
   toast('Group removed — items restored as individual lines');
 }
 
+// After a member leaves a group (ungrouped OR deleted): re-derive the header from what's
+// left, or drop the header when nothing is. Returns true if the header was removed.
+function reconcileGroupAfterMemberLeft(groupId) {
+  const remaining = lines.filter(gl => gl.groupMember === groupId);
+  const header = lines.find(gl => gl.groupId === groupId && !gl.groupMember);
+  if (!header) return false;
+  if (remaining.length === 0) {
+    lines = lines.filter(x => x.id !== header.id);
+    return true;
+  }
+  header.unitPrice = remaining.reduce((s, gl) => s + amt(gl), 0);
+  header.labTotal = remaining.reduce((s, gl) => s + (gl.labTotal||0), 0);
+  return false;
+}
+
+// ↩ on a member row: take the line OUT of the group, keep it on the quote as a standalone line.
+// (Until 2026-09-10 this was wired to the member row's × — visually identical to the delete ×
+// on every other row — so Neal "deleted" four members and got four standalone lines instead.)
 function rmFromGroup(id) {
   const l = lines.find(x => x.id === id);
   if (!l || !l.groupMember) return;
   const groupId = l.groupMember;
   delete l.groupMember;
   l.selected = false;
-
-  // Update group header total
-  const remaining = lines.filter(gl => gl.groupMember === groupId);
-  const header = lines.find(gl => gl.groupId === groupId && !gl.groupMember);
-  if (header) {
-    if (remaining.length === 0) {
-      // No more members — remove group entirely
-      lines = lines.filter(x => x.id !== header.id);
-    } else {
-      header.unitPrice = remaining.reduce((s, gl) => s + amt(gl), 0);
-      header.labTotal = remaining.reduce((s, gl) => s + (gl.labTotal||0), 0);
-    }
-  }
+  const headerGone = reconcileGroupAfterMemberLeft(groupId);
+  isDirty = true;
   renderLines();
+  toast('"' + (l.name || 'Line') + '" removed from the group — still on the quote as a standalone line' + (headerGone ? ' (group was empty, so it was removed)' : ''));
+}
+
+// × on a member row: DELETE the line from the quote, same meaning as × everywhere else.
+function rmMemberLine(id) {
+  const l = lines.find(x => x.id === id);
+  if (!l || !l.groupMember) return;
+  const groupId = l.groupMember;
+  if (!confirm('Delete "' + (l.name || 'this line') + '" from the quote?\n\nUse ↩ instead if you only want to take it out of the group.')) return;
+  lines = lines.filter(x => x.id !== id);
+  const headerGone = reconcileGroupAfterMemberLeft(groupId);
+  isDirty = true;
+  renderLines();
+  toast('Line deleted' + (headerGone ? ' — group was empty, so it was removed too' : ''));
 }
 
 function ungroupAll() {
