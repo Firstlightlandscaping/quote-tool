@@ -651,7 +651,10 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div class="fg"><label>Internal notes (not shown to client)</label><input type="text" id="add-notes" placeholder="e.g. check stock availability..."></div>
       <div class="pills" id="pills"></div>
       <div style="padding-top:4px;border-top:1px solid var(--bd)">
-        <button type="button" class="btn btn-outline btn-sm" id="misc-open-btn" onclick="openMiscBuilder()" title="Build a one-off item that isn't in the Price Manager — the deliverable form steps aside while you do">+ Add a custom / miscellaneous item</button>
+        <button type="button" id="misc-open-btn" onclick="openMiscBuilder()" title="Build a one-off item that isn't in the Price Manager — the deliverable form steps aside while you do" style="background:none;border:none;padding:0;font-size:12px;color:var(--bl);cursor:pointer;display:flex;align-items:center;gap:4px;font-weight:500;font-family:inherit">
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
+          Add a custom / miscellaneous item
+        </button>
       </div>
       </div>
       <div id="misc-builder" style="display:none">
