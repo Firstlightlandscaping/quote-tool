@@ -610,8 +610,12 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
   </div>
 
   <div class="card no-print">
-    <div class="ch"><span class="ct">Add Line Item</span></div>
+    <div class="ch"><span class="ct" id="add-line-title">Add Line Item</span></div>
     <div class="cb" style="display:flex;flex-direction:column;gap:12px">
+      <!-- Deliverable form and custom/misc builder are MUTUALLY EXCLUSIVE (2026-09-10): only one is
+           on screen at a time. Both were open together before, and wording/labour typed into the
+           wrong one was a recurring slip. openMiscBuilder()/closeMiscBuilder() swap them. -->
+      <div id="add-del-form" style="display:flex;flex-direction:column;gap:12px">
       <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
         <div class="fg" style="flex:1;min-width:180px">
           <label>Deliverable</label>
@@ -646,12 +650,16 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       </div>
       <div class="fg"><label>Internal notes (not shown to client)</label><input type="text" id="add-notes" placeholder="e.g. check stock availability..."></div>
       <div class="pills" id="pills"></div>
-      <details id="misc-details" ontoggle="if(this.open){mcmFilterMpl();mcdFilterDels();}">
-        <summary style="font-size:12px;color:var(--bl);cursor:pointer;list-style:none;display:flex;align-items:center;gap:4px;font-weight:500;user-select:none">
-          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>
-          Add a custom / miscellaneous item
-        </summary>
-        <div class="misc-panel">
+      <div style="padding-top:4px;border-top:1px solid var(--bd)">
+        <button type="button" class="btn btn-outline btn-sm" id="misc-open-btn" onclick="openMiscBuilder()" title="Build a one-off item that isn't in the Price Manager — the deliverable form steps aside while you do">+ Add a custom / miscellaneous item</button>
+      </div>
+      </div>
+      <div id="misc-builder" style="display:none">
+        <div class="misc-panel" style="margin-top:0">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+            <span style="font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#B45309">Custom / miscellaneous item <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--i3)">— not from the Price Manager</span></span>
+            <button type="button" class="btn btn-outline btn-sm" onclick="closeMiscBuilder()" title="Discard this custom item and go back to adding deliverables (Esc)">✕ Cancel</button>
+          </div>
           <div class="mrow">
             <div class="fg" style="flex:1"><label>Title (shown on quote)</label><input type="text" id="mc-desc" placeholder="e.g. Corten steel water bowl"></div>
           </div>
@@ -734,11 +742,12 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
             <div id="mc-components-list"></div>
           </div>
 
-          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);text-align:right">
+          <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);display:flex;justify-content:flex-end;gap:8px;align-items:center">
+            <button type="button" class="btn btn-outline" onclick="closeMiscBuilder()" title="Discard this custom item and go back to adding deliverables (Esc)">Cancel</button>
             <button class="btn btn-primary" onclick="addMisc()" style="padding:11px 26px;font-size:14px">+ Add to Quote</button>
           </div>
         </div>
-      </details>
+      </div>
     </div>
   </div>
 
@@ -3278,6 +3287,58 @@ function resetMiscEntryForms() {
   if (typeof mcdFilterDels === 'function') mcdFilterDels();
   if (typeof mcmFilterMpl === 'function') mcmFilterMpl();
 }
+
+// ── Custom/misc builder ↔ deliverable form swap (2026-09-10) ──
+// The two forms share the same card and are never shown together. The deliverable form keeps
+// whatever was half-typed in it while the builder is open (it's only hidden, never cleared).
+function miscBuilderOpen() {
+  const mb = document.getElementById('misc-builder');
+  return !!mb && mb.style.display !== 'none';
+}
+function openMiscBuilder() {
+  const df = document.getElementById('add-del-form'), mb = document.getElementById('misc-builder');
+  if (!df || !mb) return;
+  df.style.display = 'none'; mb.style.display = '';
+  const t = document.getElementById('add-line-title'); if (t) t.textContent = 'Add Custom Item';
+  // the old <details> ontoggle did this on open — keeps the two pickers populated
+  if (typeof mcmFilterMpl === 'function') mcmFilterMpl();
+  if (typeof mcdFilterDels === 'function') mcdFilterDels();
+  const first = document.getElementById('mc-desc'); if (first) first.focus();
+}
+// Everything the user may have entered into the builder, for the discard confirm.
+function miscBuilderHasContent() {
+  const v = id => { const el = document.getElementById(id); return el ? String(el.value || '').trim() : ''; };
+  if (['mc-desc','mc-xdesc','mc-unit','mc-days','mc-rate','mcc-desc','mcd-select','mcm-select'].some(id => v(id))) return true;
+  return Array.isArray(miscComponents) && miscComponents.length > 0;
+}
+function clearMiscForm() {
+  ['mc-desc','mc-xdesc','mc-unit','mc-days','mc-rate'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
+  const q = document.getElementById('mc-qty'); if (q) q.value = '1';
+  const m = document.getElementById('mc-mat'); if (m) m.value = '0';
+  miscComponents = [];
+  renderMiscComponents();
+  resetMiscEntryForms();
+}
+// force=true skips the discard confirm (after a successful add, or on new/load/duplicate).
+function closeMiscBuilder(force) {
+  const df = document.getElementById('add-del-form'), mb = document.getElementById('misc-builder');
+  if (!df || !mb) return;
+  if (!force && miscBuilderOpen() && miscBuilderHasContent()) {
+    const name = (document.getElementById('mc-desc').value || '').trim();
+    if (!confirm('Discard this custom item' + (name ? ' ("' + name + '")' : '') + '?\n\nNothing has been added to the quote. OK = discard and go back to deliverables, Cancel = keep editing.')) return;
+  }
+  clearMiscForm();
+  mb.style.display = 'none'; df.style.display = 'flex';   // 'flex' = the form's own inline layout (column + gap)
+  const t = document.getElementById('add-line-title'); if (t) t.textContent = 'Add Line Item';
+}
+// Esc closes the builder (with the same discard confirm) — but not while a dialog sits on top
+// of it (the Edit Component modal, any .cw-modal-back dialog), which own their own Esc.
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape' || !miscBuilderOpen()) return;
+  if (document.getElementById('line-comp-dialog') || document.querySelector('.cw-modal-back')) return;
+  closeMiscBuilder(false);
+});
+
 function addMisc() {
   const desc = document.getElementById('mc-desc').value.trim();
   if (!desc) { toast('Enter a description'); return; }
@@ -3299,12 +3360,7 @@ function addMisc() {
   // Unit price is Total ÷ qty (Total = components + labour, fixed); see miscUnitPrice.
   const unitPrice = qty>0 ? (matCost + labTotal)/qty : 0;
   pushLine({code:'MISC',name:desc,xdesc,notes:'',qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('mc-vat').value),optional:document.getElementById('mc-opt').value==='yes',misc:true,unit:document.getElementById('mc-unit').value.trim()||'item',materials:[],miscComponents:[...miscComponents]});
-  ['mc-desc','mc-xdesc','mc-unit','mc-days','mc-rate'].forEach(id => document.getElementById(id).value='');
-  document.getElementById('mc-qty').value='1'; document.getElementById('mc-mat').value='0';
-  miscComponents = [];
-  renderMiscComponents();
-  resetMiscEntryForms();
-  const md = document.getElementById('misc-details'); if (md) md.open = false;
+  closeMiscBuilder(true);   // clears the form + returns to the deliverable form
   toast('Misc item added');
 }
 
@@ -9677,7 +9733,7 @@ async function duplicateQuote(ref) {
   // Carry the schedule plan onto the copy (editable there; saves under the new ref)
   schedulePlan = sq.schedulePlan ? JSON.parse(JSON.stringify(sq.schedulePlan)) : null;
   spDirty = false; spTicked.clear();
-  miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms(); closeMiscBuilder(true);
   isDirty = true;
   syncH(); renderLines();
   showTab('quote', document.querySelectorAll('.tab')[0]);
@@ -9808,7 +9864,7 @@ function loadQuote(ref) {
   });
   schedulePlan = q.schedulePlan ? JSON.parse(JSON.stringify(q.schedulePlan)) : null;
   spDirty = false; spTicked.clear();
-  miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms(); closeMiscBuilder(true);
   isDirty=false; syncH(); renderLines();
   // Explicitly update ungroup button after loading
   const _ugb = document.getElementById('ungroup-btn');
@@ -11291,7 +11347,7 @@ async function newQuote() {
   document.getElementById('in-estimate').checked = false;
   crmLink = { cardId: '', email: '', supersedes: '' };
   schedulePlan = null; spDirty = false; spTicked.clear();
-  miscComponents = []; renderMiscComponents(); resetMiscEntryForms();
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms(); closeMiscBuilder(true);
   document.getElementById('in-vno').value='242 6140 37';
   document.getElementById('in-date').value=new Date().toISOString().split('T')[0];
   document.getElementById('save-status').textContent='';
