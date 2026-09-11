@@ -90,14 +90,14 @@ FirstLight Landscaping''s standard package garden design service includes:
 - A completed design print out containing the finalised garden design. This includes a scaled rendered plan, and a mood board of suggested materials, planting and structural elements.
 - A full broken-down quotation for all work in the design', 1250, 10),
 ('GD02', 'The 3D Plus Package',    -- renamed 2026-09-11 (was 'Garden Design Service — Standard Plus Package')
-'FirstLight Landscaping''s Standard Plus Package Includes:
+'FirstLight Landscaping''s 3D Plus Package Includes:
 - 1 Garden design option
 - 2D Plan with dimensions, and a descriptive key for each element included in the design
 - A mood board capturing the overall aesthetic, which may include suggested materials, planting and structural elements.
 - 3D Visuals
 - 3D Fly-through of the design
 
-FirstLight Landscaping''s standard plus package garden design service includes:
+FirstLight Landscaping''s 3D Plus package garden design service includes:
 
 - An initial meeting with the designer to establish the design brief and carry out the on-site survey.
 - A second meeting where the designer will present one tailored garden design concept. This will be delivered as a printed booklet that includes one to-scale plan that aligns with the established design brief, a mood board, and a set of 3D visuals taken from various points of the garden.
