@@ -9935,6 +9935,11 @@ async function saveQuote() {
   renderSaved();
   toast('Quote saved: '+ref);
 }
+// The supersedes pointer (quotes.supersedes_ref) has only been written since the CRM Phase 2
+// cutover on 2026-08-04. Quotes superseded before that legitimately have no recorded
+// replacement, so the "no replacement saved" tripwire only applies to later supersedes
+// (live had 8 such legacy rows on 2026-09-11 — flagging them all would just be noise).
+function sqSupersedeTracked(sq) { return !!(sq && sq.statusChangedAt && sq.statusChangedAt >= '2026-08-04'); }
 // Returns true when the quote was loaded, false when the user kept their unsaved work.
 // GUARD (2026-09-11, QT-0097 incident): loading from the Saved Quotes list used to silently
 // replace whatever was in the builder — incl. an unsaved duplicate, which then got its
@@ -9952,7 +9957,8 @@ function loadQuote(ref) {
   // after a reload it was the only back-garden quote in the list and looked like the live one).
   if ((q.status || '') === 'Superseded') {
     const succ = savedQuotes.find(x => x.supersedesRef === ref);
-    const msg = succ ? ref + ' has been REPLACED by ' + succ.ref + '.' : ref + ' is marked Superseded but NO replacement was ever saved.';
+    const msg = succ ? ref + ' has been REPLACED by ' + succ.ref + '.'
+      : (sqSupersedeTracked(q) ? ref + ' is marked Superseded but NO replacement was ever saved.' : ref + ' is marked Superseded (older quote — its replacement isn\'t recorded).');
     if (!confirm('⚠ ' + msg + '\n\nEdits here change the OLD version, not the live quote.\n\nOpen it anyway?')) return false;
   }
   document.getElementById('in-cust').value=q.customer||'';
@@ -11172,8 +11178,13 @@ async function updateQuoteStatus(ref, status, opts) {
   if (!q) return;
   // Draft block (Neal ↔ CRM, 05/09): once a quote has been pushed to the CRM it can never
   // return to Draft — the CRM row would say Sent/Accepted forever. Superseded is the undo.
-  if (status === 'Draft' && q.crmPushed && Object.keys(q.crmPushed).length) {
-    toast('⛔ ' + ref + ' has been pushed to the CRM — it can\'t go back to Draft. Mark it Superseded instead (that\'s the undo).');
+  // Only a PIPELINE event counts (2026-09-11, Neal): superseding a never-sent Draft records a
+  // "superseded" entry too, and that alone used to lock the quote out of Draft — so an
+  // accidental supersede on an unsent quote could never be undone.
+  const CRM_PIPELINE_EVENTS = ['sent', 'accepted', 'declined', 'contract_generated', 'contract_sent', 'contract_signed'];
+  if (status === 'Draft' && q.crmPushed && CRM_PIPELINE_EVENTS.some(k => k in q.crmPushed)) {
+    toast('⛔ ' + ref + ' has been pushed to the CRM — it can\'t go back to Draft. ' +
+      ((q.status || '') === 'Superseded' ? 'Set it to Sent to bring it back into play.' : 'Mark it Superseded instead (that\'s the undo).'));
     renderSaved();                                   // snap the dropdown back
     return;
   }
@@ -11466,7 +11477,9 @@ function renderSaved() {
         </select>
         ${status==='Superseded' ? (succ => succ
           ? `<span class="no-print" title="The revised copy that replaced this quote" style="margin-left:6px;font-size:11px;color:var(--i3)">→ replaced by ${succ.ref}</span>`
-          : `<span class="no-print" title="Marked Superseded, but no quote says it replaces this one — the copy may never have been saved. Duplicate it again, or set the status back." style="margin-left:6px;font-size:11px;font-weight:600;color:#B45309;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;padding:0 6px">⚠ no replacement saved</span>`)(savedQuotes.find(x => x.supersedesRef === sq.ref)) : ''}
+          : (sqSupersedeTracked(sq)
+            ? `<span class="no-print" title="Marked Superseded, but no quote says it replaces this one — the copy may never have been saved. Duplicate it again, or set the status back." style="margin-left:6px;font-size:11px;font-weight:600;color:#B45309;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;padding:0 6px">⚠ no replacement saved</span>`
+            : ''))(savedQuotes.find(x => x.supersedesRef === sq.ref)) : ''}
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract · To create'}</button>` : ''}
         ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
         ${(status==='Accepted'||ramsStatusMap[sq.ref]) ? (rSt => `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();ramsFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${rSt.col};color:${rSt.col}" title="Risk Assessment &amp; Method Statement — click to manage">${rSt.label}</button>`)(ramsBadge(sq.ref)) : ''}
