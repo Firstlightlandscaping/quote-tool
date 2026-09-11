@@ -9805,7 +9805,7 @@ function qiImport() {
 async function duplicateQuote(ref) {
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq) return;
-  if (!confirm('Duplicate ' + ref + ' (' + (sq.customer||'') + ') as a new quote?\n\nIt will open in the Quote Builder ready to edit. Save when ready to assign a new quote number.')) return;
+  if (!confirm('Duplicate ' + ref + ' (' + (sq.customer||'') + ') as a new quote?\n\nThe copy is saved straight away with its own quote number and opens in the Quote Builder ready to edit.')) return;
   // Revised-version flow: the copy replaces the original for sales data, the original
   // is kept in full but marked Superseded so it drops out of the totals.
   // The copy carries the card link either way (same client); `supersedes` is captured
