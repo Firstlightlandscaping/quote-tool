@@ -2605,8 +2605,22 @@ function removeLineComponent(lineId, compIdx) {
   // Recalc mat cost from remaining components
   l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
   l.unitPrice = miscUnitPrice(l);
-  renderLines();
-  recalc();
+  isDirty = true;
+  // Keep the "Edit misc item" panel OPEN (2026-09-11, Neal): a full renderLines() collapsed it
+  // after every delete, so removing several components meant reopening the panel each time.
+  // Same in-place pattern as saveLineComp's edit path.
+  const listEl = document.getElementById('line-comps-edit-' + lineId);
+  if (listEl) {
+    listEl.innerHTML = miscEditComponentsHtml(l);
+    patchMiscLineDom(l);   // row unit price/amount, mat tag, group totals
+    const n = l.miscComponents.length;
+    const ct = document.getElementById('comp-toggle-' + lineId);
+    if (ct) { if (n) ct.textContent = '📦 ' + n + ' component' + (n !== 1 ? 's' : '') + ' ▶'; else ct.parentElement.style.display = 'none'; }
+    recalc();
+  } else {
+    renderLines();
+    recalc();
+  }
 }
 
 function showLineCompDialog(lineId, compIdx) {
@@ -4049,7 +4063,7 @@ function renderLines() {
     const matTag=(l.matCost)?`<div id="mat-tag-${l.id}" class="no-print" style="display:inline-block;margin-top:4px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${lineMat(l).toFixed(2)}</div>`:'';
     const compTag = (l.misc && l.miscComponents && l.miscComponents.length)
       ? `<div class="no-print" style="margin-top:6px">
-          <button onclick="toggleMiscComps(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--i3);padding:0">
+          <button id="comp-toggle-${l.id}" onclick="toggleMiscComps(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;color:var(--i3);padding:0">
             📦 ${l.miscComponents.length} component${l.miscComponents.length!==1?'s':''} ▶
           </button>
           <div id="misc-comps-${l.id}" style="display:none;margin-top:6px">
