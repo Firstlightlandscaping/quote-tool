@@ -492,7 +492,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 <!-- ═══ TAB 1: QUOTE BUILDER ═══ -->
 <div id="tab-quote" class="tab-panel on">
   <div class="qdoc">
-    <div class="ch no-print"><span class="ct">Quote Preview — client view</span><span id="est-badge" style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#6B7280;border:2px solid #6B7280;border-radius:20px;padding:2px 10px;margin-right:8px">ESTIMATE — guide only</span><span id="ref-badge" style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace"></span></div>
+    <div class="ch no-print"><span class="ct">Quote Preview — client view</span><span id="est-badge" style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#6B7280;border:2px solid #6B7280;border-radius:20px;padding:2px 10px;margin-right:8px">ESTIMATE — guide only</span><span id="sup-badge" title="This quote has been replaced by a revised copy. Edits here change the OLD version, not the live one." style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#B91C1C;border:2px solid #B91C1C;background:#FEF2F2;border-radius:20px;padding:2px 10px;margin-right:8px">⚠ SUPERSEDED — replaced quote</span><span id="ref-badge" style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace"></span></div>
 
     <!-- qwrap: the banner lives in a table <thead> so the browser reprints it at the top of
          EVERY printed page (same trick as the contract, index.html ~5530). On screen all the
@@ -2119,6 +2119,10 @@ function syncH() {
   const estChk = document.getElementById('in-estimate');
   const estBadge = document.getElementById('est-badge');
   if (estBadge) estBadge.style.display = (estChk && estChk.checked) ? 'inline-block' : 'none';
+  // SUPERSEDED badge (2026-09-11, the QT-0097 incident): the builder looked identical whether it
+  // held the unsaved copy or the superseded original — only the ref box differed.
+  const supBadge = document.getElementById('sup-badge');
+  if (supBadge) { const sq = ref ? savedQuotes.find(q => q.ref === ref) : null; supBadge.style.display = (sq && sq.status === 'Superseded') ? 'inline-block' : 'none'; }
   crmPaintChip();   // CRM-link chip follows every header sync (new/load/duplicate all route here)
 }
 
@@ -7264,7 +7268,7 @@ function viewSavedContract(ref){
   if (!sq || !sq.contractMeta) { toast('No saved contract for ' + ref); return; }
   const m = sq.contractMeta, snap = m.snapshot;
   const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText, freeTextFull:!!m.freeTextFull, terms: m.termsSnapshot || null };
-  if (!snap || !snap.lines) { loadQuote(ref); renderContract(optsFromMeta); return; } // old contract: render from current quote
+  if (!snap || !snap.lines) { if (loadQuote(ref)) renderContract(optsFromMeta); return; } // old contract: render from current quote (skipped if the user keeps unsaved work)
   // Temporarily load the snapshot into the (hidden) builder, render the contract, then restore.
   const ids = ['in-cust','in-a1','in-city','in-post','in-ref','in-vno','in-date'];
   const savedLines = lines;
@@ -7709,7 +7713,7 @@ async function doGenerateContract(){
   removeContractDialog();
   // Generation is the ONE step that genuinely needs the builder — the contract renders
   // from it. If the dialog was opened in place from Saved Quotes, load the quote now.
-  if (dref && g('in-ref') !== dref) loadQuote(dref);
+  if (dref && g('in-ref') !== dref && !loadQuote(dref)) { toast('Contract not generated — the builder has unsaved work. Save or discard it, then try again.'); return; }
   renderContract(opts);
   await saveContractSnapshot(opts);
   sigRefreshStatuses();   // badges + derived labels follow (covers the regenerate-revoke path)
@@ -9711,15 +9715,15 @@ async function duplicateQuote(ref) {
   // ONLY on the confirmed-revision path — it's what lets Airtable build the revision
   // chain (the copy has no ref until saved, so this pointer is the only record of
   // which quote it replaces). Written to quotes.supersedes_ref by saveQuote.
+  if (!(sq.lines || []).length) { toast(ref + ' has no lines to copy'); return; }
   let _supersedes = '';
   if ((sq.status||'Draft') !== 'Superseded' && (sq.status||'Draft') !== 'Estimate') {
     if (confirm('Is this copy a REVISED VERSION replacing ' + ref + '?\n\nOK  = mark ' + ref + ' as Superseded (kept, but excluded from sales totals)\nCancel = plain copy, ' + ref + ' unchanged')) {
-      await updateQuoteStatus(ref, 'Superseded', { autoRevoke: true });   // its own confirm just ran — no second question
       _supersedes = ref;
     }
   }
   crmLink = { cardId: sq.airtableCardId || '', email: sq.clientEmail || '', supersedes: _supersedes };
-  // Load the quote data into lines — leave ref blank, assigned at save time
+  // Load the quote data into lines — ref blank here; saveQuote() below assigns the number
   lines = sq.lines.map(l => ({...l, id: ++uid}));
   document.getElementById('in-cust').value = sq.customer||'';
   document.getElementById('in-a1').value = sq.addr1||'';
@@ -9741,7 +9745,17 @@ async function duplicateQuote(ref) {
   isDirty = true;
   syncH(); renderLines();
   showTab('quote', document.querySelectorAll('.tab')[0]);
-  toast('Duplicate of ' + ref + ' loaded — make your changes then Save Quote');
+  // SAVE THE COPY NOW (2026-09-11, the QT-0097 incident): the copy used to live only in this
+  // tab's memory until the user saved, while the supersede was written instantly — a reload
+  // or a second tab in between left a superseded quote with no successor, and the original
+  // was the obvious thing to open and edit next. Now the copy gets its number and its rows
+  // FIRST; only if that succeeds is the original marked Superseded, so a failed save changes
+  // nothing. An abandoned duplicate leaves a deletable Draft, which is the right trade.
+  await saveQuote();
+  const newRef = g('in-ref');
+  if (!newRef || isDirty) { toast('Copy NOT saved — ' + ref + ' left unchanged. Check the connection and try again.'); return; }
+  if (_supersedes) await updateQuoteStatus(ref, 'Superseded', { autoRevoke: true });   // its own confirm ran above — no second question
+  toast('Saved as ' + newRef + ' (copy of ' + ref + (_supersedes ? ', now Superseded' : '') + ') — make your changes then Save Quote');
 }
 
 async function saveQuote() {
@@ -9824,8 +9838,26 @@ async function saveQuote() {
   renderSaved();
   toast('Quote saved: '+ref);
 }
+// Returns true when the quote was loaded, false when the user kept their unsaved work.
+// GUARD (2026-09-11, QT-0097 incident): loading from the Saved Quotes list used to silently
+// replace whatever was in the builder — incl. an unsaved duplicate, which then got its
+// original overwritten. newQuote has always asked; this is the same question.
 function loadQuote(ref) {
-  const q=savedQuotes.find(x=>x.ref===ref); if(!q)return;
+  const q=savedQuotes.find(x=>x.ref===ref); if(!q)return false;
+  if (isDirty && lines.length) {
+    const cur = g('in-ref');
+    const what = cur ? cur : 'the unsaved new quote';
+    if (cur === ref) {
+      if (!confirm('Reload ' + ref + ' from the saved version?\n\nYour unsaved changes to it will be LOST.')) return false;
+    } else if (!confirm('Open ' + ref + '?\n\nUnsaved changes to ' + what + ' will be LOST. Save first if you want to keep them.')) return false;
+  }
+  // A Superseded quote is the OLD version — say so before it opens (the QT-0097 incident:
+  // after a reload it was the only back-garden quote in the list and looked like the live one).
+  if ((q.status || '') === 'Superseded') {
+    const succ = savedQuotes.find(x => x.supersedesRef === ref);
+    const msg = succ ? ref + ' has been REPLACED by ' + succ.ref + '.' : ref + ' is marked Superseded but NO replacement was ever saved.';
+    if (!confirm('⚠ ' + msg + '\n\nEdits here change the OLD version, not the live quote.\n\nOpen it anyway?')) return false;
+  }
   document.getElementById('in-cust').value=q.customer||'';
   document.getElementById('in-ref').value=q.ref||'';
   document.getElementById('in-a1').value=q.addr1||'';
@@ -9875,6 +9907,7 @@ function loadQuote(ref) {
   if (_ugb) _ugb.style.display = lines.some(l=>l.groupId) ? 'inline-flex' : 'none';
   showTab('quote',document.querySelectorAll('.tab')[0]);
   toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
+  return true;
 }
 async function deleteQuote(ref) {
   const sq = savedQuotes.find(q => q.ref === ref);
@@ -11334,6 +11367,9 @@ function renderSaved() {
           style="padding:3px 8px;border-radius:20px;border:2px solid ${statusCol};color:${statusCol};font-size:11px;font-weight:600;background:white;cursor:pointer;min-width:90px">
           ${QUOTE_STATUSES.map(s => `<option value="${s}" ${status===s?'selected':''}>${s}</option>`).join('')}
         </select>
+        ${status==='Superseded' ? (succ => succ
+          ? `<span class="no-print" title="The revised copy that replaced this quote" style="margin-left:6px;font-size:11px;color:var(--i3)">→ replaced by ${succ.ref}</span>`
+          : `<span class="no-print" title="Marked Superseded, but no quote says it replaces this one — the copy may never have been saved. Duplicate it again, or set the status back." style="margin-left:6px;font-size:11px;font-weight:600;color:#B45309;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;padding:0 6px">⚠ no replacement saved</span>`)(savedQuotes.find(x => x.supersedesRef === sq.ref)) : ''}
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract · To create'}</button>` : ''}
         ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
         ${(status==='Accepted'||ramsStatusMap[sq.ref]) ? (rSt => `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();ramsFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${rSt.col};color:${rSt.col}" title="Risk Assessment &amp; Method Statement — click to manage">${rSt.label}</button>`)(ramsBadge(sq.ref)) : ''}
