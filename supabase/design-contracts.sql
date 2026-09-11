@@ -76,7 +76,7 @@ create policy fl_authenticated_all on dc_counter
 
 -- ── seed packages (fees editable in-app; GD03 + SRV01 fees TBC by Neal) ────────
 insert into design_packages (code, name, description, default_fee, sort_order) values
-('GD01', 'Garden Design Service — Standard Package',
+('GD01', 'The Standard Package',   -- renamed 2026-09-11 (was 'Garden Design Service — Standard Package')
 'FirstLight Landscaping''s Standard Package Includes:
 - 1 Garden design option
 - 2D Plan with dimensions, and a descriptive key for each element included in the design
@@ -89,7 +89,7 @@ FirstLight Landscaping''s standard package garden design service includes:
 - Up to two sets of amendments to your design concept to develop the scheme
 - A completed design print out containing the finalised garden design. This includes a scaled rendered plan, and a mood board of suggested materials, planting and structural elements.
 - A full broken-down quotation for all work in the design', 1250, 10),
-('GD02', 'Garden Design Service — Standard Plus Package',
+('GD02', 'The 3D Plus Package',    -- renamed 2026-09-11 (was 'Garden Design Service — Standard Plus Package')
 'FirstLight Landscaping''s Standard Plus Package Includes:
 - 1 Garden design option
 - 2D Plan with dimensions, and a descriptive key for each element included in the design
