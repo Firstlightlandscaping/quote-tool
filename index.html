@@ -4876,6 +4876,20 @@ function spItemsDialog(rowIdx) {
   document.body.appendChild(panel);
 }
 function spRowsOf(sup) { return (spEnsurePlan().deliveries||[]).filter(d => d.supplier === sup); }
+// Create an EMPTY extra delivery row for a supplier (2026-09-11, Neal: "two London Stone
+// orders — how do I add an item into a THIRD?"). Inserted after the supplier's last row so
+// its drops stay together; numbered like the split dialog's new rows ("London Stone — 3",
+// a lone row labelled by its bare name becomes "— 1" first). Returns the new row.
+function spNewDeliveryRow(sup) {
+  const p = spEnsurePlan();
+  p.deliveries = p.deliveries || [];
+  const mine = p.deliveries.filter(d => d.supplier === sup);
+  if (mine.length === 1 && mine[0].label === sup) mine[0].label = sup + ' — 1';
+  const row = { id: Date.now() + Math.floor(Math.random() * 1000), supplier: sup, label: sup + ' — ' + (mine.length + 1), date: '', alloc: [] };
+  const last = mine.length ? p.deliveries.lastIndexOf(mine[mine.length - 1]) : -1;
+  if (last >= 0) p.deliveries.splice(last + 1, 0, row); else p.deliveries.push(row);
+  return row;
+}
 function spSupplierOfKey(key) { const s = spRollup().find(x => x.items.some(i => i.key === key)); return s ? s.name : null; }
 function spKeyTruthAtoms(key) {
   const sup = spRollup().find(x => x.items.some(i => i.key === key));
@@ -5339,23 +5353,71 @@ function spAxHostRowId() {
   const d = document.getElementById('sp-extra-dialog');
   return d && d.dataset.rowId ? d.dataset.rowId : null;
 }
-function spAxPush(arr, targetRowId) {
+// targets (optional, 2026-09-11): {supplier: rowId | 'new'} — the per-supplier answer from
+// spAxTargets() when a SPLIT supplier had to be asked which drop; 'new' creates one row per
+// supplier for this push and every item of that supplier lands on it.
+function spAxPush(arr, targetRowId, targets) {
   const p = spEnsurePlan();
   p.extraItems = p.extraItems || [];
   const landed = [];
+  targets = targets || {};
   arr.forEach((e, k) => {
     const id = Date.now() + k + Math.floor(Math.random() * 100);
     const sup = (e.supplier || '').trim();
     p.extraItems.push({ id, supplier: sup, desc: e.desc, qty: Math.round(e.qty * 1000) / 1000, unit: e.unit || '', price: e.price || 0, url: e.url ? normSupplierUrl(e.url) : '' });
     const rows = spRowsOf(sup || SUP_UNASSIGNED);
-    const target = (targetRowId != null && rows.find(r => String(r.id) === String(targetRowId))) || rows[0];
+    let target = null;
+    if (targets[sup] === 'new') { target = spNewDeliveryRow(sup); targets[sup] = target.id; }
+    else if (targets[sup] != null) target = rows.find(r => String(r.id) === String(targets[sup])) || null;
+    if (!target) target = (targetRowId != null && rows.find(r => String(r.id) === String(targetRowId))) || rows[0];
     if (target) {
       (target.alloc = target.alloc || []).push({ lineId: -1, key: 'extra:' + id, qty: Math.round(e.qty * 1000) / 1000 });
-      if (rows.length > 1) landed.push(target.label || sup);
+      if (rows.length > 1 || targets[sup] != null) landed.push(target.label || sup);
     }
   });
   spMark(); renderSchedule();
   return [...new Set(landed)];
+}
+// Options 1 + 2 don't have a delivery picker — the supplier comes from the price list. When
+// that supplier is SPLIT (several drops) and the dialog wasn't opened from one of its rows,
+// ask which drop rather than silently using the first (Neal, 2026-09-11). One question per
+// split supplier in the batch; Cancel = the first drop (the old behaviour).
+async function spAxTargets(items) {
+  const host = spAxHostRowId();
+  const targets = {};
+  for (const sup of [...new Set(items.map(e => (e.supplier || '').trim()).filter(Boolean))]) {
+    const rows = spRowsOf(sup);
+    if (rows.length < 2) continue;
+    if (host && rows.some(r => String(r.id) === String(host))) { targets[sup] = host; continue; }
+    const pick = await spAskDrop(sup, rows);
+    if (pick != null) targets[sup] = pick;
+  }
+  return targets;
+}
+function spAskDrop(sup, rows) {
+  return new Promise(resolve => {
+    const old = document.getElementById('sp-ask-drop'); if (old) old.remove();
+    const d = document.createElement('div');
+    d.id = 'sp-ask-drop';
+    d.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:10001;display:flex;align-items:center;justify-content:center';
+    d.innerHTML = `<div style="background:white;border-radius:10px;padding:20px;width:420px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">Which ${cwEsc(sup)} delivery?</div>
+        <div style="font-size:12px;color:var(--i3);margin-bottom:12px">${cwEsc(sup)} has ${rows.length} deliveries on this plan — pick the one this should go on.</div>
+        <select id="sp-ask-drop-sel" style="width:100%;padding:8px;border:1px solid var(--bd);border-radius:6px;font-size:13px">
+          ${rows.map(r => `<option value="${cwEsc(String(r.id))}">${cwEsc((r.label || sup) + (r.date ? ' · ' + spNice(r.date) : ''))}</option>`).join('')}
+          <option value="new">+ new ${cwEsc(sup)} delivery</option>
+        </select>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
+          <button class="btn btn-outline btn-sm" id="sp-ask-drop-cancel">First delivery</button>
+          <button class="btn btn-primary btn-sm" id="sp-ask-drop-ok">Add here</button>
+        </div></div>`;
+    document.body.appendChild(d);
+    const done = v => { d.remove(); resolve(v); };
+    d.querySelector('#sp-ask-drop-ok').onclick = () => done(d.querySelector('#sp-ask-drop-sel').value);
+    d.querySelector('#sp-ask-drop-cancel').onclick = () => done(null);
+    d.querySelector('#sp-ask-drop-sel').focus();
+    d.addEventListener('keydown', e => { if (e.key === 'Enter') done(d.querySelector('#sp-ask-drop-sel').value); if (e.key === 'Escape') done(null); });
+  });
 }
 // Standalone entry for order-only extras (Neal 2026-07-15): adding an item shouldn't
 // require opening some other supplier's ☰ dialog. The confirm is deliberate — an extra
@@ -5425,7 +5487,7 @@ function spAddExtraDialog(rowIdx) {
           <div class="fg" style="flex:2;min-width:170px;margin:0"><label>Description</label><input type="text" id="sp-ax-desc" placeholder="e.g. Postcrete 20kg" style="width:100%"></div>
           <div class="fg" style="margin:0"><label>Qty</label><input type="number" id="sp-ax-qty" value="1" min="0" step="any" style="width:64px"></div>
           <div class="fg" style="margin:0"><label>Unit</label><input type="text" id="sp-ax-unit" placeholder="bag" style="width:70px"></div>
-          <div class="fg" style="flex:1;min-width:170px;margin:0"><label>Delivery / supplier</label><select id="sp-ax-sup" onchange="supplierSelResolve(this)" data-prev="${isUnRow ? '' : 'row:' + cwEsc(String(row.id))}" style="width:100%"><option value="">— unassigned —</option>${axOpts}</select></div>
+          <div class="fg" style="flex:1;min-width:170px;margin:0"><label>Add to delivery</label><select id="sp-ax-sup" onchange="supplierSelResolve(this)" data-prev="${isUnRow ? '' : 'row:' + cwEsc(String(row.id))}" title="Each entry is one delivery. Pick an existing drop, '+ new … delivery' for another drop of that supplier, or '+ new supplier…'" style="width:100%"><option value="">— unassigned (choose a delivery) —</option>${axOpts}</select></div>
           <div class="fg" style="margin:0"><label>£ each <span style="font-weight:400;color:var(--i3)">(opt.)</span></label><input type="number" id="sp-ax-price" min="0" step="0.01" placeholder="0" style="width:76px"></div>
         </div>
         <div class="fg" style="margin:8px 0 0"><label>Link (URL) <span style="font-weight:400;color:var(--i3)">(opt. — shown on the item, pushed to the TeamGantt note)</span></label><input type="text" id="sp-ax-url" placeholder="https://..." style="width:100%"></div>
@@ -5468,7 +5530,7 @@ function spAxFilterMpl() {
         (m.category||'').toLowerCase().includes(q))
       .map(m => `<option value="${cwEsc(m.code)}"${m.code===prev?' selected':''}>${cwEsc(m.code)} — ${cwEsc(m.description||'')} (${cwEsc(m.unit||'')}, £${(m.pricePerUnit||0).toFixed(2)})</option>`).join('');
 }
-function spAxAddDeliverable() {
+async function spAxAddDeliverable() {
   const code = document.getElementById('sp-ax-del').value;
   const mult = parseFloat(document.getElementById('sp-ax-dqty').value) || 1;
   const d = dels.find(x => x.code === code);
@@ -5483,18 +5545,19 @@ function spAxAddDeliverable() {
     url: mplUrl[m.stockCode] || ''
   })).filter(it => it.qty > 0);
   if (!items.length) { toast('That deliverable has no materials to add'); return; }
-  const landed = spAxPush(items, spAxHostRowId());
+  const landed = spAxPush(items, spAxHostRowId(), await spAxTargets(items));
   document.getElementById('sp-ax-del').value = '';
   document.getElementById('sp-ax-dsearch').value = '';
   spAxFilterDels();
   toast('✓ ' + items.length + ' item' + (items.length!==1?'s':'') + ' added from ' + (d.name || code) + (landed.length ? ' → "' + landed.join('", "') + '"' : ''));
 }
-function spAxAddMplSel() {
+async function spAxAddMplSel() {
   const code = document.getElementById('sp-ax-mat').value;
   const m = mpl.find(x => x.code === code);
   if (!m) { toast('Select a material first'); return; }
   const qty = parseFloat(document.getElementById('sp-ax-mqty').value) || 1;
-  const landed = spAxPush([{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0, url: m.supplierUrl || '' }], spAxHostRowId());
+  const items = [{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0, url: m.supplierUrl || '' }];
+  const landed = spAxPush(items, spAxHostRowId(), await spAxTargets(items));
   document.getElementById('sp-ax-mat').value = '';
   document.getElementById('sp-ax-msearch').value = '';
   document.getElementById('sp-ax-mqty').value = '1';
@@ -5508,17 +5571,30 @@ function spAxAddManual() {
   const price = parseFloat(document.getElementById('sp-ax-price').value) || 0;
   // An unpriced item counts £0 in the materials check, silently flattering the margin.
   if (!(price > 0) && !confirm('No £ entered — "' + desc + '" will count as £0 cost in the materials check, making the margin look better than it is.\n\nAdd without a price?')) return;
-  // The dropdown value is a DELIVERY ("row:<id>") or a supplier with no row yet.
+  // The dropdown value is a DELIVERY ("row:<id>"), "+ new <sup> delivery" ("newrow:<sup>"),
+  // or a supplier name with no row yet. A "+ new supplier…" that SNAPPED onto a supplier
+  // which already has deliveries also means a new delivery (2026-09-11) — it used to land
+  // silently on that supplier's first drop.
   const pick = document.getElementById('sp-ax-sup').value;
   let supplier = pick, targetRow = null;
   if (pick.indexOf('row:') === 0) {
     targetRow = (spEnsurePlan().deliveries || []).find(r => String(r.id) === pick.slice(4)) || null;
     supplier = targetRow ? targetRow.supplier : '';
+  } else if (pick.indexOf('newrow:') === 0) {
+    supplier = pick.slice(7);
+    targetRow = spNewDeliveryRow(supplier);
+  } else if (pick && pick !== SUP_UNASSIGNED && spRowsOf(pick).length) {
+    targetRow = spNewDeliveryRow(pick);
   }
   const landed = spAxPush([{ supplier, desc, qty,
     unit: document.getElementById('sp-ax-unit').value.trim(),
     price, url: (document.getElementById('sp-ax-url')||{value:''}).value.trim() }], targetRow ? targetRow.id : spAxHostRowId());
-  toast('✓ ' + qty + ' × ' + desc + ' added' + (landed.length ? ' → "' + landed[0] + '"' : ''));
+  toast('✓ ' + qty + ' × ' + desc + ' added' + (landed.length ? ' → "' + landed[0] + '"' : (targetRow ? ' → "' + (targetRow.label || supplier) + '"' : '')));
+  // the new row now exists — refresh the dropdown so it's pickable for the next item
+  if (pick.indexOf('newrow:') === 0 || (targetRow && pick.indexOf('row:') !== 0)) {
+    const sel = document.getElementById('sp-ax-sup');
+    if (sel) { sel.innerHTML = '<option value="">— unassigned (choose a delivery) —</option>' + spAssignOptionsHtml(); sel.value = 'row:' + targetRow.id; sel.dataset.prev = sel.value; }
+  }
   ['sp-ax-desc','sp-ax-unit','sp-ax-price','sp-ax-url'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   document.getElementById('sp-ax-qty').value = '1';
   document.getElementById('sp-ax-desc').focus();
@@ -5698,7 +5774,8 @@ function spAssignOptionsHtml(knownSup) {
   Object.keys(bySup).sort((a,b) => a.localeCompare(b)).forEach(s => {
     const list = bySup[s];
     h += `<optgroup label="${cwEsc(s)}">` + list.map(r =>
-      `<option value="row:${cwEsc(String(r.id))}">${cwEsc((r.label || s) + (r.date ? ' · ' + spNice(r.date) : ''))}</option>`).join('') + '</optgroup>';
+      `<option value="row:${cwEsc(String(r.id))}">${cwEsc((r.label || s) + (r.date ? ' · ' + spNice(r.date) : ''))}</option>`).join('') +
+      `<option value="newrow:${cwEsc(s)}">+ new ${cwEsc(s)} delivery</option></optgroup>`;
   });
   const noRow = (knownSup || spKnownSuppliers()).filter(s => !bySup[s]);
   if (noRow.length) h += `<optgroup label="No delivery yet — one will be created">` +
@@ -5718,6 +5795,10 @@ function spAssignSupplierSel(sel) {
     chosenRow = (spEnsurePlan().deliveries||[]).find(r => String(r.id) === rid);
     if (!chosenRow) { sel.value = ''; return; }
     sup = chosenRow.supplier;
+  } else if (sup.indexOf('newrow:') === 0) {
+    // "+ new <sup> delivery" (2026-09-11): a fresh drop for a supplier that already has some
+    sup = sup.slice(7);
+    chosenRow = spNewDeliveryRow(sup);
   }
   if (sup === '__new__') {
     sup = (prompt('New supplier name:')||'').trim();
@@ -5726,6 +5807,8 @@ function spAssignSupplierSel(sel) {
     // not mint a second supplier (the 2026-07-21 duplicate-supplier cleanup's guard)
     const match = spKnownSuppliers().find(n => n.toLowerCase() === sup.toLowerCase());
     if (match) sup = match;
+    // "new" + a supplier that already has deliveries = a NEW delivery of theirs, not their first drop
+    if (spRowsOf(sup).length) chosenRow = spNewDeliveryRow(sup);
   }
   const p = spEnsurePlan();
   (p.supplierOverrides = p.supplierOverrides || {})[key] = sup;
