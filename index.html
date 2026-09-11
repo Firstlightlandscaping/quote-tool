@@ -5384,8 +5384,19 @@ function spAxPush(arr, targetRowId, targets) {
 // split supplier in the batch; Cancel = the first drop (the old behaviour).
 async function spAxTargets(items) {
   const host = spAxHostRowId();
+  const hostRow = host ? (spEnsurePlan().deliveries || []).find(r => String(r.id) === String(host)) : null;
   const targets = {};
+  // Opened FROM a delivery (say Spinks) and the price-list supplier differs (say Hygge)?
+  // Ask whether it goes on THIS drop — buying it from Spinks this job — or on Hygge's
+  // (Neal, 2026-09-11). "Here" rewrites the item's supplier; the price list is untouched.
+  if (hostRow && hostRow.supplier !== SUP_UNASSIGNED) {
+    for (const sup of [...new Set(items.map(e => (e.supplier || '').trim()).filter(s => s && s !== hostRow.supplier))]) {
+      const here = await spAskHereOrTheirs(hostRow, sup);
+      if (here) { items.forEach(e => { if ((e.supplier || '').trim() === sup) e.supplier = hostRow.supplier; }); targets[hostRow.supplier] = host; }
+    }
+  }
   for (const sup of [...new Set(items.map(e => (e.supplier || '').trim()).filter(Boolean))]) {
+    if (targets[sup] != null) continue;
     const rows = spRowsOf(sup);
     if (rows.length < 2) continue;
     if (host && rows.some(r => String(r.id) === String(host))) { targets[sup] = host; continue; }
@@ -5393,6 +5404,28 @@ async function spAxTargets(items) {
     if (pick != null) targets[sup] = pick;
   }
   return targets;
+}
+function spAskHereOrTheirs(hostRow, sup) {
+  return new Promise(resolve => {
+    const old = document.getElementById('sp-ask-here'); if (old) old.remove();
+    const hostName = hostRow.label || hostRow.supplier;
+    const d = document.createElement('div');
+    d.id = 'sp-ask-here';
+    d.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:10001;display:flex;align-items:center;justify-content:center';
+    d.innerHTML = `<div style="background:white;border-radius:10px;padding:20px;width:440px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">Add to this ${cwEsc(hostRow.supplier)} delivery?</div>
+        <div style="font-size:12px;color:var(--i3);margin-bottom:14px">On the price list this comes from <b>${cwEsc(sup)}</b>. Put it on "${cwEsc(hostName)}" (you'd buy it from ${cwEsc(hostRow.supplier)} this job — the price list is untouched), or send it to ${cwEsc(sup)}'s own delivery?</div>
+        <div style="display:flex;justify-content:flex-end;gap:8px">
+          <button class="btn btn-outline btn-sm" id="sp-ask-here-theirs">${cwEsc(sup)}'s delivery</button>
+          <button class="btn btn-primary btn-sm" id="sp-ask-here-here">Add here (${cwEsc(hostRow.supplier)})</button>
+        </div></div>`;
+    document.body.appendChild(d);
+    const done = v => { d.remove(); resolve(v); };
+    d.querySelector('#sp-ask-here-here').onclick = () => done(true);
+    d.querySelector('#sp-ask-here-theirs').onclick = () => done(false);
+    d.querySelector('#sp-ask-here-here').focus();
+    d.addEventListener('keydown', e => { if (e.key === 'Escape') done(false); });
+  });
 }
 function spAskDrop(sup, rows) {
   return new Promise(resolve => {
