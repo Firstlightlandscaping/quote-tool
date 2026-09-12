@@ -5389,13 +5389,14 @@ async function spAxTargets(items) {
   // Opened FROM a delivery (say Spinks) and the price-list supplier differs (say Hygge)?
   // Ask whether it goes on THIS drop — buying it from Spinks this job — or on Hygge's
   // (Neal, 2026-09-11). "Here" rewrites the item's supplier; the price list is untouched.
+  // Returns null when the user cancels — the caller adds NOTHING.
   if (hostRow && hostRow.supplier !== SUP_UNASSIGNED) {
-    const foreign = [...new Set(items.map(e => (e.supplier || '').trim()).filter(s => s && s !== hostRow.supplier))];
-    for (let i = 0; i < foreign.length; i++) {
-      const sup = foreign[i];
-      const names = items.filter(e => (e.supplier || '').trim() === sup).map(e => spQtyDisp(e.qty) + ' × ' + (e.desc || ''));
-      const here = await spAskHereOrTheirs(hostRow, sup, names, i + 1, foreign.length);
-      if (here) { items.forEach(e => { if ((e.supplier || '').trim() === sup) e.supplier = hostRow.supplier; }); targets[hostRow.supplier] = host; }
+    const foreign = items.filter(e => { const s = (e.supplier || '').trim(); return s && s !== hostRow.supplier; });
+    if (foreign.length) {
+      const choices = await spAskPlacement(hostRow, foreign);   // per item: true = here, false = theirs
+      if (!choices) return null;
+      foreign.forEach((e, i) => { if (choices[i]) e.supplier = hostRow.supplier; });
+      if (choices.some(Boolean)) targets[hostRow.supplier] = host;
     }
   }
   for (const sup of [...new Set(items.map(e => (e.supplier || '').trim()).filter(Boolean))]) {
@@ -5404,36 +5405,43 @@ async function spAxTargets(items) {
     if (rows.length < 2) continue;
     if (host && rows.some(r => String(r.id) === String(host))) { targets[sup] = host; continue; }
     const pick = await spAskDrop(sup, rows);
+    if (pick === 'cancel') return null;
     if (pick != null) targets[sup] = pick;
   }
   return targets;
 }
-// names = the items this question covers (a deliverable can pull materials from several
-// suppliers — one question per supplier, so say WHICH items each one is about); n/of = "1 of 2".
-function spAskHereOrTheirs(hostRow, sup, names, n, of) {
+// ONE dialog, one row per foreign-supplier item (Neal 2026-09-12 — a deliverable can pull
+// materials from several suppliers, and he wants to place each material himself): each row
+// picks "this delivery" (default — the dialog was opened from it) or the item's own
+// supplier's delivery. Resolves an array of booleans (true = here) or null on Cancel/Esc.
+function spAskPlacement(hostRow, foreign) {
   return new Promise(resolve => {
-    const old = document.getElementById('sp-ask-here'); if (old) old.remove();
+    const old = document.getElementById('sp-ask-place'); if (old) old.remove();
     const hostName = hostRow.label || hostRow.supplier;
-    const list = (names || []).map(s => `<li>${cwEsc(s)}</li>`).join('');
-    const plural = (names || []).length !== 1;
     const d = document.createElement('div');
-    d.id = 'sp-ask-here';
+    d.id = 'sp-ask-place';
     d.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.45);z-index:10001;display:flex;align-items:center;justify-content:center';
-    d.innerHTML = `<div style="background:white;border-radius:10px;padding:20px;width:460px;max-width:92vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
-        <div style="font-size:15px;font-weight:700;margin-bottom:4px">Add to this ${cwEsc(hostRow.supplier)} delivery?${of > 1 ? ` <span style="font-weight:400;color:var(--i3);font-size:12px">(question ${n} of ${of})</span>` : ''}</div>
-        <div style="font-size:12px;color:var(--i2);margin-bottom:6px">${plural ? 'These come' : 'This comes'} from <b>${cwEsc(sup)}</b> on the price list:</div>
-        <ul style="margin:0 0 10px 18px;padding:0;font-size:12px;color:var(--i1)">${list}</ul>
-        <div style="font-size:12px;color:var(--i3);margin-bottom:14px">Put ${plural ? 'them' : 'it'} on "${cwEsc(hostName)}" (you'd buy ${plural ? 'them' : 'it'} from ${cwEsc(hostRow.supplier)} this job — the price list is untouched), or send ${plural ? 'them' : 'it'} to ${cwEsc(sup)}'s own delivery?</div>
+    d.innerHTML = `<div style="background:white;border-radius:10px;padding:20px;width:560px;max-width:94vw;max-height:88vh;overflow-y:auto;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+        <div style="font-size:15px;font-weight:700;margin-bottom:4px">Where should these go?</div>
+        <div style="font-size:12px;color:var(--i3);margin-bottom:12px">You opened this from "${cwEsc(hostName)}". On the price list these come from other suppliers — choose per item: put it on this ${cwEsc(hostRow.supplier)} delivery (you'd buy it from ${cwEsc(hostRow.supplier)} this job; the price list is untouched), or send it to its own supplier's delivery.</div>
+        <div style="display:flex;flex-direction:column;gap:6px;margin-bottom:14px">
+          ${foreign.map((e, i) => `<div style="display:flex;gap:10px;align-items:center;padding:6px 8px;background:var(--bg);border:1px solid var(--bd);border-radius:6px">
+              <div style="flex:1;font-size:12px"><b>${cwEsc(spQtyDisp(e.qty) + ' × ' + (e.desc || ''))}</b><div style="color:var(--i3)">price list: ${cwEsc(e.supplier)}</div></div>
+              <select class="sp-ask-place-sel" data-i="${i}" style="padding:6px 8px;border:1px solid var(--bd);border-radius:5px;font-size:12px;max-width:230px">
+                <option value="here">This delivery (${cwEsc(hostRow.supplier)})</option>
+                <option value="theirs">${cwEsc(e.supplier)}'s delivery</option>
+              </select></div>`).join('')}
+        </div>
         <div style="display:flex;justify-content:flex-end;gap:8px">
-          <button class="btn btn-outline btn-sm" id="sp-ask-here-theirs">${cwEsc(sup)}'s delivery</button>
-          <button class="btn btn-primary btn-sm" id="sp-ask-here-here">Add here (${cwEsc(hostRow.supplier)})</button>
+          <button class="btn btn-outline btn-sm" id="sp-ask-place-cancel">Cancel — add nothing</button>
+          <button class="btn btn-primary btn-sm" id="sp-ask-place-ok">Add</button>
         </div></div>`;
     document.body.appendChild(d);
     const done = v => { d.remove(); resolve(v); };
-    d.querySelector('#sp-ask-here-here').onclick = () => done(true);
-    d.querySelector('#sp-ask-here-theirs').onclick = () => done(false);
-    d.querySelector('#sp-ask-here-here').focus();
-    d.addEventListener('keydown', e => { if (e.key === 'Escape') done(false); });
+    d.querySelector('#sp-ask-place-ok').onclick = () => done([...d.querySelectorAll('.sp-ask-place-sel')].map(s => s.value === 'here'));
+    d.querySelector('#sp-ask-place-cancel').onclick = () => done(null);
+    d.querySelector('#sp-ask-place-ok').focus();
+    d.addEventListener('keydown', e => { if (e.key === 'Escape') done(null); });
   });
 }
 function spAskDrop(sup, rows) {
@@ -5450,15 +5458,15 @@ function spAskDrop(sup, rows) {
           <option value="new">+ new ${cwEsc(sup)} delivery</option>
         </select>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">
-          <button class="btn btn-outline btn-sm" id="sp-ask-drop-cancel">First delivery</button>
+          <button class="btn btn-outline btn-sm" id="sp-ask-drop-cancel">Cancel — add nothing</button>
           <button class="btn btn-primary btn-sm" id="sp-ask-drop-ok">Add here</button>
         </div></div>`;
     document.body.appendChild(d);
     const done = v => { d.remove(); resolve(v); };
     d.querySelector('#sp-ask-drop-ok').onclick = () => done(d.querySelector('#sp-ask-drop-sel').value);
-    d.querySelector('#sp-ask-drop-cancel').onclick = () => done(null);
+    d.querySelector('#sp-ask-drop-cancel').onclick = () => done('cancel');   // Cancel = the whole add is abandoned (Neal 2026-09-12)
     d.querySelector('#sp-ask-drop-sel').focus();
-    d.addEventListener('keydown', e => { if (e.key === 'Enter') done(d.querySelector('#sp-ask-drop-sel').value); if (e.key === 'Escape') done(null); });
+    d.addEventListener('keydown', e => { if (e.key === 'Enter') done(d.querySelector('#sp-ask-drop-sel').value); if (e.key === 'Escape') done('cancel'); });
   });
 }
 // Standalone entry for order-only extras (Neal 2026-07-15): adding an item shouldn't
@@ -5587,7 +5595,9 @@ async function spAxAddDeliverable() {
     url: mplUrl[m.stockCode] || ''
   })).filter(it => it.qty > 0);
   if (!items.length) { toast('That deliverable has no materials to add'); return; }
-  const landed = spAxPush(items, spAxHostRowId(), await spAxTargets(items));
+  const targets = await spAxTargets(items);
+  if (!targets) { toast('Cancelled — nothing added'); return; }
+  const landed = spAxPush(items, spAxHostRowId(), targets);
   document.getElementById('sp-ax-del').value = '';
   document.getElementById('sp-ax-dsearch').value = '';
   spAxFilterDels();
@@ -5599,7 +5609,9 @@ async function spAxAddMplSel() {
   if (!m) { toast('Select a material first'); return; }
   const qty = parseFloat(document.getElementById('sp-ax-mqty').value) || 1;
   const items = [{ supplier: (m.supplier||'').trim(), desc: m.description, unit: m.unit, qty, price: m.pricePerUnit || 0, url: m.supplierUrl || '' }];
-  const landed = spAxPush(items, spAxHostRowId(), await spAxTargets(items));
+  const targets = await spAxTargets(items);
+  if (!targets) { toast('Cancelled — nothing added'); return; }
+  const landed = spAxPush(items, spAxHostRowId(), targets);
   document.getElementById('sp-ax-mat').value = '';
   document.getElementById('sp-ax-msearch').value = '';
   document.getElementById('sp-ax-mqty').value = '1';
