@@ -254,7 +254,8 @@ tr.dragging td{background:var(--brp)!important}
   .g2,.g3,.g4{grid-template-columns:1fr}
   .q-brand-header{grid-template-columns:1fr}
 }
-#toast{position:fixed;bottom:24px;right:24px;background:#18181B;color:#fff;padding:9px 16px;border-radius:8px;font-size:12px;font-weight:600;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9999}
+#toast{position:fixed;bottom:24px;right:24px;background:#18181B;color:#fff;padding:12px 18px;border-radius:8px;font-size:13px;font-weight:600;line-height:1.45;max-width:min(520px,calc(100vw - 48px));white-space:normal;opacity:0;transition:opacity .25s;pointer-events:none;z-index:9999;box-shadow:0 8px 24px rgba(0,0,0,.25);cursor:pointer}
+#toast.warn{background:#B45309;color:#fff;font-size:14px;padding:14px 20px}
 
 .setup-panel{background:#FFF8F0;border:2px solid var(--br);border-radius:12px;padding:20px;margin-bottom:14px}
 .setup-panel h3{font-size:14px;font-weight:700;color:var(--ink);margin-bottom:8px}
@@ -13120,9 +13121,20 @@ function saveXdescModal(id) {
   document.getElementById('xdesc-modal').remove();
 }
 
+// Duration scales with length (Neal 2026-09-12: a 130-char refusal vanished before it could be
+// read): ~2.6s for a short one, +50ms per character beyond 40, capped at 10s. Warnings (⛔ / ⚠)
+// are amber, larger, and held at least 7s. Click the toast to dismiss it early.
 function toast(m) {
-  const t=document.getElementById('toast'); t.textContent=m; t.style.opacity='1';
-  clearTimeout(t._t); t._t=setTimeout(()=>t.style.opacity='0',2600);
+  const t=document.getElementById('toast'); t.textContent=m;
+  const warn = /^[⛔⚠]/.test(String(m || '').trim());
+  t.classList.toggle('warn', warn);
+  t.style.pointerEvents = 'auto';
+  t.onclick = () => { t.style.opacity = '0'; t.style.pointerEvents = 'none'; clearTimeout(t._t); };
+  t.style.opacity='1';
+  const len = String(m || '').length;
+  let ms = Math.min(10000, 2600 + Math.max(0, len - 40) * 50);
+  if (warn) ms = Math.max(ms, 7000);
+  clearTimeout(t._t); t._t=setTimeout(()=>{ t.style.opacity='0'; t.style.pointerEvents='none'; },ms);
 }
 
 // ── Stale-app warning (2026-07-23, built after the Liam stale-cache incident) ─
