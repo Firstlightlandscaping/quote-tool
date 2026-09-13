@@ -4886,7 +4886,9 @@ function spNewDeliveryRow(sup) {
   p.deliveries = p.deliveries || [];
   const mine = p.deliveries.filter(d => d.supplier === sup);
   if (mine.length === 1 && mine[0].label === sup) mine[0].label = sup + ' — 1';
-  const row = { id: Date.now() + Math.floor(Math.random() * 1000), supplier: sup, label: mine.length ? sup + ' — ' + (mine.length + 1) : sup, date: '', alloc: [] };
+  let id = Date.now() + Math.floor(Math.random() * 1000);
+  while (p.deliveries.some(d => String(d.id) === String(id))) id++;   // two rows minted in the same ms must never share an id
+  const row = { id, supplier: sup, label: mine.length ? sup + ' — ' + (mine.length + 1) : sup, date: '', alloc: [] };
   const last = mine.length ? p.deliveries.lastIndexOf(mine[mine.length - 1]) : -1;
   if (last >= 0) p.deliveries.splice(last + 1, 0, row); else p.deliveries.push(row);
   return row;
@@ -5387,7 +5389,7 @@ function spAxPush(arr, targetRowId, targets) {
 // Options 1 + 2 don't have a delivery picker — the supplier comes from the price list. When
 // that supplier is SPLIT (several drops) and the dialog wasn't opened from one of its rows,
 // ask which drop rather than silently using the first (Neal, 2026-09-11). One question per
-// split supplier in the batch; Cancel = the first drop (the old behaviour).
+// split supplier in the batch; Cancel/Esc on ANY prompt abandons the whole add (returns null).
 async function spAxTargets(items) {
   const host = spAxHostRowId();
   const hostRow = host ? (spEnsurePlan().deliveries || []).find(r => String(r.id) === String(host)) : null;
@@ -5422,8 +5424,9 @@ async function spAxTargets(items) {
 }
 // ONE dialog, one row per foreign-supplier item (Neal 2026-09-12 — a deliverable can pull
 // materials from several suppliers, and he wants to place each material himself): each row
-// picks "this delivery" (default — the dialog was opened from it) or the item's own
-// supplier's delivery. Resolves an array of booleans (true = here) or null on Cancel/Esc.
+// picks "this delivery" (default — the dialog was opened from it), one of the item's own
+// supplier's existing drops, or a new one. Resolves an array of select values
+// ('here' | 'row:<id>' | 'newrow'), one per item, or null on Cancel/Esc.
 function spAskPlacement(hostRow, foreign) {
   return new Promise(resolve => {
     const old = document.getElementById('sp-ask-place'); if (old) old.remove();
@@ -9870,6 +9873,8 @@ function qiImport() {
 async function duplicateQuote(ref) {
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq) return;
+  // Same unsaved-work guard as loadQuote/newQuote — the copy replaces whatever is in the builder.
+  if (isDirty && lines.length && !confirm('The builder has unsaved changes' + (g('in-ref') ? ' to ' + g('in-ref') : '') + ' — duplicating ' + ref + ' will replace them.\n\nContinue and LOSE those changes?')) return;
   if (!confirm('Duplicate ' + ref + ' (' + (sq.customer||'') + ') as a new quote?\n\nThe copy is saved straight away with its own quote number and opens in the Quote Builder ready to edit.')) return;
   // Revised-version flow: the copy replaces the original for sales data, the original
   // is kept in full but marked Superseded so it drops out of the totals.
