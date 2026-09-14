@@ -8302,7 +8302,7 @@ function sigCopyLink(token, btn) {
 let sigStatusMap = {};
 // Quote statuses that mean the deal is DEAD — dead deals generate no signing to-dos,
 // and a live link on one is a hazard to revoke (see updateQuoteStatus + the panel).
-const SIG_DEAD_STATUSES = ['Declined', 'Superseded'];
+const SIG_DEAD_STATUSES = ['Declined', 'Superseded', 'Merged'];
 function sigBadge(ref) {
   // Paper signature wins and needs NO signing row (a contract can be paper-signed
   // without ever being sent online). Shown distinctly — never dressed up as e-signed.
@@ -9289,8 +9289,8 @@ function crmSplitAddress(blob) {
 // per EVENT (quotes.crm_pushed jsonb, stamped by the fn) because one quote can owe several
 // pushes in a row (accepted → contract generated → signed). The panel walks them in order.
 // Orphans (no linked card) warn and deep-link to the picker; nothing is written.
-const CRM_PUSH_EVENT_FOR_STATUS = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded' };
-const CRM_PUSH_EVENT_LABEL = { sent: 'Quote sent', superseded: 'Quote superseded', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed' };
+const CRM_PUSH_EVENT_FOR_STATUS = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded', Merged: 'merged' };
+const CRM_PUSH_EVENT_LABEL = { sent: 'Quote sent', superseded: 'Quote superseded', merged: 'Quote merged', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed' };
 // Readable names for the plan (ids are the wire format; names are for the human).
 const CRM_FIELD_NAMES = {
   fldqEdoSsR6whYUXd: 'List', fld6I3tOHbq8DNG69: 'Quote Value', fldUxILTHcPALSZax: 'Quote Sent Date', fldTN5Sto5WIP9x8I: 'Job Number',
@@ -10111,10 +10111,13 @@ function clearSQFilters() {
 
 // ── QUOTE STATUSES ─────────────────────────────────────────────────────────────
 // Pipeline: Draft → Sent → Accepted/Declined. Non-pipeline: Estimate (design-stage
-// guide, never accepted) and Superseded (replaced by a revised copy) — both kept in
-// full but excluded from sales totals by filtering them out with the status chips.
-const QUOTE_STATUSES = ['Draft','Sent','Accepted','Declined','Estimate','Superseded'];
-const STATUS_COLORS = { Draft:'#F59E0B', Sent:'#3B82F6', Accepted:'#10B981', Declined:'#EF4444', Estimate:'#6B7280', Superseded:'#9CA3AF' };
+// guide, never accepted), Superseded (replaced by a revised copy) and Merged (2026-09-14:
+// an original that was COMBINED with another quote into one — it was accepted as it stood,
+// not revised, so it is never Superseded; the CRM treats Merged as its own value and does
+// NOT move the card) — all kept in full but excluded from sales totals by filtering them
+// out with the status chips.
+const QUOTE_STATUSES = ['Draft','Sent','Accepted','Declined','Estimate','Superseded','Merged'];
+const STATUS_COLORS = { Draft:'#F59E0B', Sent:'#3B82F6', Accepted:'#10B981', Declined:'#EF4444', Estimate:'#6B7280', Superseded:'#9CA3AF', Merged:'#A8A29E' };
 
 // Multi-select status filter: toggle chips, none active = show all statuses
 function activeStatusFilter() {
@@ -11032,7 +11035,7 @@ async function quoteDeleteGuard(ref, customer) {
 // ── 🦺 RAMS panel — the cross-job worklist (openContractsPanel pattern) ───────
 // Sections: Needs attention (approved-not-issued, expired links, drafts, orphans
 // with live links) → Out for signature → Signed (newest first). Dead quotes
-// (Declined/Superseded) drop their unsigned noise; signed rows always show.
+// (Declined/Superseded/Merged) drop their unsigned noise; signed rows always show.
 async function openRamsPanel() {
   if (!USE_SUPABASE) return;
   let rows;
@@ -11222,14 +11225,14 @@ function sigDeadStatusDialog(ref, status) {
   return new Promise(resolve => {
     const old = document.getElementById('sig-dead-dialog');
     if (old) old.remove();
-    const verb = status === 'Declined' ? 'Decline' : 'Supersede';
+    const verb = status === 'Declined' ? 'Decline' : status === 'Merged' ? 'Merge' : 'Supersede';
     const wrap = document.createElement('div');
     wrap.id = 'sig-dead-dialog';
     wrap.innerHTML =
       '<div class="cw-modal-back"><div class="cw-modal" style="width:440px;max-width:95vw">' +
         '<h3>' + cwEsc(ref) + ' has a live signing link</h3>' +
         '<div style="font-size:13px;color:var(--i2);margin-bottom:16px">The client is holding a working link \u2014 ' +
-        (status === 'Declined' ? 'declining' : 'superseding') + ' this quote while it stays live means they could still sign the contract.</div>' +
+        (status === 'Declined' ? 'declining' : status === 'Merged' ? 'merging' : 'superseding') + ' this quote while it stays live means they could still sign the contract.</div>' +
         '<div class="cw-modal-btns">' +
           '<button class="btn btn-red" id="sig-dead-go">' + verb + ' &amp; revoke link</button>' +
           '<button class="btn btn-outline" id="sig-dead-cancel">Cancel</button>' +
@@ -11254,7 +11257,7 @@ async function updateQuoteStatus(ref, status, opts) {
   const CRM_PIPELINE_EVENTS = ['sent', 'accepted', 'declined', 'contract_generated', 'contract_sent', 'contract_signed'];
   if (status === 'Draft' && q.crmPushed && CRM_PIPELINE_EVENTS.some(k => k in q.crmPushed)) {
     toast('⛔ ' + ref + ' has been pushed to the CRM — it can\'t go back to Draft. ' +
-      ((q.status || '') === 'Superseded' ? 'Set it to Sent to bring it back into play.' : 'Mark it Superseded instead (that\'s the undo).'));
+      (['Superseded', 'Merged'].includes(q.status || '') ? 'Set it to Sent to bring it back into play.' : 'Mark it Superseded instead (that\'s the undo).'));
     renderSaved();                                   // snap the dropdown back
     return;
   }
@@ -11321,7 +11324,7 @@ function openSalesCheck() {
   panel.innerHTML = `
     <div style="background:white;border-radius:12px;padding:24px;width:560px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
       <h3 style="margin:0 0 4px;font-size:16px">📊 Sales report</h3>
-      <p style="font-size:11px;color:var(--i3);margin:0 0 14px">Totals for quotes dated in the period, by status. Estimates and superseded versions are excluded unless ticked.</p>
+      <p style="font-size:11px;color:var(--i3);margin:0 0 14px">Totals for quotes dated in the period, by status. Estimates, superseded versions and merged originals are excluded unless ticked (a combined quote carries its originals' value once).</p>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px">
         <button class="btn btn-outline btn-sm" onclick="scPeriod('this-month')">This month</button>
         <button class="btn btn-outline btn-sm" onclick="scPeriod('last-month')">Last month</button>

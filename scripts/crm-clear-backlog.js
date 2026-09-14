@@ -24,7 +24,7 @@ const PASS = LIVE ? process.env.SUPABASE_AGENT_PASSWORD : env.SANDBOX_AGENT_PASS
 if (!URL_ || !KEY || !EMAIL || !PASS) throw new Error('credentials missing for ' + (LIVE ? 'LIVE' : 'sandbox'));
 if (!LIVE && !URL_.includes('erbrflbialsyxbjawopy')) throw new Error('SAFETY STOP: sandbox URL is not the sandbox');
 
-const STATUS_EVENT = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded' };
+const STATUS_EVENT = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded', Merged: 'merged' };
 const newer = (src, stamp) => src && (!stamp || new Date(src) > new Date(stamp));
 
 async function main() {
