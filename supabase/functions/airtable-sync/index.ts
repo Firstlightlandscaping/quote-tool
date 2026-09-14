@@ -4,7 +4,7 @@
 // show the plan, then calls again without dryRun to execute THE SAME plan.
 //
 //   POST { ref: "QT-0097" | "DC-0003", event, dryRun?: true, cardOverride?: "rec…" }
-//     event ∈ sent · superseded · accepted · declined · contract_generated · contract_signed
+//     event ∈ sent · superseded · merged · accepted · declined · contract_generated · contract_sent · contract_signed
 //
 // Contract = C:\Dev\FirstLight\Airtable CRM\AIRTABLE_FIELD_MAP.md (never copied into this
 // repo; field ids are inert without the base id, which is a secret). Rules honoured here:
@@ -16,6 +16,13 @@
 //     state is the durable memory): no row → never pushed → no write at all; Sent or
 //     Accepted → Amendments unless another row on the card is Accepted (options flow) or
 //     the card is beyond the guard. No financial write on supersede.
+//   * Merged (CRM + Neal, 14/09/26): an original COMBINED with another quote into one —
+//     supersede minus the card move: row Status → Merged (its own option), its own
+//     uninvoiced plan milestones deleted, NO Quote Value / List write, no stranding check,
+//     no decision. The combined quote's own events move the card. Skip when no row.
+//   * Supersedes (fldXmzVIJwGnmtDHC, multi link): supersedes_ref may be ONE ref (a revision)
+//     or a COMMA LIST (a merge). Every push of a QT- row rewrites the link to every listed
+//     original that HAS a row (absent ones noted, never created) — a late row self-heals.
 //   * Accepted: Date Sent backfilled from the card's Quote Sent Date when the row has none;
 //     card → QUOTE ACCEPTED only if no other row on the card is still Sent
 //   * Declined: row only; the stage is never touched (archiving is a human tick)
@@ -70,7 +77,7 @@ const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_
 const LIST = { quoteSent: "QUOTE SENT", accepted: "QUOTE ACCEPTED", amendments: "QUOTES > Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
-const EVENTS = new Set(["sent", "superseded", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
+const EVENTS = new Set(["sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
 // QT- → CONTRACT SENT, DC- → DESIGNS > Contract Sent — unless it's already past the guard.
 const LIST_CONTRACT_SENT = { qt: "CONTRACT SENT", dc: "DESIGNS > Contract Sent" };
@@ -113,7 +120,7 @@ async function loadRecord(ref: string) {
     if (!row) return null;
     const cm = row.contract_meta || {};
     return { ref, isDesign, customer: row.customer || "", cardId: row.airtable_card_id || null, cm, crmPushed: row.crm_pushed || {},
-             valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRef: null };
+             valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRefs: [] as string[] };
   }
   const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,contract_meta,last_pushed_at,crm_pushed`))[0];
   if (!q) return null;
@@ -121,7 +128,9 @@ async function loadRecord(ref: string) {
   return { ref, isDesign, customer: q.customer || "", cardId: q.airtable_card_id || null, cm: q.contract_meta || null, crmPushed: q.crm_pushed || {},
            valueInc: quoteValueInc(lines), status: q.status || "Draft",
            scope: stripHtml(q.summary_html || q.sum || "") || null,
-           dateSent: dateOnly(q.status_changed_at) || dateOnly(q.date), quotedBy: q.sign || null, supersedesRef: q.supersedes_ref || null };
+           dateSent: dateOnly(q.status_changed_at) || dateOnly(q.date), quotedBy: q.sign || null,
+           // one ref (revision) or a comma list (merge) — mirrors sqSupersedesList() in index.html
+           supersedesRefs: String(q.supersedes_ref || "").split(",").map((s: string) => s.trim()).filter(Boolean) };
 }
 
 // ── Airtable ────────────────────────────────────────────────────────────────────
@@ -219,6 +228,16 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   plan.quotesRow = { id: own ? own.id : null, status: own ? str(own.fields[Q.status]) : null, found: !!own, ref: wantRef };
   plan.siblings = rows.filter(r => r !== own).map(r => ({ ref: str(r.fields[Q.ref]) || "", status: str(r.fields[Q.status]), value: num(r.fields[Q.value]) }));
 
+  // Supersedes link (multi): every original this quote replaces or combines that HAS a
+  // Quotes row (by Ref). Resolved once, written on every write of this row — a revision's
+  // single pointer and a merge's list both flow through here. Absent originals are noted,
+  // never created (the day-one backlog is cleared, so some never get rows); an empty
+  // result writes nothing (keeps whatever the row holds).
+  const supersedesLinks: string[] = [];
+  for (const sref of rec.supersedesRefs) {
+    const prev = await A.list(T.quotes, { filterByFormula: `{Ref}=${JSON.stringify(refPrefix + sref)}`, maxRecords: "1" });
+    if (prev[0]) supersedesLinks.push(prev[0].id); else plan.notes.push(`Supersedes ${sref}, but that quote has no CRM row — link not written`);
+  }
   const rowFieldsFull = (status: string) => {
     const f: Record<string, unknown> = {
       [Q.ref]: wantRef, [Q.type]: rec.isDesign ? TYPE.dc : TYPE.qt, [Q.card]: [cardId], [Q.value]: rec.valueInc, [Q.status]: status,
@@ -232,8 +251,32 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     return f;
   };
   const upsertRow = (fields: Record<string, unknown>, label: string) => {
-    if (own) plan.writes.push({ table: T.quotes, op: "patch", id: own.id, label, fields: { ...fields } });
-    else plan.writes.push({ table: T.quotes, op: "create", label, fields: { ...rowFieldsFull(String(fields[Q.status] || rec.status)), ...fields } });
+    const f = { ...fields };
+    if (supersedesLinks.length) {
+      const cur: string[] = own && Array.isArray(own.fields[Q.supersedes]) ? own.fields[Q.supersedes] : [];
+      const same = cur.length === supersedesLinks.length && supersedesLinks.every(id => cur.includes(id));
+      if (!same) f[Q.supersedes] = supersedesLinks;   // rewritten on every push so a late-appearing original self-heals
+    }
+    if (own) plan.writes.push({ table: T.quotes, op: "patch", id: own.id, label, fields: f });
+    else plan.writes.push({ table: T.quotes, op: "create", label, fields: { ...rowFieldsFull(String(f[Q.status] || rec.status)), ...f } });
+  };
+  // Payments on supersede / merge (CRM + Neal, 05/09 + 14/09): DELETE this quote's own
+  // milestones that are still just plans — uninvoiced, uncompleted, unpaid, name-matched to
+  // THIS quote's schedule. Facts (Invoice Sent / Completed / Date Paid) are never deleted;
+  // hand-added rows survive because the scope is this schedule's names only.
+  const deleteOwnPlanMilestones = async (why: string) => {
+    const sched: any[] = rec.cm && Array.isArray(rec.cm.scheduleStructured) ? rec.cm.scheduleStructured : [];
+    if (!sched.length) return;
+    const names = new Set(sched.map(e => String(e.label || "").trim().toLowerCase()).filter(Boolean));
+    const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+    for (const id of payIds) {
+      const p = await A.get(T.payments, id);
+      if (!p) continue;
+      const nm = String(p.fields[P.name] || "").trim();
+      if (!names.has(nm.toLowerCase())) continue;
+      if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
+      plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (${why})`, fields: {} });
+    }
   };
   // Aggregates AFTER this event, from the Airtable rows + this row's new state.
   const statusAfter = (newStatus: string | null) => {
@@ -271,12 +314,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   switch (event) {
     case "sent": {
       if (rec.isDesign) throw new Error("A design contract is not marked Sent through this event");
-      const f = rowFieldsFull("Sent");
-      if (rec.supersedesRef) {
-        const prev = await A.list(T.quotes, { filterByFormula: `{Ref}=${JSON.stringify(refPrefix + rec.supersedesRef)}`, maxRecords: "1" });
-        if (prev[0]) f[Q.supersedes] = [prev[0].id]; else plan.notes.push(`Supersedes ${rec.supersedesRef}, but that quote has no CRM row — link not written`);
-      }
-      upsertRow(f, "Quotes row → Sent");
+      upsertRow(rowFieldsFull("Sent"), "Quotes row → Sent");   // Supersedes link added by upsertRow
       const all = statusAfter("Sent");
       cardPatch[CARD.quoteValue] = quoteValueFrom(all);
       cardPatch[CARD.quoteSentDate] = rec.dateSent;
@@ -308,23 +346,22 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         }
       } else plan.notes.push(`Prior status ${prior} — card not moved`);
       plan.notes.push("No financial write on supersede (figure stays until a replacement is sent)");
-      // Payments (CRM + Neal, 05/09): DELETE the superseded contract's own milestones that are
-      // still just plans — uninvoiced, uncompleted, unpaid, name-matched to THIS quote's
-      // schedule. Facts (Invoice Sent / Completed / Date Paid) are never deleted; hand-added
-      // rows survive because the scope is this schedule's names only.
-      const sched: any[] = rec.cm && Array.isArray(rec.cm.scheduleStructured) ? rec.cm.scheduleStructured : [];
-      if (sched.length) {
-        const names = new Set(sched.map(e => String(e.label || "").trim().toLowerCase()).filter(Boolean));
-        const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
-        for (const id of payIds) {
-          const p = await A.get(T.payments, id);
-          if (!p) continue;
-          const nm = String(p.fields[P.name] || "").trim();
-          if (!names.has(nm.toLowerCase())) continue;
-          if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
-          plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (superseded schedule, never invoiced)`, fields: {} });
-        }
-      }
+      await deleteOwnPlanMilestones("superseded schedule, never invoiced");
+      break;
+    }
+    case "merged": {
+      // Supersede MINUS the card move (CRM + Neal, 14/09): the original was accepted as it
+      // stood and combined into one quote — nothing was revised, so the card must NOT go to
+      // Amendments. Row → Merged; plan milestones of its own schedule deleted (a combined
+      // contract recreates its own); no Quote Value (the combined quote's first push
+      // recomputes it); no List, no stranding check, no decision.
+      if (rec.isDesign) throw new Error("A design contract is not merged through this event");
+      if (!own) return { skipped: `${ref} was never pushed to the CRM (no Quotes row) — nothing to do; the combined quote's own events carry the card`, ref, event };
+      const prior = str(own.fields[Q.status]);
+      upsertRow({ [Q.status]: "Merged" }, `Quotes row ${prior} → Merged`);
+      plan.notes.push("Card stage not moved — the combined quote's own events move it");
+      plan.notes.push("No financial write on merge (figure stays until the combined quote is pushed)");
+      await deleteOwnPlanMilestones("merged schedule, never invoiced");
       break;
     }
     case "accepted": {
