@@ -1004,6 +1004,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
         <button class="btn btn-outline btn-sm" onclick="openContractsPanel()" title="E-signature overview — what needs chasing, what's out for signature, what's been signed">✍ Contracts</button>
         <button class="btn btn-outline btn-sm" onclick="openRamsPanel()" title="RAMS overview — what needs approving or issuing, whose signatures are outstanding, what's signed">🦺 RAMS</button>
         <button class="btn btn-outline btn-sm" onclick="crmPushOverview()" title="CRM sync — pushes waiting for your OK, and quotes with no CRM card">📇 CRM</button>
+        <button class="btn btn-outline btn-sm" onclick="openMergeDialog()" title="Combine two or more quotes for one client into ONE new quote (one contract, one payment schedule) — the originals are kept and marked Merged">⧉ Merge quotes</button>
         <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
       </div>
     </div>
@@ -9853,30 +9854,203 @@ function qiImport() {
   if (!sq) { toast('Choose a quote to copy from'); return; }
   const want = new Set([...document.querySelectorAll('#qi-lines .qi-line')].filter(c => c.checked).map(c => parseFloat(c.dataset.id)));
   if (!want.size) { toast('Tick at least one line'); return; }
-  const clone = o => JSON.parse(JSON.stringify(o));
-  const newLines = [];
-  let count = 0, sum = 0;
-  sq.lines.forEach(l => {
-    if (l.discount || l.groupMember) return;
-    if (l.groupId) {
-      const members = sq.lines.filter(m => m.groupMember === l.groupId && want.has(m.id));
-      if (!members.length) return;
-      const h = clone(l); h.id = ++uid; h.groupExpanded = true;
-      const gid = 'grp_qi' + h.id; // keyed off the fresh line id — unique across imports, distinct from confirmGroup's grp_<timestamp> namespace
-      h.groupId = gid;
-      h.unitPrice = Math.round(members.reduce((s, m) => s + amt(m), 0) * 100) / 100; // re-derive for the ticked subset
-      newLines.push(h);
-      members.forEach(m => { const c = clone(m); c.id = ++uid; c.groupMember = gid; newLines.push(c); sum += amt(c); count++; });
-    } else if (want.has(l.id)) {
-      const c = clone(l); c.id = ++uid; newLines.push(c); sum += l.note ? 0 : amt(c); count++;
-    }
-  });
-  if (!newLines.length) { toast('Tick at least one line'); return; }
-  lines = lines.concat(newLines);
+  const r = cloneQuoteLines(sq, want, 'qi');
+  if (!r.lines.length) { toast('Tick at least one line'); return; }
+  lines = lines.concat(r.lines);
   isDirty = true;
   document.getElementById('qi-dialog').remove();
   renderLines(); recalc();
-  toast('✓ ' + count + ' line' + (count !== 1 ? 's' : '') + ' copied from ' + sq.ref + ' (£' + (Math.round(sum*100)/100).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' ex VAT) — not saved yet');
+  toast('✓ ' + r.count + ' line' + (r.count !== 1 ? 's' : '') + ' copied from ' + sq.ref + ' (£' + (Math.round(r.sum*100)/100).toLocaleString('en-GB', {minimumFractionDigits:2, maximumFractionDigits:2}) + ' ex VAT) — not saved yet');
+}
+// The one line-copying routine, shared by ⇪ Copy lines (qiImport, `want` = ticked line ids)
+// and ⧉ Merge quotes (mergeQuotes, `want` = null → every line). Fresh line ids (++uid),
+// fresh group ids `grp_<tag><headerLineId>` (unique across copies, distinct from
+// confirmGroup's grp_<timestamp>), group header unitPrice re-derived from the copied
+// members, prices/snapshots verbatim. Discount lines are never copied (one per quote) —
+// their ex-VAT value comes back as `discount` so the caller can say so.
+function cloneQuoteLines(sq, want, tag) {
+  const clone = o => JSON.parse(JSON.stringify(o));
+  const take = l => !want || want.has(l.id);
+  const out = [];
+  let count = 0, sum = 0, discount = 0;
+  (sq.lines || []).forEach(l => {
+    if (l.discount) { discount += -amt(l); return; }
+    if (l.groupMember) return;
+    if (l.groupId) {
+      const members = sq.lines.filter(m => m.groupMember === l.groupId && take(m));
+      if (!members.length) return;
+      const h = clone(l); h.id = ++uid; h.groupExpanded = true;
+      const gid = 'grp_' + tag + h.id;
+      h.groupId = gid;
+      h.unitPrice = Math.round(members.reduce((s, m) => s + amt(m), 0) * 100) / 100;
+      out.push(h);
+      members.forEach(m => { const c = clone(m); c.id = ++uid; c.groupMember = gid; out.push(c); sum += amt(c); count++; });
+    } else if (take(l)) {
+      const c = clone(l); c.id = ++uid; out.push(c); sum += l.note ? 0 : amt(c); count++;
+    }
+  });
+  return { lines: out, count, sum, discount };
+}
+
+// ── ⧉ MERGE QUOTES (2026-09-14, Neal + CRM) ─────────────────────────────────────
+// Two or more quotes for one client, each accepted AS IT STANDS (front garden + back
+// garden), need ONE contract and ONE payment schedule → one combined quote. The originals
+// were not revised, so they become Merged, never Superseded (a supersede push moves the
+// CRM card to Amendments; Merged is its own CRM value and moves nothing). The combined
+// quote = for each source in the chosen order, an optional text-note heading + every line
+// deep-cloned (cloneQuoteLines), client details from the first source, date today,
+// supersedes_ref = all the source refs. It is SAVED IMMEDIATELY as a Draft (the
+// duplicateQuote save-first rule), and only then are the originals marked Merged. Neal
+// then sets the combined quote Accepted DIRECTLY — never Sent (the CRM's accept-without-
+// Sent path backfills Date Sent) — and generates the contract.
+let mgState = null;   // { picked: [ref…] in merge order, headings: { ref: text } } while the dialog is open
+// '' when the quote can be a merge source, else the reason it can't.
+function mgIneligible(sq) {
+  const st = sq.status || 'Draft';
+  if (st === 'Superseded') return 'superseded — its replacement is the live quote';
+  if (st === 'Merged') return 'already merged into another quote';
+  if (st === 'Estimate') return 'an estimate — set it to Draft or Sent first if it is really a quote';
+  if (!(sq.lines || []).length) return 'no lines';
+  const sig = sigStatusMap[sq.ref];
+  if ((sig && sig.status === 'signed') || (sq.contractMeta && sq.contractMeta.paperSigned)) return 'has a SIGNED contract — a signed contract is a fact; combine these by hand';
+  return '';
+}
+function openMergeDialog() {
+  if (savedQuotes.length < 2) { toast('Need at least two saved quotes to merge'); return; }
+  const existing = document.getElementById('mg-dialog');
+  if (existing) existing.remove();
+  mgState = { picked: [], headings: {} };
+  const panel = document.createElement('div');
+  panel.id = 'mg-dialog';
+  panel.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,.5);z-index:9999;display:flex;align-items:center;justify-content:center';
+  panel.innerHTML = `
+    <div style="background:white;border-radius:12px;padding:24px;width:720px;max-width:95vw;box-shadow:0 20px 60px rgba(0,0,0,.3)">
+      <h3 style="margin:0 0 4px;font-size:17px">⧉ Merge quotes into one</h3>
+      <p style="font-size:13px;color:var(--i2);margin:0 0 10px">Tick two or more quotes for the same client. A NEW combined quote is saved straight away as a Draft — every line comes across exactly as quoted, each block under its own heading. The originals are kept in full and marked <strong>Merged</strong>. Then set the new quote to Accepted and generate the one contract.</p>
+      <input type="text" id="mg-search" placeholder="Filter by client or ref…" oninput="mgRender()" style="width:100%;margin-bottom:8px">
+      <div id="mg-list" style="max-height:50vh;overflow-y:auto;padding-right:4px"></div>
+      <div id="mg-foot" style="font-size:12px;color:var(--i3);margin-top:8px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+        <button class="btn btn-outline" onclick="document.getElementById('mg-dialog').remove();mgState=null">Cancel</button>
+        <button class="btn btn-primary" id="mg-go" onclick="mergeQuotes()" disabled>⧉ Merge</button>
+      </div>
+    </div>`;
+  document.body.appendChild(panel);
+  mgRender();
+  const s = document.getElementById('mg-search'); if (s) s.focus();
+}
+function mgRender() {
+  if (!mgState) return;
+  const box = document.getElementById('mg-list'); if (!box) return;
+  const money = n => '£' + (Math.round(n * 100) / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const filt = ((document.getElementById('mg-search') || {}).value || '').trim().toLowerCase();
+  const first = mgState.picked.length ? savedQuotes.find(q => q.ref === mgState.picked[0]) : null;
+  // Same client as the first pick floats to the top: card id when both have one, else the name.
+  const sameClient = sq => !!first && sq.ref !== first.ref && ((first.airtableCardId && sq.airtableCardId) ? sq.airtableCardId === first.airtableCardId
+    : (sq.customer || '').trim().toLowerCase() === (first.customer || '').trim().toLowerCase() && !!(sq.customer || '').trim());
+  const when = sq => new Date(sq.saved || sq.date || 0).getTime();
+  const rest = savedQuotes.filter(sq => !mgState.picked.includes(sq.ref))
+    .filter(sq => !filt || (sq.ref || '').toLowerCase().includes(filt) || (sq.customer || '').toLowerCase().includes(filt))
+    .sort((a, b) => (sameClient(b) - sameClient(a)) || (when(b) - when(a)));
+  const row = (sq, picked, idx) => {
+    const why = mgIneligible(sq);
+    const t = sqTotals(sq);
+    const disc = (sq.lines || []).some(l => l.discount);
+    const status = sq.status || 'Draft';
+    return `<div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--bd);font-size:13px;color:${why ? 'var(--i4)' : 'var(--i1)'}">
+      ${picked ? `<span style="display:flex;flex-direction:column;gap:1px"><button type="button" onclick="mgMove('${cwEsc(sq.ref)}',-1)" ${idx === 0 ? 'disabled' : ''} style="font-size:9px;line-height:1;padding:1px 4px;cursor:pointer">▲</button><button type="button" onclick="mgMove('${cwEsc(sq.ref)}',1)" ${idx === mgState.picked.length - 1 ? 'disabled' : ''} style="font-size:9px;line-height:1;padding:1px 4px;cursor:pointer">▼</button></span>` : ''}
+      <input type="checkbox" ${picked ? 'checked' : ''} ${why ? 'disabled' : ''} onchange="mgToggle('${cwEsc(sq.ref)}',this.checked)" style="cursor:${why ? 'not-allowed' : 'pointer'}">
+      <span style="font-family:'DM Mono',monospace;font-weight:600;min-width:70px">${cwEsc(sq.ref)}</span>
+      <span style="flex:1;min-width:120px">${cwEsc(sq.customer || '—')}${!picked && sameClient(sq) ? ' <span style="font-size:10px;color:#15803D;border:1px solid #BBF7D0;border-radius:8px;padding:0 5px">same client</span>' : ''}
+        ${why ? `<div style="font-size:11px;color:#B45309">${cwEsc(why)}</div>` : ''}${disc && !why ? '<div style="font-size:11px;color:#B45309">has a discount — not carried; add a fresh one to the combined quote if it still applies</div>' : ''}</span>
+      <span style="color:var(--i3);font-size:12px;min-width:80px">${cwEsc(sq.date || '')}</span>
+      <span style="font-size:11px;font-weight:600;color:${STATUS_COLORS[status] || '#6B7280'};min-width:70px">${cwEsc(status)}</span>
+      <span style="font-weight:600;min-width:90px;text-align:right">${money(t.ex)}</span>
+      ${picked ? `<input type="text" class="mg-head" placeholder="Section heading (optional)" value="${cwEsc(mgState.headings[sq.ref] || '')}" oninput="mgState.headings['${cwEsc(sq.ref)}']=this.value" title="Printed as a bold heading above this quote's lines — e.g. Front garden" style="width:170px;font-size:12px">` : ''}
+    </div>`;
+  };
+  const pickedRows = mgState.picked.map((ref, i) => savedQuotes.find(q => q.ref === ref)).filter(Boolean).map((sq, i) => row(sq, true, i)).join('');
+  box.innerHTML = (pickedRows ? `<div style="font-size:11px;font-weight:600;color:var(--i3);text-transform:uppercase;letter-spacing:.04em;margin:2px 0 4px">Merging, in this order</div>${pickedRows}` : '')
+    + `<div style="font-size:11px;font-weight:600;color:var(--i3);text-transform:uppercase;letter-spacing:.04em;margin:10px 0 4px">${pickedRows ? 'Add another' : 'Pick the quotes'}</div>`
+    + (rest.map(sq => row(sq, false)).join('') || '<div style="font-size:13px;color:var(--i3);padding:6px 0">No other quotes match.</div>');
+  const picked = mgState.picked.map(ref => savedQuotes.find(q => q.ref === ref)).filter(Boolean);
+  const ex = picked.reduce((s, sq) => s + sqTotals(sq).ex, 0);
+  const foot = document.getElementById('mg-foot');
+  if (foot) foot.innerHTML = picked.length
+    ? `${picked.length} quote${picked.length === 1 ? '' : 's'} · combined ${money(ex)} ex VAT · client details from ${cwEsc(picked[0].ref)} (${cwEsc(picked[0].customer || '—')})${picked.length < 2 ? ' — tick one more' : ''}`
+    : 'Nothing ticked yet.';
+  const go = document.getElementById('mg-go');
+  if (go) { go.disabled = picked.length < 2; go.textContent = '⧉ Merge' + (picked.length >= 2 ? ' ' + picked.length + ' quotes' : ''); }
+}
+function mgToggle(ref, on) {
+  if (!mgState) return;
+  mgState.picked = mgState.picked.filter(r => r !== ref);
+  if (on) {
+    mgState.picked.push(ref);
+    const sq = savedQuotes.find(q => q.ref === ref);
+    if (!(ref in mgState.headings)) mgState.headings[ref] = ((sq && sq.sum) || '').trim();   // default heading = the source's job summary
+  }
+  mgRender();
+}
+function mgMove(ref, dir) {
+  if (!mgState) return;
+  const i = mgState.picked.indexOf(ref), j = i + dir;
+  if (i < 0 || j < 0 || j >= mgState.picked.length) return;
+  [mgState.picked[i], mgState.picked[j]] = [mgState.picked[j], mgState.picked[i]];
+  mgRender();
+}
+async function mergeQuotes() {
+  if (!mgState) return;
+  const picked = mgState.picked.map(ref => savedQuotes.find(q => q.ref === ref)).filter(Boolean);
+  if (picked.length < 2) { toast('Tick at least two quotes'); return; }
+  for (const sq of picked) { const why = mgIneligible(sq); if (why) { toast('⛔ ' + sq.ref + ' can\'t be merged: ' + why); return; } }
+  const refs = picked.map(sq => sq.ref);
+  const first = picked[0];
+  // Same unsaved-work guard as loadQuote/duplicateQuote — the combined quote replaces the builder.
+  if (isDirty && lines.length && !confirm('The builder has unsaved changes' + (g('in-ref') ? ' to ' + g('in-ref') : '') + ' — merging will replace them.\n\nContinue and LOSE those changes?')) return;
+  if (!confirm('Merge ' + refs.join(' + ') + ' into ONE new quote for ' + (first.customer || '—') + '?\n\nThe new quote is saved straight away as a Draft with its own number. ' + refs.join(' and ') + ' are kept in full and marked Merged.')) return;
+  const money = n => '£' + (Math.round(n * 100) / 100).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const newLines = [], dropped = [];
+  picked.forEach(sq => {
+    const head = (mgState.headings[sq.ref] || '').trim();
+    if (head) newLines.push({ id: ++uid, code: '', name: head, xdesc: '', notes: '', qty: 0, unitPrice: 0, matCost: 0, labDays: 0, labRate: 0, labTotal: 0, vat: 0, optional: false, misc: false, note: true, unit: '', materials: [] });
+    const r = cloneQuoteLines(sq, null, 'mg');
+    newLines.push(...r.lines);
+    if (r.discount) dropped.push(sq.ref + ' (' + money(r.discount) + ' ex VAT)');
+  });
+  // Builder ← the combined quote (the duplicateQuote/loadQuote field set; ref blank, saveQuote numbers it)
+  crmLink = { cardId: first.airtableCardId || '', email: first.clientEmail || '', supersedes: refs.join(',') };
+  lines = newLines;
+  document.getElementById('in-cust').value = first.customer || '';
+  document.getElementById('in-a1').value = first.addr1 || '';
+  document.getElementById('in-city').value = first.city || '';
+  document.getElementById('in-post').value = first.post || '';
+  populateSignDropdown();
+  const signVal = first.sign || '';
+  if (signVal && !staffList.includes(signVal)) { staffList.push(signVal); staffList.sort(); populateSignDropdown(); }
+  document.getElementById('in-sign').value = signVal;
+  document.getElementById('in-vno').value = first.vno || '';
+  document.getElementById('in-date').value = new Date().toISOString().split('T')[0];
+  const sum = picked.map(sq => (sq.sum || '').trim()).filter(Boolean).join(' + ');
+  document.getElementById('in-sum').value = sum;
+  document.getElementById('qh-summary').textContent = sum;
+  document.getElementById('in-ref').value = '';
+  document.getElementById('in-estimate').checked = false;
+  schedulePlan = null; spDirty = false; spTicked.clear();
+  miscComponents = []; renderMiscComponents(); resetMiscEntryForms(); closeMiscBuilder(true);
+  isDirty = true;
+  const dlg = document.getElementById('mg-dialog'); if (dlg) dlg.remove();
+  mgState = null;
+  syncH(); renderLines(); recalc();
+  showTab('quote', document.querySelectorAll('.tab')[0]);
+  // SAVE FIRST (the QT-0097 lesson): the originals change status only once the combined
+  // quote has its number and its rows in the database. A failed save changes nothing.
+  await saveQuote();
+  const newRef = g('in-ref');
+  if (!newRef || isDirty) { toast('⚠ Combined quote NOT saved — ' + refs.join(' and ') + ' left unchanged. Check the connection and try again.'); return; }
+  for (const ref of refs) await updateQuoteStatus(ref, 'Merged', { autoRevoke: true });   // confirmed above — revokes any live signing link without a second question
+  syncH();
+  toast('✓ Saved as ' + newRef + ' — combines ' + refs.join(' + ') + '.' + (dropped.length ? ' Discount NOT carried from ' + dropped.join(', ') + ' — add a fresh one if it still applies.' : '') + ' Set ' + newRef + ' to Accepted, then generate the contract.');
 }
 
 async function duplicateQuote(ref) {
@@ -10009,6 +10183,7 @@ async function saveQuote() {
     }
   } else {
     localStorage.setItem('fl_quotes', JSON.stringify(savedQuotes));
+    isDirty=false;   // the local branch never cleared it — duplicateQuote/mergeQuotes read it as "save failed"
     document.getElementById('save-status').textContent='Saved '+new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
   }
   renderSaved();
