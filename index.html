@@ -493,7 +493,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
 <!-- ═══ TAB 1: QUOTE BUILDER ═══ -->
 <div id="tab-quote" class="tab-panel on">
   <div class="qdoc">
-    <div class="ch no-print"><span class="ct">Quote Preview — client view</span><span id="est-badge" style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#6B7280;border:2px solid #6B7280;border-radius:20px;padding:2px 10px;margin-right:8px">ESTIMATE — guide only</span><span id="sup-badge" title="This quote has been replaced by a revised copy. Edits here change the OLD version, not the live one." style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#B91C1C;border:2px solid #B91C1C;background:#FEF2F2;border-radius:20px;padding:2px 10px;margin-right:8px">⚠ SUPERSEDED — replaced quote</span><span id="ref-badge" style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace"></span></div>
+    <div class="ch no-print"><span class="ct">Quote Preview — client view</span><span id="est-badge" style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#6B7280;border:2px solid #6B7280;border-radius:20px;padding:2px 10px;margin-right:8px">ESTIMATE — guide only</span><span id="sup-badge" title="This quote has been replaced by a revised copy. Edits here change the OLD version, not the live one." style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#B91C1C;border:2px solid #B91C1C;background:#FEF2F2;border-radius:20px;padding:2px 10px;margin-right:8px">⚠ SUPERSEDED — replaced quote</span><span id="mrg-badge" title="This quote was combined with another into one quote. Edits here change an ORIGINAL, not the combined quote." style="display:none;font-size:10px;font-weight:700;letter-spacing:.06em;color:#57534E;border:2px solid #A8A29E;background:#FAFAF9;border-radius:20px;padding:2px 10px;margin-right:8px">⧉ MERGED</span><span id="ref-badge" style="font-size:11px;color:var(--i3);font-family:'DM Mono',monospace"></span></div>
 
     <!-- qwrap: the banner lives in a table <thead> so the browser reprints it at the top of
          EVERY printed page (same trick as the contract, index.html ~5530). On screen all the
@@ -2123,7 +2123,16 @@ function syncH() {
   // SUPERSEDED badge (2026-09-11, the QT-0097 incident): the builder looked identical whether it
   // held the unsaved copy or the superseded original — only the ref box differed.
   const supBadge = document.getElementById('sup-badge');
-  if (supBadge) { const sq = ref ? savedQuotes.find(q => q.ref === ref) : null; supBadge.style.display = (sq && sq.status === 'Superseded') ? 'inline-block' : 'none'; }
+  const hdrSq = ref ? savedQuotes.find(q => q.ref === ref) : null;
+  if (supBadge) supBadge.style.display = (hdrSq && hdrSq.status === 'Superseded') ? 'inline-block' : 'none';
+  // MERGED badge (2026-09-14): an original that was combined into another quote — same
+  // trap as Superseded (looks live, isn't), so it names the combined quote.
+  const mrgBadge = document.getElementById('mrg-badge');
+  if (mrgBadge) {
+    const isMerged = hdrSq && hdrSq.status === 'Merged';
+    if (isMerged) { const succ = sqSuccessorOf(ref); mrgBadge.textContent = '⧉ MERGED — ' + (succ ? 'combined into ' + succ.ref : 'no combined quote saved'); }
+    mrgBadge.style.display = isMerged ? 'inline-block' : 'none';
+  }
   crmPaintChip();   // CRM-link chip follows every header sync (new/load/duplicate all route here)
 }
 
@@ -10010,6 +10019,31 @@ async function saveQuote() {
 // replacement, so the "no replacement saved" tripwire only applies to later supersedes
 // (live had 8 such legacy rows on 2026-09-11 — flagging them all would just be noise).
 function sqSupersedeTracked(sq) { return !!(sq && sq.statusChangedAt && sq.statusChangedAt >= '2026-08-04'); }
+// supersedes_ref holds ONE ref for a revision, or a COMMA LIST for a combined quote (the
+// merge action, 2026-09-14 — "QT-0098,QT-0105"). Always read it through these two.
+function sqSupersedesList(sq) { return String((sq && sq.supersedesRef) || '').split(',').map(s => s.trim()).filter(Boolean); }
+// The quote that replaced (revision) or absorbed (merge) `ref`, or null.
+function sqSuccessorOf(ref) { return savedQuotes.find(x => sqSupersedesList(x).includes(ref)) || null; }
+// Saved-list chips for the revision / merge links. An original shows where it went
+// ("→ replaced by" / "→ merged into") or the amber tripwire when nothing claims it; a
+// COMBINED quote lists the originals it was built from — a deleted one is marked, never
+// a crash on the dangling ref (deleting a merged original is allowed; kept-forever records
+// are contracts and RAMS, not quotes).
+function sqLinkChipHtml(sq) {
+  const status = sq.status || 'Draft';
+  let h = '';
+  if (status === 'Superseded' || status === 'Merged') {
+    const merged = status === 'Merged';
+    const succ = sqSuccessorOf(sq.ref);
+    if (succ) h += `<span class="no-print" title="${merged ? 'The combined quote this one was merged into' : 'The revised copy that replaced this quote'}" style="margin-left:6px;font-size:11px;color:var(--i3)">→ ${merged ? 'merged into' : 'replaced by'} ${cwEsc(succ.ref)}</span>`;
+    else if (sqSupersedeTracked(sq)) h += `<span class="no-print" title="${merged
+        ? 'Marked Merged, but no quote says it was built from this one — the combined quote may never have been saved. Merge again, or set the status back.'
+        : 'Marked Superseded, but no quote says it replaces this one — the copy may never have been saved. Duplicate it again, or set the status back.'}" style="margin-left:6px;font-size:11px;font-weight:600;color:#B45309;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;padding:0 6px">⚠ no ${merged ? 'combined quote' : 'replacement'} saved</span>`;
+  }
+  const from = sqSupersedesList(sq);
+  if (from.length > 1) h += `<span class="no-print" title="Built by merging these quotes — each original is kept in full, marked Merged" style="margin-left:6px;font-size:11px;color:var(--i3)">⧉ combines ${from.map(r => cwEsc(r) + (savedQuotes.some(x => x.ref === r) ? '' : ' <span style="color:#B45309">(deleted)</span>')).join(' + ')}</span>`;
+  return h;
+}
 // Returns true when the quote was loaded, false when the user kept their unsaved work.
 // GUARD (2026-09-11, QT-0097 incident): loading from the Saved Quotes list used to silently
 // replace whatever was in the builder — incl. an unsaved duplicate, which then got its
@@ -10025,11 +10059,15 @@ function loadQuote(ref) {
   }
   // A Superseded quote is the OLD version — say so before it opens (the QT-0097 incident:
   // after a reload it was the only back-garden quote in the list and looked like the live one).
-  if ((q.status || '') === 'Superseded') {
-    const succ = savedQuotes.find(x => x.supersedesRef === ref);
-    const msg = succ ? ref + ' has been REPLACED by ' + succ.ref + '.'
-      : (sqSupersedeTracked(q) ? ref + ' is marked Superseded but NO replacement was ever saved.' : ref + ' is marked Superseded (older quote — its replacement isn\'t recorded).');
-    if (!confirm('⚠ ' + msg + '\n\nEdits here change the OLD version, not the live quote.\n\nOpen it anyway?')) return false;
+  // Same for a Merged original (2026-09-14): it was combined into another quote, so edits
+  // here change an original the client will never see again, not the combined quote.
+  if (['Superseded', 'Merged'].includes(q.status || '')) {
+    const merged = q.status === 'Merged';
+    const succ = sqSuccessorOf(ref);
+    const msg = succ ? ref + (merged ? ' has been COMBINED into ' : ' has been REPLACED by ') + succ.ref + '.'
+      : (sqSupersedeTracked(q) ? ref + ' is marked ' + q.status + ' but NO ' + (merged ? 'combined quote' : 'replacement') + ' was ever saved.'
+        : ref + ' is marked ' + q.status + ' (older quote — its ' + (merged ? 'combined quote' : 'replacement') + ' isn\'t recorded).');
+    if (!confirm('⚠ ' + msg + '\n\nEdits here change ' + (merged ? 'an ORIGINAL, not the combined quote.' : 'the OLD version, not the live quote.') + '\n\nOpen it anyway?')) return false;
   }
   document.getElementById('in-cust').value=q.customer||'';
   document.getElementById('in-ref').value=q.ref||'';
@@ -11548,11 +11586,7 @@ function renderSaved() {
           style="padding:3px 8px;border-radius:20px;border:2px solid ${statusCol};color:${statusCol};font-size:11px;font-weight:600;background:white;cursor:pointer;min-width:90px">
           ${QUOTE_STATUSES.map(s => `<option value="${s}" ${status===s?'selected':''}>${s}</option>`).join('')}
         </select>
-        ${status==='Superseded' ? (succ => succ
-          ? `<span class="no-print" title="The revised copy that replaced this quote" style="margin-left:6px;font-size:11px;color:var(--i3)">→ replaced by ${succ.ref}</span>`
-          : (sqSupersedeTracked(sq)
-            ? `<span class="no-print" title="Marked Superseded, but no quote says it replaces this one — the copy may never have been saved. Duplicate it again, or set the status back." style="margin-left:6px;font-size:11px;font-weight:600;color:#B45309;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;padding:0 6px">⚠ no replacement saved</span>`
-            : ''))(savedQuotes.find(x => x.supersedesRef === sq.ref)) : ''}
+        ${sqLinkChipHtml(sq)}
         ${status==='Accepted' ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();contractFromSaved('${sq.ref}')" style="margin-left:4px" title="${sq.contractMeta?'View / edit / regenerate the contract':'Generate Contract of Works from this accepted quote'}">📄 ${sq.contractMeta?('Contract · '+(sq.contractMeta.status||'Generated')):'Contract · To create'}</button>` : ''}
         ${sigSt ? `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();sigFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${sigSt.col};color:${sigSt.col}" title="E-signature — click to manage">${sigSt.label}</button>` : ''}
         ${(status==='Accepted'||ramsStatusMap[sq.ref]) ? (rSt => `<button class="btn btn-outline btn-sm no-print" onclick="event.stopPropagation();ramsFromSaved('${sq.ref}')" style="margin-left:4px;border-color:${rSt.col};color:${rSt.col}" title="Risk Assessment &amp; Method Statement — click to manage">${rSt.label}</button>`)(ramsBadge(sq.ref)) : ''}
