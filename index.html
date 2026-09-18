@@ -616,7 +616,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <!-- Deliverable form and custom/misc builder are MUTUALLY EXCLUSIVE (2026-09-10): only one is
            on screen at a time. Both were open together before, and wording/labour typed into the
            wrong one was a recurring slip. openMiscBuilder()/closeMiscBuilder() swap them. -->
-      <div id="add-del-form" style="display:flex;flex-direction:column;gap:12px">
+      <div id="add-line-form" style="display:flex;flex-direction:column;gap:12px">
       <div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap">
         <div class="fg" style="flex:1;min-width:180px">
           <label>Deliverable</label>
@@ -3328,7 +3328,7 @@ function miscBuilderOpen() {
   return !!mb && mb.style.display !== 'none';
 }
 function openMiscBuilder() {
-  const df = document.getElementById('add-del-form'), mb = document.getElementById('misc-builder');
+  const df = document.getElementById('add-line-form'), mb = document.getElementById('misc-builder');   // NOT 'add-del-form' — that id belongs to the Price Manager's Add New Deliverable card (a 7c77993 clash hid it for 8 days)
   if (!df || !mb) return;
   df.style.display = 'none'; mb.style.display = '';
   const t = document.getElementById('add-line-title'); if (t) t.textContent = 'Add Custom Item';
@@ -3353,7 +3353,7 @@ function clearMiscForm() {
 }
 // force=true skips the discard confirm (after a successful add, or on new/load/duplicate).
 function closeMiscBuilder(force) {
-  const df = document.getElementById('add-del-form'), mb = document.getElementById('misc-builder');
+  const df = document.getElementById('add-line-form'), mb = document.getElementById('misc-builder');   // NOT 'add-del-form' — that id belongs to the Price Manager's Add New Deliverable card (a 7c77993 clash hid it for 8 days)
   if (!df || !mb) return;
   if (!force && miscBuilderOpen() && miscBuilderHasContent()) {
     const name = (document.getElementById('mc-desc').value || '').trim();
