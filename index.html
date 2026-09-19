@@ -7560,7 +7560,7 @@ function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
 // must stay Manual (Neal's ruling: irregular third-party cost), not read as job-end.
 const CRM_DESIGN_TRIGGERS = [
   { re: /survey|topo/i,      trigger: 'manual',       triggerList: null,                                                    terms: 'Standard' },
-  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'DESIGNS > Contract Sent',                               terms: 'Standard' },   // Gap 2a (19/09): was DESIGNS > Accepted / Immediate — deposit goes out with the contract; terms per the field map
+  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'DESIGNS > Contract Sent',                               terms: 'Immediate' },  // Gap 2a (19/09): list was DESIGNS > Accepted; terms stay Immediate (Neal's 30/07 design ruling — the CRM's 19/09 "Standard" was a misquote of the build table)
   { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'DESIGNS > Designs Presented, Awaiting Feedback',        terms: 'Standard' },
   { re: /completion|final/i, trigger: 'onCompletion', triggerList: 'DESIGNS > Design Complete - Order Booklet and Invoice', terms: 'Standard' },
 ];
