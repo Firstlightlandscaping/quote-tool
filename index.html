@@ -7494,8 +7494,13 @@ function readScheduleOpts(){
 // weeklies): the Airtable automation stamps Trigger Date as job start +7/14/21 and
 // array position isn't reliable enough to infer which weekly is which.
 // Trigger vocabulary is the app-side enum; the pusher translates to Airtable's options.
+// Gap 2a (CRM ruling 11/09, applied 19/09): the DEPOSIT row triggers on the card reaching
+// CONTRACT SENT, not QUOTE ACCEPTED — the deposit invoice goes out with the contract, and
+// event 7 (contract_sent) moves the card there after the rows exist. Only the list string
+// changed; trigger type + terms as before. The enum key stays `onAcceptance` because saved
+// contract_meta overrides reference it. Existing Payments rows on the old list are left alone.
 const CRM_TRIGGER_DEFS = {
-  onAcceptance: { triggerList: 'QUOTE ACCEPTED',     terms: 'Standard',   short: 'On acceptance' },
+  onAcceptance: { triggerList: 'CONTRACT SENT',      terms: 'Standard',   short: 'Deposit (contract sent)' },
   onStart:      { triggerList: 'JOBS > In Progress', terms: 'Immediate',  short: 'Start of works' },
   weekly:       { triggerList: null,                 terms: 'Standard',   short: 'Weekly' },
   onCompletion: { triggerList: null,                 terms: 'Completion', short: 'On completion' },
@@ -7555,7 +7560,7 @@ function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
 // must stay Manual (Neal's ruling: irregular third-party cost), not read as job-end.
 const CRM_DESIGN_TRIGGERS = [
   { re: /survey|topo/i,      trigger: 'manual',       triggerList: null,                                                    terms: 'Standard' },
-  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'DESIGNS > Accepted',                                    terms: 'Immediate' },
+  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'DESIGNS > Contract Sent',                               terms: 'Standard' },   // Gap 2a (19/09): was DESIGNS > Accepted / Immediate — deposit goes out with the contract; terms per the field map
   { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'DESIGNS > Designs Presented, Awaiting Feedback',        terms: 'Standard' },
   { re: /completion|final/i, trigger: 'onCompletion', triggerList: 'DESIGNS > Design Complete - Order Booklet and Invoice', terms: 'Standard' },
 ];
