@@ -7495,13 +7495,17 @@ function readScheduleOpts(){
 // array position isn't reliable enough to infer which weekly is which.
 // Trigger vocabulary is the app-side enum; the pusher translates to Airtable's options.
 // Gap 2a (CRM ruling 11/09, applied 19/09): the DEPOSIT row triggers on the card reaching
-// CONTRACT SENT, not QUOTE ACCEPTED — the deposit invoice goes out with the contract, and
+// Contract Sent, not Quote Accepted — the deposit invoice goes out with the contract, and
 // event 7 (contract_sent) moves the card there after the rows exist. Only the list string
 // changed; trigger type + terms as before. The enum key stays `onAcceptance` because saved
 // contract_meta overrides reference it. Existing Payments rows on the old list are left alone.
+// ⚠ STAGE NAMES SHORTENED 19/09/26 (Airtable kanban headers truncate; Neal's approved short
+// set): triggerList strings are the NEW exact Airtable option names — the CRM's card-move rule
+// matches Payments.Trigger List as plain text, so an old "SECTION > Name" form never fires.
+// Keep in step with BEYOND/LIST/LIST_CONTRACT_SENT in supabase/functions/airtable-sync.
 const CRM_TRIGGER_DEFS = {
-  onAcceptance: { triggerList: 'CONTRACT SENT',      terms: 'Standard',   short: 'Deposit (contract sent)' },
-  onStart:      { triggerList: 'JOBS > In Progress', terms: 'Immediate',  short: 'Start of works' },
+  onAcceptance: { triggerList: 'Contract Sent',      terms: 'Standard',   short: 'Deposit (contract sent)' },
+  onStart:      { triggerList: 'In Progress',        terms: 'Immediate',  short: 'Start of works' },
   weekly:       { triggerList: null,                 terms: 'Standard',   short: 'Weekly' },
   onCompletion: { triggerList: null,                 terms: 'Completion', short: 'On completion' },
   manual:       { triggerList: null,                 terms: 'Standard',   short: 'Manual' },
@@ -7560,9 +7564,9 @@ function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
 // must stay Manual (Neal's ruling: irregular third-party cost), not read as job-end.
 const CRM_DESIGN_TRIGGERS = [
   { re: /survey|topo/i,      trigger: 'manual',       triggerList: null,                                                    terms: 'Standard' },
-  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'DESIGNS > Contract Sent',                               terms: 'Immediate' },  // Gap 2a (19/09): list was DESIGNS > Accepted; terms stay Immediate (Neal's 30/07 design ruling — the CRM's 19/09 "Standard" was a misquote of the build table)
-  { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'DESIGNS > Designs Presented, Awaiting Feedback',        terms: 'Standard' },
-  { re: /completion|final/i, trigger: 'onCompletion', triggerList: 'DESIGNS > Design Complete - Order Booklet and Invoice', terms: 'Standard' },
+  { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'Design Contract', terms: 'Immediate' },  // Gap 2a (19/09): the design contract-sent stage (was the design-accepted stage); terms stay Immediate (Neal's 30/07 design ruling)
+  { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'Feedback Due',    terms: 'Standard' },   // the designs-presented / awaiting-feedback stage
+  { re: /completion|final/i, trigger: 'onCompletion', triggerList: 'Order Booklet',   terms: 'Standard' },   // the design-complete / order-booklet stage
 ];
 function crmDesignTrigger(label) {
   const hit = CRM_DESIGN_TRIGGERS.find(t => t.re.test(String(label || '')));
@@ -8271,7 +8275,7 @@ async function sigDoSend(ref) {
     sigStatusMap[ref] = saved;           // so the CRM pending check sees this send before the refresh lands
     sigRefreshStatuses();                // badge follows along
     sigRenderDialog(a, [saved]);         // re-open in "outstanding" state with the Copy buttons
-    crmPushAuto(ref, 'contract_sent');   // CRM event 7: card → CONTRACT SENT / DESIGNS > Contract Sent (automatic when clean)
+    crmPushAuto(ref, 'contract_sent');   // CRM event 7: card → Contract Sent / Design Contract (automatic when clean)
   } catch (e) {
     toast('Send failed: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = '✍ Freeze contract & create link'; }
@@ -9497,7 +9501,7 @@ async function crmPushPanel(ref, event) {
     '<div style="padding:10px 12px;background:#F5F3FF;border:1px solid #C4B5FD;border-radius:8px;font-size:13px;margin-bottom:10px">' +
       'This will update the card for: <strong>' + cwEsc(c.name || '(unnamed card)') + '</strong>' +
       (c.redirectedFrom !== undefined ? ' <span style="color:#B45309;font-size:12px">(sandbox test card — redirected from ' + cwEsc(c.redirectedFrom || 'no card') + ')</span>' : '') +
-      '<div style="font-size:12px;color:var(--i3);margin-top:3px">Card stage: ' + cwEsc(c.list || '(none)') + (c.beyond ? ' · <span style="color:#B45309">at CONTRACT SENT or beyond — values only, no move</span>' : '') +
+      '<div style="font-size:12px;color:var(--i3);margin-top:3px">Card stage: ' + cwEsc(c.list || '(none)') + (c.beyond ? ' · <span style="color:#B45309">at Contract Sent or beyond — values only, no move</span>' : '') +
       (plan.quotesRow && plan.quotesRow.found ? ' · CRM row: ' + cwEsc(plan.quotesRow.status || '') : ' · no CRM row yet') + '</div>' +
     '</div>' +
     (writes.length

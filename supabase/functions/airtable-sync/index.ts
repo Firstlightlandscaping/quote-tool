@@ -10,7 +10,7 @@
 // repo; field ids are inert without the base id, which is a secret). Rules honoured here:
 //   * every push idempotent — Quotes rows upserted on Ref, Payments matched by name
 //   * field IDS as keys, NEVER typecast, exact List strings (spaces around >)
-//   * "CONTRACT SENT or beyond" is an EXPLICIT 12-list set, never option order: values are
+//   * "Contract Sent or beyond" is an EXPLICIT 11-list set, never option order: values are
 //     written there but the card NEVER moves
 //   * Superseded: prior status comes from the AIRTABLE Quotes row (the CRM's last-pushed
 //     state is the durable memory): no row → never pushed → no write at all; Sent or
@@ -24,7 +24,7 @@
 //     or a COMMA LIST (a merge). Every push of a QT- row rewrites the link to every listed
 //     original that HAS a row (absent ones noted, never created) — a late row self-heals.
 //   * Accepted: Date Sent backfilled from the card's Quote Sent Date when the row has none;
-//     card → QUOTE ACCEPTED only if no other row on the card is still Sent
+//     card → Quote Accepted only if no other row on the card is still Sent
 //   * Declined: row only; the stage is never touched (archiving is a human tick)
 //   * Quote Value: Σ Accepted rows if any are Accepted, else Σ Sent rows ("follows the
 //     accepted quote"); recomputed on sent / accepted / declined, never on supersede
@@ -62,25 +62,30 @@ const P = {
 };
 // A milestone is a FACT (never updated, never deleted) once any of these is set.
 const paymentLocked = (f: any) => !!f[P.invoiceSent] || !!f[P.completed] || !!f[P.datePaid];
-// "CONTRACT SENT or beyond" — the explicit set (CRM, 05/09/26). Option order is NOT workflow order.
+// ⚠ STAGE NAMES SHORTENED 19/09/26 (Airtable's kanban headers cut names over ~15 chars; Neal
+// approved the short set): every List option on Cards was renamed by hand in Airtable. The
+// strings below are the NEW exact names — case and spacing matter, never the old
+// "SECTION > Name" forms. The old job-report and ready-to-present stages were deleted the
+// same day and have no successor (the guard set went from 12 names to 11).
+// "Contract Sent or beyond" — the explicit set (CRM, 05/09/26; 11 names since 19/09).
+// Option order is NOT workflow order.
 const BEYOND = new Set([
-  "CONTRACT SENT", "JOBS > Main Jobs Scheduled", "JOBS > Small Jobs to Schedule", "JOBS > Snags to Schedule",
-  "JOBS > Planning (post-handover)", "JOBS > In Progress", "JOBS > On Hold", "JOBS > Waiting Planting",
-  "COMPLETION PAYMENT DUE > No Feedback", "COMPLETION PAYMENT DUE > Request Feedback", "COMPLETION > Job Report", "COMPLETE",
+  "Contract Sent", "Jobs Scheduled", "Small Jobs", "Snags", "Planning",
+  "In Progress", "On Hold", "Awaiting Plants", "Final Inv Due", "INV + Review", "Complete",
 ]);
-// "Work started" (CRM + Neal, 05/09 — the SUPERSEDE boundary): CONTRACT SENT and the four
-// pre-start JOBS columns still count as "before work starts" — a supersede there is a
+// "Work started" (CRM + Neal, 05/09 — the SUPERSEDE boundary): Contract Sent and the four
+// pre-start jobs columns still count as "before work starts" — a supersede there is a
 // re-quote and the card goes back to Amendments regardless of signed/paid. From
-// JOBS > In Progress onward the push HOLDS and asks.
-const PRE_START = new Set(["CONTRACT SENT", "JOBS > Main Jobs Scheduled", "JOBS > Small Jobs to Schedule", "JOBS > Snags to Schedule", "JOBS > Planning (post-handover)"]);
+// In Progress onward the push HOLDS and asks.
+const PRE_START = new Set(["Contract Sent", "Jobs Scheduled", "Small Jobs", "Snags", "Planning"]);
 const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_START.has(list);
-const LIST = { quoteSent: "QUOTE SENT", accepted: "QUOTE ACCEPTED", amendments: "QUOTES > Amendments" };
+const LIST = { quoteSent: "Quote Sent", accepted: "Quote Accepted", amendments: "Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
 const EVENTS = new Set(["sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
-// QT- → CONTRACT SENT, DC- → DESIGNS > Contract Sent — unless it's already past the guard.
-const LIST_CONTRACT_SENT = { qt: "CONTRACT SENT", dc: "DESIGNS > Contract Sent" };
+// QT- → Contract Sent, DC- → Design Contract — unless it's already past the guard.
+const LIST_CONTRACT_SENT = { qt: "Contract Sent", dc: "Design Contract" };
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -291,17 +296,17 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     return round2(pool.reduce((s, a) => s + a.value, 0));
   };
   const cardPatch: Record<string, unknown> = {};
-  // ignoreGuard: the supersede re-quote rule moves the card even from CONTRACT SENT / the
+  // ignoreGuard: the supersede re-quote rule moves the card even from Contract Sent / the
   // pre-start JOBS columns (Neal + CRM, 05/09) — every other move respects the 12-list guard.
   const move = (to: string, why: string, ignoreGuard = false) => {
-    if (beyond && !ignoreGuard) { plan.notes.push(`Card is at "${list}" (CONTRACT SENT or beyond) — values written, stage NOT moved (${why})`); return; }
+    if (beyond && !ignoreGuard) { plan.notes.push(`Card is at "${list}" (Contract Sent or beyond) — values written, stage NOT moved (${why})`); return; }
     if (list === to) { plan.notes.push(`Card already at "${to}"`); return; }
     cardPatch[CARD.list] = to;
     plan.notes.push(`Card "${list || "(no list)"}" → "${to}" (${why})`);
   };
   // Stranding fix (CRM, 05/09): after a supersede or decline, if an Accepted row exists,
-  // no Sent rows remain, and the card isn't past the guard → QUOTE ACCEPTED. Without it the
-  // options flow leaves a won job in QUOTE SENT forever (proven at walk-through steps 3–4).
+  // no Sent rows remain, and the card isn't past the guard → Quote Accepted. Without it the
+  // options flow leaves a won job in Quote Sent forever (proven at walk-through steps 3–4).
   const strandingCheck = (all: { status: string | null }[]) => {
     if (!all.some(a => a.status === "Accepted") || all.some(a => a.status === "Sent")) return false;
     if (beyond) { plan.notes.push("Accepted quote remains but the card is past the guard — not moved"); return false; }
@@ -340,7 +345,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         } else {
           plan.needsDecision = {
             key: "inProgressSupersede",
-            question: `This job is at "${list}" — work has started. Move the card back to QUOTES > Amendments (re-quote) or leave it in place (variation)?`,
+            question: `This job is at "${list}" — work has started. Move the card back to Amendments (re-quote) or leave it in place (variation)?`,
             options: [{ value: "amendments", label: "Back to Amendments — we are re-quoting" }, { value: "leave", label: "Leave in place — it's a variation" }],
           };
         }
