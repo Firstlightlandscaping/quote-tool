@@ -27,7 +27,9 @@
 //     card → Quote Accepted only if no other row on the card is still Sent
 //   * Declined: row only; the stage is never touched (archiving is a human tick)
 //   * Quote Value: Σ Accepted rows if any are Accepted, else Σ Sent rows ("follows the
-//     accepted quote"); recomputed on sent / accepted / declined, never on supersede
+//     accepted quote"); recomputed on sent / accepted / declined, never on supersede.
+//     On declined an EMPTY pool leaves the card's figure alone (CRM, 20/09/26) — no
+//     information is not zero, and pre-CRM cards hold a Trello value the push never owned
 //   * Quoted By omitted (and logged) unless it matches an option exactly
 //   * Payments on (re)generation: create missing; update Amount on a name match ONLY if
 //     Invoice Sent and Completed are both unticked; never touch invoiced/completed rows,
@@ -389,8 +391,13 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     case "declined": {
       if (rec.isDesign) throw new Error("A design contract is not marked Declined through this event");
       upsertRow({ [Q.status]: "Declined" }, "Quotes row → Declined");
-      cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter("Declined"));
-      if (!strandingCheck(statusAfter("Declined"))) plan.notes.push("Stage left alone — archiving is a human tick (Quote Rejected - Approved to Archive)");
+      // Quote Value only when the pool still has something in it (CRM, 20/09/26): an empty
+      // pool means the CRM has no information, not zero — pre-CRM cards carry a Trello figure
+      // the push never owned, and 12 retro-linked declines would have wiped them to £0.
+      const after = statusAfter("Declined");
+      if (after.some(a => a.status === "Accepted" || a.status === "Sent")) cardPatch[CARD.quoteValue] = quoteValueFrom(after);
+      else plan.notes.push("No Sent or Accepted quote remains on this card — Quote Value left as it is");
+      if (!strandingCheck(after)) plan.notes.push("Stage left alone — archiving is a human tick (Quote Rejected - Approved to Archive)");
       break;
     }
     case "contract_generated": {
