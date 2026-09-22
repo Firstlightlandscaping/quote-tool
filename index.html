@@ -7565,7 +7565,7 @@ function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
 const CRM_DESIGN_TRIGGERS = [
   { re: /survey|topo/i,      trigger: 'manual',       triggerList: null,                                                    terms: 'Standard' },
   { re: /acceptance/i,       trigger: 'onAcceptance', triggerList: 'Design Contract', terms: 'Immediate' },  // Gap 2a (19/09): the design contract-sent stage (was the design-accepted stage); terms stay Immediate (Neal's 30/07 design ruling)
-  { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'Feedback Due',    terms: 'Standard' },   // the designs-presented / awaiting-feedback stage
+  { re: /concept/i,          trigger: 'onConcepts',   triggerList: 'To Be Updated',   terms: 'Standard' },   // CRM 22/09: the 50% is earned at the first round of changes AFTER the concept meeting, not when concepts are emailed (Feedback Due); the CRM already reads a "Feedback Due" row as To Be Updated
   { re: /completion|final/i, trigger: 'onCompletion', triggerList: 'Order Booklet',   terms: 'Standard' },   // the design-complete / order-booklet stage
 ];
 function crmDesignTrigger(label) {
