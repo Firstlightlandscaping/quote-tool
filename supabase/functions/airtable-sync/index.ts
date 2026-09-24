@@ -35,6 +35,8 @@
 //     Invoice Sent and Completed are both unticked; never touch invoiced/completed rows,
 //     never delete, list dropped milestones — never guess at money. Trigger Date untouched.
 //   * DC- contract_generated: Quotes row + Payments only (no Job Number / Project Value)
+//   * QT- contract_generated also prefixes the Card Name with the ref ("QT-0080 Philippa
+//     Barber") — only when the name carries no QT ref yet; an existing one is never touched
 //   * contract_signed routes by prefix: QT- → Contract Signed, DC- → Design Contract Signed
 //   * NEVER writes the four RAMS fields or the legacy RAMS checkboxes
 //
@@ -88,6 +90,9 @@ const EVENTS = new Set(["sent", "superseded", "merged", "accepted", "declined", 
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
 // QT- → Contract Sent, DC- → Design Contract — unless it's already past the guard.
 const LIST_CONTRACT_SENT = { qt: "Contract Sent", dc: "Design Contract" };
+// A quote ref anywhere in a card name: "QT-0082", "FL3323/QT-0082", and the hyphen-less
+// "QT0017" that pre-CRM cards carry. Used to decide whether a build contract may prefix it.
+const HAS_QT_REF = /QT[-\s]?\d/i;
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -409,7 +414,15 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!rec.isDesign) {
         cardPatch[CARD.jobNumber] = ref;
         cardPatch[CARD.projectValue] = round2(Number(cm.total) || rec.valueInc);
-      } else plan.notes.push("Design contract — Job Number / Project Value are build-contract facts, not written");
+        // Card Name gets the QT ref in front (CRM, 24/09/26): Airtable shows a linked card only
+        // by its name, so staff read the job number off the board and every linked chip. Only
+        // when the name carries NO quote ref yet — an existing ref is never rewritten or
+        // replaced. "QT0017"-style refs (no hyphen, typed in Trello days) count as a ref too,
+        // or they would be double-prefixed.
+        const curName = str(cf[CARD.name]) || "";
+        if (HAS_QT_REF.test(curName)) plan.notes.push(`Card Name "${curName}" already carries a QT ref — left as it is`);
+        else cardPatch[CARD.name] = curName.trim() ? `${ref} ${curName.trim()}` : ref;
+      } else plan.notes.push("Design contract — Job Number / Project Value / Card Name are build-contract facts, not written");
       // Payments: existing rows on this card via the card's reverse link (ids — a formula over
       // {Card} would see names, not ids), matched by milestone name.
       const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
