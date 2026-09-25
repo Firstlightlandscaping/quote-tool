@@ -10144,6 +10144,11 @@ async function saveQuote() {
   const statusChanged = prevStoredStatus === null || existingStatus !== prevStoredStatus;
   const statusStamp = statusChanged ? new Date().toISOString() : (existing >= 0 ? savedQuotes[existing].statusChangedAt : null);
   const q={ref,customer:g('in-cust'),date:g('in-date'),addr1:g('in-a1'),city:g('in-city'),post:g('in-post'),sign:g('in-sign'),vno:g('in-vno'),sum:g('in-sum'),summaryHtml:document.getElementById('qh-summary').innerHTML,lines:JSON.parse(JSON.stringify(lines)),saved:new Date().toISOString(),status:existingStatus,statusChangedAt:statusStamp,airtableCardId:crmLink.cardId||'',clientEmail:crmLink.email||'',supersedesRef:crmLink.supersedes||'',contractMeta:(existing>=0?savedQuotes[existing].contractMeta:undefined)};
+  // Carry the load-time fields this rebuild doesn't own (2026-09-25): without them a re-save
+  // dropped the schedule plan (reopening the quote in the same session then started an EMPTY
+  // plan, which a schedule save would write over the stored one) and the CRM push stamps
+  // (false "to push" badges; the Draft block read {} and let a pushed quote back to Draft).
+  if (existing>=0) { const prev = savedQuotes[existing]; q.schedulePlan = prev.schedulePlan || null; q.lastPushedAt = prev.lastPushedAt || null; q.crmPushed = prev.crmPushed || {}; }
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
     try {
