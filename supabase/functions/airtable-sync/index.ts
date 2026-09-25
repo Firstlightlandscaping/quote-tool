@@ -5,6 +5,8 @@
 //
 //   POST { ref: "QT-0097" | "DC-0003", event, dryRun?: true, cardOverride?: "rec…" }
 //     event ∈ sent · superseded · merged · accepted · declined · contract_generated · contract_sent · contract_signed
+//           · figures (a Sent quote edited in place: row Value/Scope + card Quote Value only;
+//             body.resent:true also sets the card's Quote Sent Date to today)
 //
 // Contract = C:\Dev\FirstLight\Airtable CRM\AIRTABLE_FIELD_MAP.md (never copied into this
 // repo; field ids are inert without the base id, which is a secret). Rules honoured here:
@@ -86,7 +88,7 @@ const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_
 const LIST = { quoteSent: "Quote Sent", accepted: "Quote Accepted", amendments: "Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
-const EVENTS = new Set(["sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
+const EVENTS = new Set(["figures", "sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
 // QT- → Contract Sent, DC- → Design Contract — unless it's already past the guard.
 const LIST_CONTRACT_SENT = { qt: "Contract Sent", dc: "Design Contract" };
@@ -204,7 +206,7 @@ type Plan = {
   blocked: string[]; needsDecision: { key: string; question: string; options: { value: string; label: string }[] } | null; hold: string[];
 };
 
-async function buildPlan(ref: string, event: string, cardOverride?: string, decision?: string): Promise<Plan | { skipped: string; ref: string; event: string } | { orphan: true; ref: string; event: string; warning: string }> {
+async function buildPlan(ref: string, event: string, cardOverride?: string, decision?: string, resent = false): Promise<Plan | { skipped: string; ref: string; event: string } | { orphan: true; ref: string; event: string; warning: string }> {
   const rec = await loadRecord(ref);
   if (!rec) throw new Error("Record not found: " + ref);
   const forcedCard = Deno.env.get("AIRTABLE_TEST_CARD") || "";
@@ -324,6 +326,31 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   const otherSent = plan.siblings.some(s => s.status === "Sent");
 
   switch (event) {
+    case "figures": {
+      // A SENT quote edited in place (Neal, 25/09: "forgot the tree" / "can you just change
+      // that one thing" — same quote, not a revision). FIGURES ONLY: the existing Quotes row's
+      // Value + Scope, and the card's Quote Value by the usual rule. Never a new row, never a
+      // List move, never tasks / payments / other card fields — even when the card sits
+      // elsewhere (an options flow with an Accepted sibling). resent = the quote went back to
+      // the client, so Quote Sent Date = today and the CRM's chase restarts from it.
+      if (rec.isDesign) throw new Error("A design contract has no quote figures to update");
+      if (rec.status !== "Sent") return { skipped: `${ref} is ${rec.status}, not Sent — figures are only updated in place on a sent quote`, ref, event };
+      if (!own) return { skipped: `${ref} has no CRM row yet (never pushed as Sent) — nothing to update`, ref, event };
+      const rowF: Record<string, unknown> = {};
+      if (Math.abs(num(own.fields[Q.value]) - rec.valueInc) >= 0.005) rowF[Q.value] = rec.valueInc;
+      if (rec.scope && str(own.fields[Q.scope]) !== rec.scope) rowF[Q.scope] = rec.scope;
+      if (Object.keys(rowF).length) plan.writes.push({ table: T.quotes, op: "patch", id: own.id, label: `Quotes row figures (£${num(own.fields[Q.value])} → £${rec.valueInc})`, fields: rowF });
+      else plan.notes.push("Quotes row figures already match");
+      // Quote Value from the Airtable rows, with THIS row at its new value and its own status.
+      const all = [...plan.siblings.map(s => ({ status: s.status, value: s.value })), { status: str(own.fields[Q.status]), value: rec.valueInc }];
+      cardPatch[CARD.quoteValue] = quoteValueFrom(all);
+      if (resent) {
+        cardPatch[CARD.quoteSentDate] = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
+        plan.notes.push("Re-sent to the client — Quote Sent Date → today (the quote chase restarts from it)");
+      }
+      plan.notes.push("Figures only — stage not moved, no tasks or payments touched");
+      break;
+    }
     case "sent": {
       if (rec.isDesign) throw new Error("A design contract is not marked Sent through this event");
       upsertRow(rowFieldsFull("Sent"), "Quotes row → Sent");   // Supersedes link added by upsertRow
@@ -573,7 +600,7 @@ Deno.serve(async (req: Request) => {
     }
     const cardOverride = typeof body.cardOverride === "string" && /^rec[A-Za-z0-9]{14}$/.test(body.cardOverride) ? body.cardOverride : undefined;
     const decision = typeof body.decision === "string" ? body.decision : undefined;
-    const plan = await buildPlan(ref, event, cardOverride, decision);
+    const plan = await buildPlan(ref, event, cardOverride, decision, body.resent === true);
     if ("orphan" in plan) return json(200, { ok: true, orphan: true, ref, event, warning: plan.warning });
     if ("skipped" in plan && !("writes" in plan)) {
       if (body.dryRun !== true) await stamp(ref, event, "skipped");   // a decided no-op still clears the pending badge

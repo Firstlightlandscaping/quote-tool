@@ -9309,7 +9309,7 @@ function crmSplitAddress(blob) {
 // pushes in a row (accepted → contract generated → signed). The panel walks them in order.
 // Orphans (no linked card) warn and deep-link to the picker; nothing is written.
 const CRM_PUSH_EVENT_FOR_STATUS = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded', Merged: 'merged' };
-const CRM_PUSH_EVENT_LABEL = { sent: 'Quote sent', superseded: 'Quote superseded', merged: 'Quote merged', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed' };
+const CRM_PUSH_EVENT_LABEL = { figures: 'Quote figures updated', sent: 'Quote sent', superseded: 'Quote superseded', merged: 'Quote merged', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed' };
 // Readable names for the plan (ids are the wire format; names are for the human).
 const CRM_FIELD_NAMES = {
   fld94ZrpnsYT0Bw9a: 'Card Name', fldqEdoSsR6whYUXd: 'List', fld6I3tOHbq8DNG69: 'Quote Value', fldUxILTHcPALSZax: 'Quote Sent Date', fldTN5Sto5WIP9x8I: 'Job Number',
@@ -9363,7 +9363,10 @@ async function crmPushCall(ref, event, opts) {
   const res = await fetch(SUPABASE_URL + '/functions/v1/airtable-sync', {
     method: 'POST',
     headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ref, event, dryRun: !!opts.dryRun, confirm: !!opts.confirm, decision: opts.decision || undefined, clear: !!opts.clear }),
+    // resent: only the "figures" event reads it. Remembered per ref so a HELD figures push
+    // that is later pushed from the review panel still carries the tick.
+    body: JSON.stringify({ ref, event, dryRun: !!opts.dryRun, confirm: !!opts.confirm, decision: opts.decision || undefined, clear: !!opts.clear,
+                           resent: event === 'figures' ? !!(opts.resent != null ? opts.resent : crmFiguresResent[ref]) : undefined }),
   });
   const d = await res.json().catch(() => ({}));
   if (res.status === 409 && d && d.held) return d;
@@ -9398,7 +9401,11 @@ async function crmPushAuto(ref, event) {
   try { d = await crmPushCall(ref, event, { dryRun: true }); }
   catch (e) { crmHoldBanner(ref, event, 'Could not read the CRM: ' + e.message); return; }
   if (d.orphan) { crmHoldBanner(ref, event, d.warning); return; }
-  if (d.skipped) { try { await crmPushCall(ref, event, {}); crmMarkPushed(ref, event); } catch (e) {} return; }   // decided no-op — stamp quietly
+  if (d.skipped) {   // decided no-op — stamp quietly (the figures prompt was a click, so say why)
+    try { await crmPushCall(ref, event, {}); crmMarkPushed(ref, event); } catch (e) {}
+    if (event === 'figures') crmNoticeBanner('busy', '📇 CRM not updated — ' + d.skipped, 8000);
+    return;
+  }
   if ((d.hold || []).length || (d.blocked || []).length || d.needsDecision) { crmHoldBanner(ref, event, d.hold[0] || 'needs a look'); return; }
   crmNoticeBanner('busy', '📇 Pushing ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' to the CRM…', 0);
   try {
@@ -9409,7 +9416,47 @@ async function crmPushAuto(ref, event) {
     crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's') + (r.card && r.card.name ? ' · ' + r.card.name : ''), 8000);
   } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); }
 }
-// The amber top banner (unsaved-print pattern) — never a modal, so a contract preview or
+// ── "Update the CRM figures" for a SENT quote edited in place (Neal, 25/09) ─────────
+// The push only fires on a STATUS change, so fixing a sent quote ("forgot the tree", "can
+// you just change that one thing") left the card's Quote Value at the old figure. It's
+// the same quote, not a revision, so supersede is the wrong tool. After a save that
+// changed a Sent quote's total, ask once; [Update CRM] runs the "figures" event (row
+// Value/Scope + card Quote Value only — never a move, never a new row). The tick = the
+// updated quote went back to the client, so Quote Sent Date → today and the chase restarts.
+const crmFiguresResent = {};
+// Pure gate (kept separate so it can be checked with synthetic data). prev = the saved-list
+// entry BEFORE this save, next = after. Draft/Accepted/Superseded/Declined/Estimate never
+// ask (Accepted changes go through supersede — the contract and payments hang off it).
+function crmFiguresShouldPrompt(prev, next) {
+  if (!prev || !next) return false;
+  if (prev.status !== 'Sent' || next.status !== 'Sent') return false;
+  if (!next.airtableCardId) return false;
+  const p = next.crmPushed || {};
+  const reallySent = Object.keys(p).some(k => k[0] !== '~' && !p['~' + k]);   // a real push made the row (cleared/parked ones didn't)
+  if (!reallySent) return false;
+  return Math.abs(sqTotals(prev).inc - sqTotals(next).inc) >= 0.005;
+}
+function crmFiguresPrompt(ref, before, after) {
+  const old = document.getElementById('crm-figures-dialog'); if (old) old.remove();
+  const gbp = n => '£' + n.toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const wrap = document.createElement('div');
+  wrap.id = 'crm-figures-dialog';
+  wrap.innerHTML = '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:480px;max-width:95vw">' +
+    '<h3 style="margin:0 0 6px">📇 Update the CRM?</h3>' +
+    '<div style="font-size:13px;margin-bottom:10px">' + cwEsc(ref) + ' has already been sent. Its total changed from <strong>' + gbp(before) + '</strong> to <strong>' + gbp(after) + '</strong> inc VAT. Update the figures in the CRM?</div>' +
+    '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="crm-fig-resent" style="margin-top:2px"> <span>I\'ve re-sent the updated quote to the client <span style="color:var(--i3)">(restarts the quote chase)</span></span></label>' +
+    '<div style="font-size:11px;color:var(--i3)">Figures only — the card stays where it is. "Not now" leaves the CRM on the old figure.</div>' +
+    '<div class="cw-modal-btns"><button class="btn btn-primary" id="crm-fig-go">Update CRM</button><button class="btn btn-outline" id="crm-fig-no">Not now</button></div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+  document.getElementById('crm-fig-no').onclick = () => wrap.remove();
+  document.getElementById('crm-fig-go').onclick = () => {
+    const resent = document.getElementById('crm-fig-resent').checked;
+    wrap.remove();
+    crmFiguresResent[ref] = resent;
+    crmPushAuto(ref, 'figures');   // same clean-runs / anything-else-holds rules as every push
+  };
+}
 // the quote you're reading is never covered. One banner; a newer hold replaces it.
 function crmHoldBanner(ref, event, reason) {
   const old = document.getElementById('crm-hold-banner'); if (old) old.remove();
@@ -10149,6 +10196,8 @@ async function saveQuote() {
   // plan, which a schedule save would write over the stored one) and the CRM push stamps
   // (false "to push" badges; the Draft block read {} and let a pushed quote back to Draft).
   if (existing>=0) { const prev = savedQuotes[existing]; q.schedulePlan = prev.schedulePlan || null; q.lastPushedAt = prev.lastPushedAt || null; q.crmPushed = prev.crmPushed || {}; }
+  const prevEntry = existing >= 0 ? savedQuotes[existing] : null;   // for the Sent-quote CRM figures prompt
+  let savedOk = false;
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
     try {
@@ -10190,7 +10239,7 @@ async function saveQuote() {
           };
         }), '');
       }
-      isDirty=false; document.getElementById('save-status').textContent='✓ Saved '+new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
+      isDirty=false; savedOk=true; document.getElementById('save-status').textContent='✓ Saved '+new Date().toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'});
     } catch(e) {
       document.getElementById('save-status').textContent='⚠ Save failed: '+e.message;
       toast('Save failed: '+e.message);
@@ -10202,6 +10251,9 @@ async function saveQuote() {
   }
   renderSaved();
   toast('Quote saved: '+ref);
+  // A SENT quote whose total just changed: offer to update the CRM figures (only after the
+  // save actually reached the database — the push reads the stored quote).
+  if (savedOk && crmFiguresShouldPrompt(prevEntry, q)) crmFiguresPrompt(ref, sqTotals(prevEntry).inc, sqTotals(q).inc);
 }
 // The supersedes pointer (quotes.supersedes_ref) has only been written since the CRM Phase 2
 // cutover on 2026-08-04. Quotes superseded before that legitimately have no recorded
