@@ -204,6 +204,8 @@ type Plan = {
   // the app HOLD (amber banner) until a person reviews. blocked = can never execute as is;
   // needsDecision = the person must pick an option; hold = every reason it isn't clean.
   blocked: string[]; needsDecision: { key: string; question: string; options: { value: string; label: string }[] } | null; hold: string[];
+  // "figures" event only: what the CRM holds vs the saved quote, so the app can say so.
+  figures?: { crmRow: number; crmCard: number; quote: number };
 };
 
 async function buildPlan(ref: string, event: string, cardOverride?: string, decision?: string, resent = false): Promise<Plan | { skipped: string; ref: string; event: string } | { orphan: true; ref: string; event: string; warning: string }> {
@@ -336,6 +338,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (rec.isDesign) throw new Error("A design contract has no quote figures to update");
       if (rec.status !== "Sent") return { skipped: `${ref} is ${rec.status}, not Sent — figures are only updated in place on a sent quote`, ref, event };
       if (!own) return { skipped: `${ref} has no CRM row yet (never pushed as Sent) — nothing to update`, ref, event };
+      plan.figures = { crmRow: num(own.fields[Q.value]), crmCard: num(cf[CARD.quoteValue]), quote: rec.valueInc };
       const rowF: Record<string, unknown> = {};
       if (Math.abs(num(own.fields[Q.value]) - rec.valueInc) >= 0.005) rowF[Q.value] = rec.valueInc;
       if (rec.scope && str(own.fields[Q.scope]) !== rec.scope) rowF[Q.scope] = rec.scope;

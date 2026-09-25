@@ -9419,22 +9419,43 @@ async function crmPushAuto(ref, event) {
 // ── "Update the CRM figures" for a SENT quote edited in place (Neal, 25/09) ─────────
 // The push only fires on a STATUS change, so fixing a sent quote ("forgot the tree", "can
 // you just change that one thing") left the card's Quote Value at the old figure. It's
-// the same quote, not a revision, so supersede is the wrong tool. After a save that
-// changed a Sent quote's total, ask once; [Update CRM] runs the "figures" event (row
-// Value/Scope + card Quote Value only — never a move, never a new row). The tick = the
-// updated quote went back to the client, so Quote Sent Date → today and the chase restarts.
+// the same quote, not a revision, so supersede is the wrong tool. [Update CRM] runs the
+// "figures" event (row Value/Scope + card Quote Value only — never a move, never a new
+// row). The tick = the updated quote went back to the client, so Quote Sent Date → today
+// and the chase restarts.
+// WHEN IT ASKS (Neal, 25/09 rework): after saving a Sent quote that has already been pushed,
+// the app asks the CRM (a dry run — nothing written) and shows the box ONLY if the CRM's
+// price differs from the saved quote. Compared with the CRM, not with the last save, so
+// "Not now" is never final. "Not now" = quiet for the rest of this editing session (Neal
+// saves as he goes); opening the quote again re-checks. Nothing is ever sent without a click.
 const crmFiguresResent = {};
-// Pure gate (kept separate so it can be checked with synthetic data). prev = the saved-list
-// entry BEFORE this save, next = after. Draft/Accepted/Superseded/Declined/Estimate never
-// ask (Accepted changes go through supersede — the contract and payments hang off it).
-function crmFiguresShouldPrompt(prev, next) {
-  if (!prev || !next) return false;
-  if (prev.status !== 'Sent' || next.status !== 'Sent') return false;
-  if (!next.airtableCardId) return false;
-  const p = next.crmPushed || {};
-  const reallySent = Object.keys(p).some(k => k[0] !== '~' && !p['~' + k]);   // a real push made the row (cleared/parked ones didn't)
-  if (!reallySent) return false;
-  return Math.abs(sqTotals(prev).inc - sqTotals(next).inc) >= 0.005;
+const crmFiguresSnoozed = {};   // ref → true after "Not now"; cleared by loadQuote
+// Pure gate (checkable with synthetic data): may this save trigger a CRM check at all?
+// Draft/Accepted/Superseded/Declined/Estimate never ask (Accepted changes go through
+// supersede — the contract and payments hang off it).
+function crmFiguresShouldCheck(q) {
+  if (!q || q.status !== 'Sent' || !q.airtableCardId) return false;
+  if (crmFiguresSnoozed[q.ref]) return false;
+  const p = q.crmPushed || {};
+  return Object.keys(p).some(k => k[0] !== '~' && !p['~' + k]);   // a real push made the row (cleared/parked ones didn't)
+}
+// Does the CRM's price differ? = the dry-run plan would write a Value or Quote Value.
+function crmFiguresDiffer(d) {
+  if (!d || !d.ok || d.orphan || d.skipped || !d.figures) return false;
+  return (d.writes || []).some(w => w.fields && ('fldAt1fIqtuED67u1' in w.fields || 'fld6I3tOHbq8DNG69' in w.fields));
+}
+let crmFiguresChecking = false;
+async function crmFiguresCheckAfterSave(ref) {
+  if (!USE_SUPABASE || crmFiguresChecking || document.getElementById('crm-figures-dialog')) return;
+  crmFiguresChecking = true;
+  try {
+    const d = await crmPushCall(ref, 'figures', { dryRun: true, resent: false });
+    if (!crmFiguresSnoozed[ref] && crmFiguresDiffer(d)) {
+      const f = d.figures;   // show this quote's own CRM figure; the card total only when that one already matches
+      crmFiguresPrompt(ref, Math.abs(f.crmRow - f.quote) >= 0.005 ? f.crmRow : f.crmCard, f.quote);
+    }
+  } catch (e) { /* a failed check never gets in the way of saving */ }
+  finally { crmFiguresChecking = false; }
 }
 function crmFiguresPrompt(ref, before, after) {
   const old = document.getElementById('crm-figures-dialog'); if (old) old.remove();
@@ -9443,13 +9464,13 @@ function crmFiguresPrompt(ref, before, after) {
   wrap.id = 'crm-figures-dialog';
   wrap.innerHTML = '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:480px;max-width:95vw">' +
     '<h3 style="margin:0 0 6px">📇 Update the CRM?</h3>' +
-    '<div style="font-size:13px;margin-bottom:10px">' + cwEsc(ref) + ' has already been sent. Its total changed from <strong>' + gbp(before) + '</strong> to <strong>' + gbp(after) + '</strong> inc VAT. Update the figures in the CRM?</div>' +
+    '<div style="font-size:13px;margin-bottom:10px">' + cwEsc(ref) + ' has already been sent. The CRM shows <strong>' + gbp(before) + '</strong>, but the saved quote now totals <strong>' + gbp(after) + '</strong> inc VAT. Update the figures in the CRM?</div>' +
     '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="crm-fig-resent" style="margin-top:2px"> <span>I\'ve re-sent the updated quote to the client <span style="color:var(--i3)">(restarts the quote chase)</span></span></label>' +
-    '<div style="font-size:11px;color:var(--i3)">Figures only — the card stays where it is. "Not now" leaves the CRM on the old figure.</div>' +
+    '<div style="font-size:11px;color:var(--i3)">Figures only — the card stays where it is. "Not now" won\'t ask again while you\'re working on this quote; it asks again next time you open it and save.</div>' +
     '<div class="cw-modal-btns"><button class="btn btn-primary" id="crm-fig-go">Update CRM</button><button class="btn btn-outline" id="crm-fig-no">Not now</button></div>' +
     '</div></div>';
   document.body.appendChild(wrap);
-  document.getElementById('crm-fig-no').onclick = () => wrap.remove();
+  document.getElementById('crm-fig-no').onclick = () => { crmFiguresSnoozed[ref] = true; wrap.remove(); };
   document.getElementById('crm-fig-go').onclick = () => {
     const resent = document.getElementById('crm-fig-resent').checked;
     wrap.remove();
@@ -10196,8 +10217,7 @@ async function saveQuote() {
   // plan, which a schedule save would write over the stored one) and the CRM push stamps
   // (false "to push" badges; the Draft block read {} and let a pushed quote back to Draft).
   if (existing>=0) { const prev = savedQuotes[existing]; q.schedulePlan = prev.schedulePlan || null; q.lastPushedAt = prev.lastPushedAt || null; q.crmPushed = prev.crmPushed || {}; }
-  const prevEntry = existing >= 0 ? savedQuotes[existing] : null;   // for the Sent-quote CRM figures prompt
-  let savedOk = false;
+  let savedOk = false;   // the Sent-quote CRM figures check runs only after a save that reached the database
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
     try {
@@ -10253,7 +10273,7 @@ async function saveQuote() {
   toast('Quote saved: '+ref);
   // A SENT quote whose total just changed: offer to update the CRM figures (only after the
   // save actually reached the database — the push reads the stored quote).
-  if (savedOk && crmFiguresShouldPrompt(prevEntry, q)) crmFiguresPrompt(ref, sqTotals(prevEntry).inc, sqTotals(q).inc);
+  if (savedOk && crmFiguresShouldCheck(q)) crmFiguresCheckAfterSave(ref);
 }
 // The supersedes pointer (quotes.supersedes_ref) has only been written since the CRM Phase 2
 // cutover on 2026-08-04. Quotes superseded before that legitimately have no recorded
@@ -10359,6 +10379,7 @@ function loadQuote(ref) {
   if (_ugb) _ugb.style.display = lines.some(l=>l.groupId) ? 'inline-flex' : 'none';
   showTab('quote',document.querySelectorAll('.tab')[0]);
   toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
+  delete crmFiguresSnoozed[ref];   // a "Not now" lasts only while you're working on it; opening it again re-checks the CRM
   return true;
 }
 async function deleteQuote(ref) {
