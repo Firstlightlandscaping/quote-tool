@@ -9426,16 +9426,15 @@ async function crmPushAuto(ref, event) {
 // WHEN IT ASKS (Neal, 25/09 rework): after saving a Sent quote that has already been pushed,
 // the app asks the CRM (a dry run — nothing written) and shows the box ONLY if the CRM's
 // price differs from the saved quote. Compared with the CRM, not with the last save, so
-// "Not now" is never final. "Not now" = quiet for the rest of this editing session (Neal
-// saves as he goes); opening the quote again re-checks. Nothing is ever sent without a click.
+// "Not now" is never final: it just closes the box, and EVERY later save asks again while
+// the prices differ (Neal 25/09 — a brief session-snooze was built and dropped: drafts
+// never ask, so save-as-you-go noise doesn't apply here). Nothing is sent without a click.
 const crmFiguresResent = {};
-const crmFiguresSnoozed = {};   // ref → true after "Not now"; cleared by loadQuote
 // Pure gate (checkable with synthetic data): may this save trigger a CRM check at all?
 // Draft/Accepted/Superseded/Declined/Estimate never ask (Accepted changes go through
 // supersede — the contract and payments hang off it).
 function crmFiguresShouldCheck(q) {
   if (!q || q.status !== 'Sent' || !q.airtableCardId) return false;
-  if (crmFiguresSnoozed[q.ref]) return false;
   const p = q.crmPushed || {};
   return Object.keys(p).some(k => k[0] !== '~' && !p['~' + k]);   // a real push made the row (cleared/parked ones didn't)
 }
@@ -9450,7 +9449,7 @@ async function crmFiguresCheckAfterSave(ref) {
   crmFiguresChecking = true;
   try {
     const d = await crmPushCall(ref, 'figures', { dryRun: true, resent: false });
-    if (!crmFiguresSnoozed[ref] && crmFiguresDiffer(d)) {
+    if (crmFiguresDiffer(d)) {
       const f = d.figures;   // show this quote's own CRM figure; the card total only when that one already matches
       crmFiguresPrompt(ref, Math.abs(f.crmRow - f.quote) >= 0.005 ? f.crmRow : f.crmCard, f.quote);
     }
@@ -9466,11 +9465,11 @@ function crmFiguresPrompt(ref, before, after) {
     '<h3 style="margin:0 0 6px">📇 Update the CRM?</h3>' +
     '<div style="font-size:13px;margin-bottom:10px">' + cwEsc(ref) + ' has already been sent. The CRM shows <strong>' + gbp(before) + '</strong>, but the saved quote now totals <strong>' + gbp(after) + '</strong> inc VAT. Update the figures in the CRM?</div>' +
     '<label style="display:flex;gap:8px;align-items:flex-start;font-size:13px;cursor:pointer;margin-bottom:6px"><input type="checkbox" id="crm-fig-resent" style="margin-top:2px"> <span>I\'ve re-sent the updated quote to the client <span style="color:var(--i3)">(restarts the quote chase)</span></span></label>' +
-    '<div style="font-size:11px;color:var(--i3)">Figures only — the card stays where it is. "Not now" won\'t ask again while you\'re working on this quote; it asks again next time you open it and save.</div>' +
+    '<div style="font-size:11px;color:var(--i3)">Figures only — the card stays where it is. "Not now" leaves the CRM as it is; you\'ll be asked again next time you save.</div>' +
     '<div class="cw-modal-btns"><button class="btn btn-primary" id="crm-fig-go">Update CRM</button><button class="btn btn-outline" id="crm-fig-no">Not now</button></div>' +
     '</div></div>';
   document.body.appendChild(wrap);
-  document.getElementById('crm-fig-no').onclick = () => { crmFiguresSnoozed[ref] = true; wrap.remove(); };
+  document.getElementById('crm-fig-no').onclick = () => wrap.remove();
   document.getElementById('crm-fig-go').onclick = () => {
     const resent = document.getElementById('crm-fig-resent').checked;
     wrap.remove();
@@ -10379,7 +10378,6 @@ function loadQuote(ref) {
   if (_ugb) _ugb.style.display = lines.some(l=>l.groupId) ? 'inline-flex' : 'none';
   showTab('quote',document.querySelectorAll('.tab')[0]);
   toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
-  delete crmFiguresSnoozed[ref];   // a "Not now" lasts only while you're working on it; opening it again re-checks the CRM
   return true;
 }
 async function deleteQuote(ref) {
