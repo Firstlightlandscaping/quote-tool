@@ -85,11 +85,12 @@ textarea{resize:vertical;min-height:50px}
 .l-xdesc{font-size:11px;color:var(--i2);line-height:1.5;margin-top:2px;font-weight:400;white-space:pre-line}
 .l-notes{font-size:11px;color:var(--i3);line-height:1.4;margin-top:2px;font-style:italic}
 .l-lab{font-size:10px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:3px;padding:2px 6px;color:#15803D;display:inline-block;margin-top:3px}
-.l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6D28D9;background:#EDE9FE;padding:1px 5px;border-radius:3px;margin-right:4px}
+.l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6D28D9;background:#EDE9FE;padding:1px 5px;border-radius:3px;margin-right:4px;cursor:pointer;user-select:none}
+.l-opt:hover{background:#DDD6FE}
 /* Optional extras / hidden options (2026-09-28): priced rows OUTSIDE the quote total */
 .lt tr.opt-row{background:#FAF5FF}
 .lt tr.opt-row td.opt-amt{opacity:.5}
-.opt-sel{font-size:10px;padding:2px 4px;border:1px solid var(--bd);border-radius:4px;color:var(--i3);background:var(--sf);cursor:pointer}
+.opt-sel{font-size:12px;padding:4px 7px;border:1px solid var(--bd);border-radius:4px;color:var(--i1);background:var(--sf);cursor:pointer}
 .opt-sel.opt-on{border-color:#C4B5FD;color:#6D28D9;background:#F5F3FF;font-weight:600}
 #opt-extras{margin-top:14px;border:1px solid #DDD6FE;border-radius:8px;padding:10px 14px;background:#FAF5FF}
 .opt-ex-title{font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5B21B6}
@@ -3803,12 +3804,30 @@ function upVat(id,v) { const l=lines.find(x=>x.id===id); if(l){l.vat=parseInt(v)
 const OPT_MODE_LABEL = { no: 'Included', extra: 'Optional extra', hidden: 'Hidden option' };
 function optMode(l) { return !l || !l.optional ? 'no' : (l.optionHidden ? 'hidden' : 'extra'); }
 function optFromSelect(id) { const v = (document.getElementById(id) || {}).value || 'no'; return { optional: v !== 'no', optionHidden: v === 'hidden' }; }
-function optSelectHtml(l) {
-  const m = optMode(l);
-  const hint = m === 'extra' ? 'not in the total · prints under the totals as an optional extra' : m === 'hidden' ? 'not in the total · not printed (internal pricing only)' : '';
-  return `<div class="no-print" style="margin-top:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><select class="opt-sel${m !== 'no' ? ' opt-on' : ''}" onchange="setOptMode(${l.id},this.value)" title="Included = in the quote total. Optional extra = priced under the totals, not in the total. Hidden option = priced here only, never printed.">` +
-    ['no', 'extra', 'hidden'].map(v => `<option value="${v}"${m === v ? ' selected' : ''}>${OPT_MODE_LABEL[v]}</option>`).join('') +
-    `</select>${hint ? `<span style="font-size:10px;color:#6D28D9">${hint}</span>` : ''}</div>`;
+const OPT_MODE_HINT = { no: 'counts in the quote total', extra: 'not in the total · printed under the totals with its price', hidden: 'not in the total · not printed (internal pricing only)' };
+const OPT_TITLE = 'Included = in the quote total. Optional extra = priced under the totals, not in the total. Hidden option = priced here only, never printed.';
+function optOptionsHtml(m) { return ['no', 'extra', 'hidden'].map(v => `<option value="${v}"${m === v ? ' selected' : ''}>${OPT_MODE_LABEL[v]}</option>`).join(''); }
+// DISCREET BY DESIGN (Neal, 28/09 — "one in five quotes, one item"): an Included row shows
+// NOTHING extra. The choice lives inside the ✏️ edit panels (with the other rarely-used
+// overrides) and in the group edit dialog; once a line is optional, the purple tag by its
+// name is the switch — click it for the three choices.
+function optPanelSelectHtml(l, id) {
+  return `<select id="${id}" class="opt-sel${optMode(l) !== 'no' ? ' opt-on' : ''}" onchange="setOptMode(${l.id},this.value)" title="${OPT_TITLE}">${optOptionsHtml(optMode(l))}</select>`;
+}
+function optBadgeHtml(l) {
+  return l.optional ? `<span class="l-opt no-print" id="opt-badge-${l.id}" onclick="optBadgeMenu(${l.id},this)" title="Click to change — Included / Optional extra / Hidden option">${l.optionHidden ? 'Hidden option' : 'Optional extra'} ▾</span>` : '';
+}
+function optBadgeMenu(id, el) {
+  const old = document.getElementById('opt-menu'); if (old) old.remove();
+  const l = lines.find(x => x.id === id); if (!l) return;
+  const m = optMode(l), r = el.getBoundingClientRect();
+  const menu = document.createElement('div');
+  menu.id = 'opt-menu'; menu.className = 'no-print';
+  menu.style.cssText = `position:fixed;left:${Math.round(r.left)}px;top:${Math.round(r.bottom) + 4}px;z-index:20000;background:white;border:1px solid #C4B5FD;border-radius:6px;box-shadow:0 6px 20px rgba(0,0,0,.15);padding:4px;min-width:230px`;
+  menu.innerHTML = ['no', 'extra', 'hidden'].map(v =>
+    `<button type="button" onclick="setOptMode(${id},'${v}');const mm=document.getElementById('opt-menu');if(mm)mm.remove()" style="display:block;width:100%;text-align:left;background:${m === v ? '#F5F3FF' : 'none'};border:none;border-radius:4px;padding:6px 10px;font-size:12px;cursor:pointer;color:${m === v ? '#5B21B6' : 'var(--i1)'};font-weight:${m === v ? '700' : '500'}">${m === v ? '✓ ' : ''}${OPT_MODE_LABEL[v]}<span style="display:block;font-size:10px;color:var(--i3);font-weight:400">${OPT_MODE_HINT[v]}</span></button>`).join('');
+  document.body.appendChild(menu);
+  setTimeout(() => document.addEventListener('mousedown', function h(e) { if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', h); } }), 0);
 }
 function syncGroupOption(groupId) {
   const h = lines.find(x => x.groupId === groupId && !x.groupMember); if (!h) return;
@@ -3817,8 +3836,23 @@ function syncGroupOption(groupId) {
 function setOptMode(id, mode) {
   const l = lines.find(x => x.id === id); if (!l) return;
   l.optional = mode !== 'no'; l.optionHidden = mode === 'hidden';
-  if (l.groupId && !l.groupMember) syncGroupOption(l.groupId);
-  isDirty = true; renderLines();
+  isDirty = true;
+  if (l.groupId && !l.groupMember) { syncGroupOption(l.groupId); renderLines(); }
+  else {
+    // Patch the row in place — a full re-render would collapse the open ✏️ panel this was
+    // most likely set from (the saveLineComp lesson). Group headers re-render (modal path).
+    const tr = document.querySelector(`#lines-body tr[data-line-id="${id}"]`);
+    if (tr) {
+      tr.classList.toggle('opt-row', l.optional);
+      const amt = document.getElementById('amt-cell-' + id);
+      if (amt) { amt.classList.toggle('opt-amt', l.optional); if (l.optional) amt.title = 'Not in the quote total'; else amt.removeAttribute('title'); }
+      const oldBadge = document.getElementById('opt-badge-' + id); if (oldBadge) oldBadge.remove();
+      const nameDisp = document.getElementById('name-disp-' + id);
+      if (l.optional && nameDisp) nameDisp.insertAdjacentHTML('beforebegin', optBadgeHtml(l));
+    } else renderLines();
+    ['del-edit-opt-', 'misc-edit-opt-'].forEach(p => { const s = document.getElementById(p + id); if (s) { s.value = mode; s.classList.toggle('opt-on', mode !== 'no'); } });
+    recalc();
+  }
   toast(mode === 'no' ? '"' + (l.name || 'Line') + '" is back in the quote total' : '"' + (l.name || 'Line') + '" → ' + OPT_MODE_LABEL[mode].toLowerCase() + ' — not in the total');
 }
 // The client-facing block under the totals box: every "Optional extra" line (a group as one
@@ -3945,6 +3979,9 @@ function miscEditPanelRow(l) {
                   <input type="number" value="${l.labRate||0}" min="0" step="1" onchange="updateMiscField(${l.id},'labRate',parseFloat(this.value)||0)">
                 </div>
               </div>
+              <div class="fg" style="margin:0;max-width:220px"><label>In the total?</label>
+                ${optPanelSelectHtml(l, 'misc-edit-opt-' + l.id)}
+              </div>
               <div style="padding:10px;background:white;border-radius:6px;border:1px solid var(--bd)">
                 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
                   <span style="font-size:11px;font-weight:700;color:var(--i3)">COMPONENTS</span>
@@ -4043,13 +4080,12 @@ function renderLines() {
             <button onclick="toggleGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--i3)">${expanded?'▼':'▶'}</button>
             <div>
               <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:2px">GROUP — ${groupLines.length} items <button onclick="editGroupHeader(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;padding:0;margin-left:4px" title="Edit group name/description">✏️</button><button onclick="showAddToGroupDialog('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--bl);text-transform:none;letter-spacing:0;font-weight:600" title="Add an existing line from this quote into this group">+ Add line</button><button onclick="removeGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--i2);text-transform:none;letter-spacing:0;font-weight:600" title="Ungroup — return items as individual lines (items kept)">↩ Ungroup</button></div>
-              <div class="l-name" style="font-weight:700">${l.optional?`<span class="l-opt">${l.optionHidden?'Hidden option':'Optional extra'}</span>`:''}${cwEsc(l.name)}</div>
+              <div class="l-name" style="font-weight:700">${optBadgeHtml(l)}${cwEsc(l.name)}</div>
               <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
                 <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
                 <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
               </div>
               <div class="l-lab no-print" id="group-labmat-${l.groupId}" style="color:var(--i3)">🛠 Labour: £${groupLab.toFixed(2)} | Mat: £${groupMat.toFixed(2)}</div>
-              ${optSelectHtml(l)}
             </div>
           </div>
           <!-- PRINT ONLY: matches normal deliverable format — bold heading + regular description -->
@@ -4136,7 +4172,7 @@ function renderLines() {
 
     // Normal ungrouped line
     const a=amt(l), codeTag=l.code&&l.code!=='MISC'?`<div class="l-code">${l.code}</div>`:'';
-    const optTag=l.optional?`<span class="l-opt">${l.optionHidden?'Hidden option':'Optional extra'}</span>`:'';
+    const optTag=optBadgeHtml(l);   // nothing when Included; the clickable purple tag when optional
     const labTag=(l.labDays||l.labRate)?`<div class="l-lab" id="lab-tag-${l.id}">✱ ${l.labDays||0}d × £${l.labRate||0}/day = £${(l.labTotal||0).toFixed(2)}</div>`:'';
     const matTag=(l.matCost)?`<div id="mat-tag-${l.id}" class="no-print" style="display:inline-block;margin-top:4px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${lineMat(l).toFixed(2)}</div>`:'';
     const compTag = (l.misc && l.miscComponents && l.miscComponents.length)
@@ -4177,7 +4213,7 @@ function renderLines() {
             <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
             <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
           </div>
-          ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}${optSelectHtml(l)}
+          ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}
         </div>
         <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
           <div class="l-name" id="name-print-${l.id}">${cwEsc(l.name)}</div>
@@ -4236,6 +4272,10 @@ function renderLines() {
               <div style="padding-bottom:1px">
                 <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Unit price</label>
                 <div style="font-family:'DM Mono',monospace;font-size:12px;font-weight:600;color:var(--i1);padding:4px 0" id="del-edit-unit-${l.id}">£${l.unitPrice.toFixed(2)}</div>
+              </div>
+              <div>
+                <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">In the total?</label>
+                ${optPanelSelectHtml(l, 'del-edit-opt-' + l.id)}
               </div>
               <button class="btn btn-primary btn-sm" onclick="toggleLabEdit(${l.id})" style="margin-bottom:1px;margin-left:auto">✓ Done</button>
             </div>
@@ -13250,6 +13290,10 @@ function editGroupHeader(lineId) {
         <label>Client description (shown on quote) <button type="button" onclick="openTextareaXdescModal('ge-desc','CLIENT DESCRIPTION')" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 6px;color:var(--i3);margin-left:6px" title="Expand editor">⤢ Expand</button></label>
         <textarea id="ge-desc" rows="7" style="width:100%;resize:vertical">${(l.xdesc||l.name||'').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</textarea>
       </div>
+      <div class="fg" style="margin-bottom:16px;max-width:240px">
+        <label>In the total? <span style="font-weight:400;color:var(--i3)">(whole group)</span></label>
+        <select id="ge-opt" class="opt-sel${optMode(l) !== 'no' ? ' opt-on' : ''}" title="${OPT_TITLE}">${optOptionsHtml(optMode(l))}</select>
+      </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('group-edit-dialog').remove()">Cancel</button>
         <button class="btn btn-primary" onclick="saveGroupHeaderEdit(${lineId})">Save</button>
@@ -13263,6 +13307,9 @@ function saveGroupHeaderEdit(lineId) {
   if (!l) return;
   l.name = document.getElementById('ge-name').value.trim() || l.name;
   l.xdesc = document.getElementById('ge-desc').value.trim();
+  const om = (document.getElementById('ge-opt') || {}).value || 'no';
+  l.optional = om !== 'no'; l.optionHidden = om === 'hidden';
+  syncGroupOption(l.groupId);   // members mirror the header
   document.getElementById('group-edit-dialog').remove();
   isDirty = true;
   renderLines();
