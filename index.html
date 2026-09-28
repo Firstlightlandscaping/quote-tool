@@ -83,6 +83,7 @@ textarea{resize:vertical;min-height:50px}
 .l-code{font-family:"DM Mono",monospace;font-size:9px;background:#F4F4F5;color:var(--i3);padding:1px 5px;border-radius:3px;display:inline-block;margin-bottom:2px}
 .l-name{font-weight:600;line-height:1.4;font-size:12px}
 .l-xdesc{font-size:11px;color:var(--i2);line-height:1.5;margin-top:2px;font-weight:400;white-space:pre-line}
+.xd-inline{font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1;font-family:inherit;line-height:1.4;padding:3px 5px;border-radius:3px;resize:none;overflow:hidden;height:24px;min-height:24px;box-sizing:border-box;background:var(--sf)}
 .l-notes{font-size:11px;color:var(--i3);line-height:1.4;margin-top:2px;font-style:italic}
 .l-lab{font-size:10px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:3px;padding:2px 6px;color:#15803D;display:inline-block;margin-top:3px}
 .l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6D28D9;background:#EDE9FE;padding:1px 5px;border-radius:3px;margin-right:4px;cursor:pointer;user-select:none}
@@ -3876,6 +3877,12 @@ function renderOptExtras() {
       return `<tr><td><div class="l-name">${cwEsc(l.name)}</div>${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc">' + cwEsc(l.xdesc) + '</div>' : ''}</td><td class="r opt-ex-amt">£${ex.toFixed(2)}${l.vat ? ' <span class="opt-ex-inc">(£' + inc.toFixed(2) + ' inc VAT)</span>' : ''}</td></tr>`;
     }).join('') + '</tbody></table>';
 }
+// The inline row description box is a one-row TEXTAREA, not an <input type="text"> (fixed
+// 2026-09-28): a text input silently drops every line break from its value, so one small
+// edit made on the row flattened a whole multi-paragraph description ("clean-down.Materials
+// includedRaj Green…" on QT-0075/0083/0090). It grows while you edit and shrinks back on blur.
+function xdGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 220) + 'px'; ta.style.overflowY = ta.scrollHeight + 2 > 220 ? 'auto' : 'hidden'; }
+function xdShrink(ta) { ta.style.height = ''; ta.style.overflowY = 'hidden'; }
 function upXdesc(id,v) {
   const l=lines.find(x=>x.id===id);
   if(!l) return;
@@ -4088,7 +4095,7 @@ function renderLines() {
               <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:2px">GROUP — ${groupLines.length} items <button onclick="editGroupHeader(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;padding:0;margin-left:4px" title="Edit group name/description">✏️</button><button onclick="showAddToGroupDialog('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--bl);text-transform:none;letter-spacing:0;font-weight:600" title="Add an existing line from this quote into this group">+ Add line</button><button onclick="removeGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--i2);text-transform:none;letter-spacing:0;font-weight:600" title="Ungroup — return items as individual lines (items kept)">↩ Ungroup</button></div>
               <div class="l-name" style="font-weight:700">${optBadgeHtml(l)}${cwEsc(l.name)}</div>
               <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
-                <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
+                <textarea id="xdesc-input-${l.id}" rows="1" onchange="upXdesc(${l.id},this.value)" onfocus="xdGrow(this)" oninput="xdGrow(this)" onblur="xdShrink(this)" placeholder="Client description (shown on printed quote)..." class="xd-inline">${cwEsc(l.xdesc||l.name||'')}</textarea>
                 <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
               </div>
               <div class="l-lab no-print" id="group-labmat-${l.groupId}" style="color:var(--i3)">🛠 Labour: £${groupLab.toFixed(2)} | Mat: £${groupMat.toFixed(2)}</div>
@@ -4216,7 +4223,7 @@ function renderLines() {
       <td style="min-width:200px">
         <div class="no-print">${codeTag}<div class="l-name">${optTag}<span id="name-disp-${l.id}">${cwEsc(l.name)}</span></div>
           <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
-            <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
+            <textarea id="xdesc-input-${l.id}" rows="1" onchange="upXdesc(${l.id},this.value)" onfocus="xdGrow(this)" oninput="xdGrow(this)" onblur="xdShrink(this)" placeholder="Client description (shown on printed quote)..." class="xd-inline">${cwEsc(l.xdesc||'')}</textarea>
             <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
           </div>
           ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}
