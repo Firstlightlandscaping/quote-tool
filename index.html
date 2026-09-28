@@ -92,13 +92,16 @@ textarea{resize:vertical;min-height:50px}
 .lt tr.opt-row td.opt-amt{opacity:.5}
 .opt-sel{font-size:12px;padding:4px 7px;border:1px solid var(--bd);border-radius:4px;color:var(--i1);background:var(--sf);cursor:pointer}
 .opt-sel.opt-on{border-color:#C4B5FD;color:#6D28D9;background:#F5F3FF;font-weight:600}
-#opt-extras{margin-top:14px;border:1px solid #DDD6FE;border-radius:8px;padding:10px 14px;background:#FAF5FF}
-.opt-ex-title{font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5B21B6}
-.opt-ex-sub{font-size:11px;color:var(--i3);margin:2px 0 6px}
-.opt-ex-row{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-top:1px solid #EDE9FE}
-.opt-ex-txt{flex:1;min-width:0}
-.opt-ex-amt{font-family:'DM Mono',monospace;font-weight:600;white-space:nowrap;text-align:right}
-.opt-ex-inc{font-size:10px;color:var(--i3);font-weight:400;display:block}
+/* The printed "Optional extras" block = a continuation of the works table, same styles as .lt
+   (own class so nothing that targets .lt rows — drag, print hiding, the contract clone — touches it) */
+#opt-extras{margin-top:8px;border-top:2px solid var(--bd)}
+.opt-ex-table{width:100%;border-collapse:collapse;font-size:12px}
+.opt-ex-table th{font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--i3);padding:8px 12px;text-align:left;border-bottom:2px solid var(--bd);background:#FAFAFA}
+.opt-ex-table th.r,.opt-ex-table td.r{text-align:right}
+.opt-ex-table td{padding:10px 12px;border-bottom:1px solid var(--bd);vertical-align:top}
+.opt-ex-table tr:last-child td{border-bottom:none}
+.opt-ex-amt{font-family:"DM Mono",monospace;font-weight:600;white-space:nowrap;padding-top:13px}
+.opt-ex-inc{font-weight:400}
 td input[type=number]{padding:4px 6px;border:1px solid var(--bd);border-radius:4px;text-align:right;font-family:"DM Mono",monospace;background:var(--sf)}
 td input[type=number]:focus{border-color:var(--br);outline:none}
 td input[type=text]{padding:4px 6px;border:1px solid var(--bd);border-radius:4px;font-size:12px;background:var(--sf)}
@@ -3864,11 +3867,14 @@ function renderOptExtras() {
   const extras = lines.filter(l => l.optional && !l.optionHidden && !l.groupMember && !l.note && !l.discount);
   if (!extras.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = '';
-  box.innerHTML = '<div class="opt-ex-title">Optional extras</div><div class="opt-ex-sub">Not included in the total above — priced individually, available on request.</div>' +
+  // Same layout as a works-table row: bold name + description on the left, the ex-VAT amount
+  // in the table's mono style on the right with "(£x inc VAT)" beside it — the discount row's
+  // convention, so the document reads as one piece (Neal, 28/09: no purple, no tiny grey text).
+  box.innerHTML = '<table class="opt-ex-table"><thead><tr><th>Optional extras — not included in the total above, priced individually</th><th class="r">Amount GBP</th></tr></thead><tbody>' +
     extras.map(l => {
       const ex = effectiveAmt(l), inc = ex * (1 + (l.vat || 0) / 100);
-      return `<div class="opt-ex-row"><div class="opt-ex-txt"><div class="l-name">${cwEsc(l.name)}</div>${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc" style="margin-top:2px">' + cwEsc(l.xdesc) + '</div>' : ''}</div><div class="opt-ex-amt">£${ex.toFixed(2)}<span class="opt-ex-inc">${l.vat ? '+ VAT (£' + inc.toFixed(2) + ' inc VAT)' : 'no VAT'}</span></div></div>`;
-    }).join('');
+      return `<tr><td><div class="l-name">${cwEsc(l.name)}</div>${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc">' + cwEsc(l.xdesc) + '</div>' : ''}</td><td class="r opt-ex-amt">£${ex.toFixed(2)}${l.vat ? ' <span class="opt-ex-inc">(£' + inc.toFixed(2) + ' inc VAT)</span>' : ''}</td></tr>`;
+    }).join('') + '</tbody></table>';
 }
 function upXdesc(id,v) {
   const l=lines.find(x=>x.id===id);
