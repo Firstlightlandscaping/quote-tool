@@ -118,12 +118,13 @@ async function sbGet(path: string) {
   if (!r.ok) throw new Error(`DB read failed (${path.split("?")[0]}): HTTP ${r.status}`);
   return await r.json();
 }
-// Mirrors sqTotals() in index.html: group headers re-derived from members, per-line VAT.
+// Mirrors sqTotals() in index.html: group headers re-derived from members, per-line VAT,
+// optional extras / hidden options (quote_lines.optional, 28/09/26) outside the total.
 function quoteValueInc(lines: any[]): number {
   const amt = (l: any) => l.group_id && !l.group_member
     ? lines.filter(x => x.group_member === l.group_id).reduce((s, x) => s + (x.qty || 0) * (x.unit_price || 0), 0)
     : (l.qty || 0) * (l.unit_price || 0);
-  return round2(lines.filter(l => !l.group_member).reduce((s, l) => s + amt(l) * (1 + (l.vat || 0) / 100), 0));
+  return round2(lines.filter(l => !l.group_member && !l.optional).reduce((s, l) => s + amt(l) * (1 + (l.vat || 0) / 100), 0));
 }
 
 // The record the push is about, normalised across the two ref series.
@@ -138,7 +139,7 @@ async function loadRecord(ref: string) {
   }
   const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,contract_meta,last_pushed_at,crm_pushed`))[0];
   if (!q) return null;
-  const lines = await sbGet(`quote_lines?quote_ref=eq.${encodeURIComponent(ref)}&select=qty,unit_price,vat,group_id,group_member,is_note,is_discount&limit=1000`);
+  const lines = await sbGet(`quote_lines?quote_ref=eq.${encodeURIComponent(ref)}&select=qty,unit_price,vat,group_id,group_member,is_note,is_discount,optional&limit=1000`);
   return { ref, isDesign, customer: q.customer || "", cardId: q.airtable_card_id || null, cm: q.contract_meta || null, crmPushed: q.crm_pushed || {},
            valueInc: quoteValueInc(lines), status: q.status || "Draft",
            scope: stripHtml(q.summary_html || q.sum || "") || null,

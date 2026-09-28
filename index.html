@@ -85,7 +85,19 @@ textarea{resize:vertical;min-height:50px}
 .l-xdesc{font-size:11px;color:var(--i2);line-height:1.5;margin-top:2px;font-weight:400;white-space:pre-line}
 .l-notes{font-size:11px;color:var(--i3);line-height:1.4;margin-top:2px;font-style:italic}
 .l-lab{font-size:10px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:3px;padding:2px 6px;color:#15803D;display:inline-block;margin-top:3px}
-.l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--br);background:var(--brp);padding:1px 5px;border-radius:3px;margin-right:4px}
+.l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6D28D9;background:#EDE9FE;padding:1px 5px;border-radius:3px;margin-right:4px}
+/* Optional extras / hidden options (2026-09-28): priced rows OUTSIDE the quote total */
+.lt tr.opt-row{background:#FAF5FF}
+.lt tr.opt-row td.opt-amt{opacity:.5}
+.opt-sel{font-size:10px;padding:2px 4px;border:1px solid var(--bd);border-radius:4px;color:var(--i3);background:var(--sf);cursor:pointer}
+.opt-sel.opt-on{border-color:#C4B5FD;color:#6D28D9;background:#F5F3FF;font-weight:600}
+#opt-extras{margin-top:14px;border:1px solid #DDD6FE;border-radius:8px;padding:10px 14px;background:#FAF5FF}
+.opt-ex-title{font-weight:700;font-size:13px;letter-spacing:.04em;text-transform:uppercase;color:#5B21B6}
+.opt-ex-sub{font-size:11px;color:var(--i3);margin:2px 0 6px}
+.opt-ex-row{display:flex;justify-content:space-between;gap:16px;padding:7px 0;border-top:1px solid #EDE9FE}
+.opt-ex-txt{flex:1;min-width:0}
+.opt-ex-amt{font-family:'DM Mono',monospace;font-weight:600;white-space:nowrap;text-align:right}
+.opt-ex-inc{font-size:10px;color:var(--i3);font-weight:400;display:block}
 td input[type=number]{padding:4px 6px;border:1px solid var(--bd);border-radius:4px;text-align:right;font-family:"DM Mono",monospace;background:var(--sf)}
 td input[type=number]:focus{border-color:var(--br);outline:none}
 td input[type=text]{padding:4px 6px;border:1px solid var(--bd);border-radius:4px;font-size:12px;background:var(--sf)}
@@ -217,6 +229,8 @@ tr.dragging td{background:var(--brp)!important}
   .lt td .print-only{display:block!important;text-align:right}
   .group-header-row{background:white!important;border-left:none!important;border-top:1px solid #eee}
   .group-member-row{display:none!important}
+  .lt tr.opt-row{display:none!important}   /* optional lines never print in the works table — extras print under the totals, hidden ones nowhere */
+  #opt-extras{break-inside:avoid;page-break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
   body{background:#fff}
   .shell{padding:0;max-width:100%}
   .qdoc{box-shadow:none;border:none}
@@ -577,6 +591,8 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div class="tot-row"><span class="tot-lbl">Total VAT 20%</span><span class="tot-val" id="tot-vat">£0.00</span></div>
       <div class="tot-row tot-grand"><span class="tot-lbl">Total GBP</span><span class="tot-val" id="tot-grand">£0.00</span></div>
     </div></div>
+    <!-- Optional extras: priced lines outside the total, painted by renderOptExtras(); outside .tot-wrap so the contract never clones them -->
+    <div id="opt-extras" style="display:none"></div>
     <div class="no-print" id="add-discount-wrap" style="display:flex;justify-content:flex-end;margin-top:6px">
       <button class="btn btn-outline btn-sm" onclick="openDiscountDialog()" title="Apply an agreed discount — comes off the total with its VAT">− Add discount</button>
     </div>
@@ -633,7 +649,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
           <input type="number" id="add-mat" style="display:none" placeholder="override" min="0" step="0.01">
         </div>
         <div class="fg" style="width:56px"><label>VAT</label><select id="add-vat"><option value="20">20%</option><option value="0">0%</option></select></div>
-        <div class="fg" style="width:80px"><label>Optional?</label><select id="add-opt"><option value="no">No</option><option value="yes">Yes</option></select></div>
+        <div class="fg" style="width:118px"><label>In the total?</label><select id="add-opt" title="Included = in the quote total. Optional extra = priced under the totals, not in the total. Hidden option = priced here only, never printed."><option value="no">Included</option><option value="extra">Optional extra</option><option value="hidden">Hidden option</option></select></div>
         <div class="fg" id="add-group-fg" style="width:150px;display:none"><label>Add to group</label><select id="add-group"><option value="">Standalone</option></select></div>
       </div>
       <div class="lab-row">
@@ -675,7 +691,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
             <div class="fg" style="width:95px"><label>Unit</label><input type="text" id="mc-unit" placeholder="item, m²..."></div>
             <div class="fg" style="width:120px"><label>Mat. cost (£) <span style="font-weight:400;color:var(--i3);font-size:10px">auto</span></label><input type="number" id="mc-mat" value="0" min="0" step="0.01" readonly title="Auto-calculated — sum of all components (materials + manual), incl. 10% markup. Add a component below to set it." style="background:var(--bg);color:var(--i2);cursor:default"></div>
             <div class="fg" style="width:56px"><label>VAT</label><select id="mc-vat"><option value="20">20%</option><option value="0">0%</option></select></div>
-            <div class="fg" style="width:80px"><label>Optional?</label><select id="mc-opt"><option value="no">No</option><option value="yes">Yes</option></select></div>
+            <div class="fg" style="width:118px"><label>In the total?</label><select id="mc-opt" title="Included = in the quote total. Optional extra = priced under the totals, not in the total. Hidden option = priced here only, never printed."><option value="no">Included</option><option value="extra">Optional extra</option><option value="hidden">Hidden option</option></select></div>
           </div>
           <div class="lab-row" style="margin-top:10px">
             <div class="lab-tag">Labour <span style="font-weight:400;opacity:.65">(internal)</span></div>
@@ -1699,7 +1715,7 @@ async function loadFromSupabase() {
         qty: parseFloat(l.qty)||0, unitPrice: parseFloat(l.unit_price)||0,
         matCost: parseFloat(l.mat_cost)||0, labDays: parseFloat(l.lab_days)||0,
         labRate: parseFloat(l.lab_rate)||0, labTotal: parseFloat(l.lab_total)||0,
-        vat: vatNum(l.vat), optional: l.optional||false,
+        vat: vatNum(l.vat), optional: l.optional||false, optionHidden: l.option_hidden||false,
         misc: l.misc||false, unit: l.unit||'',
         materials: (!l.misc) ? (snapshotMats || undefined) : undefined,
         miscComponents: l.misc ? (snapshotMats || []) : undefined,
@@ -2271,7 +2287,7 @@ function addFromSearch() {
   const unitPrice = matCost + (qty>0 ? labTotal/qty : labTotal);
   const xdesc = document.getElementById('add-xdesc').value.trim() || selDel.xeroDescription || selDel.name;
   const notes = document.getElementById('add-notes').value.trim();
-  const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('add-vat').value),optional:document.getElementById('add-opt').value==='yes',misc:false,materials:selDel.materials||[]});
+  const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('add-vat').value),...optFromSelect('add-opt'),misc:false,materials:selDel.materials||[]});
   const targetGroup=(document.getElementById('add-group')||{value:''}).value;
   let groupNote='';
   if (targetGroup) {
@@ -2282,6 +2298,8 @@ function addFromSearch() {
     // doesn't silently land in the same group (the selection used to persist).
     const gsel=document.getElementById('add-group'); if(gsel) gsel.value='';
   }
+  // Same per-add rule for "In the total?": reset to Included so the next line isn't silently optional.
+  const osel=document.getElementById('add-opt'); if(osel) osel.value='no';
   const nm=selDel.name; selDel=null;
   document.getElementById('si').value='';
   ['add-qty','add-mat','add-days','add-rate','add-xdesc','add-notes'].forEach((id,i) => { document.getElementById(id).value = i===0?'':''; });
@@ -2505,6 +2523,7 @@ function patchMiscLineDom(l) {
   if (nameDisp) nameDisp.textContent = l.name || '';
   const namePrint = document.getElementById('name-print-' + id);
   if (namePrint) namePrint.textContent = l.name || '';
+  if (l.optional) renderOptExtras();   // title / description / price of an optional extra also print under the totals
   // Print-only qty/unit-price spans (baked at renderLines time — keep them in sync so print matches the builder)
   const qtyPrint = document.getElementById('qty-print-' + id);
   if (qtyPrint) qtyPrint.textContent = (l.qty||0);
@@ -3347,6 +3366,7 @@ function clearMiscForm() {
   ['mc-desc','mc-xdesc','mc-unit','mc-days','mc-rate'].forEach(id => { const el = document.getElementById(id); if (el) el.value = ''; });
   const q = document.getElementById('mc-qty'); if (q) q.value = '1';
   const m = document.getElementById('mc-mat'); if (m) m.value = '0';
+  const o = document.getElementById('mc-opt'); if (o) o.value = 'no';   // "In the total?" is a per-item choice
   miscComponents = [];
   renderMiscComponents();
   resetMiscEntryForms();
@@ -3391,7 +3411,7 @@ function addMisc() {
   const labTotal = days*rate;
   // Unit price is Total ÷ qty (Total = components + labour, fixed); see miscUnitPrice.
   const unitPrice = qty>0 ? (matCost + labTotal)/qty : 0;
-  pushLine({code:'MISC',name:desc,xdesc,notes:'',qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('mc-vat').value),optional:document.getElementById('mc-opt').value==='yes',misc:true,unit:document.getElementById('mc-unit').value.trim()||'item',materials:[],miscComponents:[...miscComponents]});
+  pushLine({code:'MISC',name:desc,xdesc,notes:'',qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('mc-vat').value),...optFromSelect('mc-opt'),misc:true,unit:document.getElementById('mc-unit').value.trim()||'item',materials:[],miscComponents:[...miscComponents]});
   closeMiscBuilder(true);   // clears the form + returns to the deliverable form
   toast('Misc item added');
 }
@@ -3771,11 +3791,57 @@ function initDragDrop() {
 function upQty(id,v) { const l=lines.find(x=>x.id===id); if(!l)return; l.qty=parseFloat(v)||0; if(l.misc){l.unitPrice=miscUnitPrice(l); patchMiscLineDom(l);} else { if(l.qty>0){l.unitPrice=l.matCost+(l.labTotal/l.qty);} const qp=document.getElementById('qty-print-'+id); if(qp)qp.textContent=(l.qty||0); const up=document.getElementById('unitprice-print-'+id); if(up)up.textContent=(l.unitPrice||0).toFixed(2); const ri=document.getElementById('row-unitprice-'+id); if(ri)ri.value=(l.unitPrice||0).toFixed(2); const ac=document.getElementById('amt-cell-'+id); if(ac)ac.textContent='£'+((l.qty||0)*(l.unitPrice||0)).toFixed(2); } if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true; recalc(); }
 function upPrice(id,v) { const l=lines.find(x=>x.id===id); if(l){l.unitPrice=parseFloat(v)||0; const up=document.getElementById('unitprice-print-'+id); if(up)up.textContent=(l.unitPrice||0).toFixed(2); const ac=document.getElementById('amt-cell-'+id); if(ac)ac.textContent='£'+((l.qty||0)*(l.unitPrice||0)).toFixed(2); if(l.groupMember){const h=lines.find(x=>x.groupId===l.groupMember&&!x.groupMember);if(h)h.unitPrice=lines.filter(x=>x.groupMember===l.groupMember).reduce((s,x)=>s+amt(x),0);} isDirty=true;recalc();} }
 function upVat(id,v) { const l=lines.find(x=>x.id===id); if(l){l.vat=parseInt(v)||0; const vp=document.getElementById('vat-print-'+id); if(vp)vp.textContent=l.vat+'%'; isDirty=true;recalc();} }
+// ── OPTIONAL EXTRAS / HIDDEN OPTIONS (2026-09-28, Neal's resin-vs-tarmac case) ────────
+// A line priced in full (materials, labour, markup — so the Order List and Schedule can
+// cost it once it's switched on) but OUTSIDE the quote total until then. Two flavours on
+// one line: l.optional = excluded from every total (subtotal, VAT, Overview, contract,
+// saved list, sales report, CRM value, Order List, Schedule); l.optionHidden = also never
+// printed. Optional & not hidden = printed under the totals box as an "Optional extra" with
+// its own price, so the headline number doesn't grow. Groups: the state lives on the
+// HEADER and is mirrored onto members, so every totals path can filter on the row it sees.
+// Before 2026-09-28 `optional` was only a badge (no live/sandbox row had it set).
+const OPT_MODE_LABEL = { no: 'Included', extra: 'Optional extra', hidden: 'Hidden option' };
+function optMode(l) { return !l || !l.optional ? 'no' : (l.optionHidden ? 'hidden' : 'extra'); }
+function optFromSelect(id) { const v = (document.getElementById(id) || {}).value || 'no'; return { optional: v !== 'no', optionHidden: v === 'hidden' }; }
+function optSelectHtml(l) {
+  const m = optMode(l);
+  const hint = m === 'extra' ? 'not in the total · prints under the totals as an optional extra' : m === 'hidden' ? 'not in the total · not printed (internal pricing only)' : '';
+  return `<div class="no-print" style="margin-top:5px;display:flex;align-items:center;gap:6px;flex-wrap:wrap"><select class="opt-sel${m !== 'no' ? ' opt-on' : ''}" onchange="setOptMode(${l.id},this.value)" title="Included = in the quote total. Optional extra = priced under the totals, not in the total. Hidden option = priced here only, never printed.">` +
+    ['no', 'extra', 'hidden'].map(v => `<option value="${v}"${m === v ? ' selected' : ''}>${OPT_MODE_LABEL[v]}</option>`).join('') +
+    `</select>${hint ? `<span style="font-size:10px;color:#6D28D9">${hint}</span>` : ''}</div>`;
+}
+function syncGroupOption(groupId) {
+  const h = lines.find(x => x.groupId === groupId && !x.groupMember); if (!h) return;
+  lines.filter(x => x.groupMember === groupId).forEach(m => { m.optional = !!h.optional; m.optionHidden = !!h.optionHidden; });
+}
+function setOptMode(id, mode) {
+  const l = lines.find(x => x.id === id); if (!l) return;
+  l.optional = mode !== 'no'; l.optionHidden = mode === 'hidden';
+  if (l.groupId && !l.groupMember) syncGroupOption(l.groupId);
+  isDirty = true; renderLines();
+  toast(mode === 'no' ? '"' + (l.name || 'Line') + '" is back in the quote total' : '"' + (l.name || 'Line') + '" → ' + OPT_MODE_LABEL[mode].toLowerCase() + ' — not in the total');
+}
+// The client-facing block under the totals box: every "Optional extra" line (a group as one
+// entry) with its price. Re-painted by recalc() and by the description / title live-edits.
+// Sits OUTSIDE .tot-wrap on purpose: the contract clones the totals box and must not carry
+// extras (they are not contracted work).
+function renderOptExtras() {
+  const box = document.getElementById('opt-extras'); if (!box) return;
+  const extras = lines.filter(l => l.optional && !l.optionHidden && !l.groupMember && !l.note && !l.discount);
+  if (!extras.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = '';
+  box.innerHTML = '<div class="opt-ex-title">Optional extras</div><div class="opt-ex-sub">Not included in the total above — priced individually, available on request.</div>' +
+    extras.map(l => {
+      const ex = effectiveAmt(l), inc = ex * (1 + (l.vat || 0) / 100);
+      return `<div class="opt-ex-row"><div class="opt-ex-txt"><div class="l-name">${cwEsc(l.name)}</div>${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc" style="margin-top:2px">' + cwEsc(l.xdesc) + '</div>' : ''}</div><div class="opt-ex-amt">£${ex.toFixed(2)}<span class="opt-ex-inc">${l.vat ? '+ VAT (£' + inc.toFixed(2) + ' inc VAT)' : 'no VAT'}</span></div></div>`;
+    }).join('');
+}
 function upXdesc(id,v) {
   const l=lines.find(x=>x.id===id);
   if(!l) return;
   l.xdesc=v;
   isDirty=true;
+  if (l.optional) renderOptExtras();   // the extras block under the totals prints this description
   // Notes: body lives in xdesc; the heading (l.name) is handled by upNoteHead. Patch the
   // dedicated body div directly (hide when empty) — don't use the deliverable name/xdesc logic.
   if (l.note) {
@@ -3968,7 +4034,7 @@ function renderLines() {
       const groupVat = groupLines[0] ? groupLines[0].vat : 20;
       const expanded = l.groupExpanded !== false;
 
-      rendered += `<tr class="group-header-row" draggable="true" data-drag-id="${l.id}" data-drag-group="${l.groupId}" style="background:#F0F9FF;border-left:3px solid var(--i3)">
+      rendered += `<tr class="group-header-row${l.optional?' opt-row':''}" draggable="true" data-drag-id="${l.id}" data-drag-group="${l.groupId}" style="background:${l.optional?'#FAF5FF':'#F0F9FF'};border-left:3px solid var(--i3)">
         <td class="no-print" style="vertical-align:middle;padding:0 2px"><div class="drag-handle" title="Drag to reorder"><svg viewBox="0 0 10 16"><circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/><circle cx="3" cy="6.5" r="1.2"/><circle cx="7" cy="6.5" r="1.2"/><circle cx="3" cy="10.5" r="1.2"/><circle cx="7" cy="10.5" r="1.2"/><circle cx="3" cy="14.5" r="1.2"/><circle cx="7" cy="14.5" r="1.2"/></svg></div></td>
         <td class="no-print" style="vertical-align:middle"><div class="mv"><button onclick="mvUp(${l.id})">▲</button><button onclick="mvDn(${l.id})">▼</button></div></td>
         <td class="no-print" style="vertical-align:middle"><button class="del-btn" onclick="deleteGroup('${l.groupId}')" title="Delete this group AND its line items">×</button></td>
@@ -3977,12 +4043,13 @@ function renderLines() {
             <button onclick="toggleGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:12px;color:var(--i3)">${expanded?'▼':'▶'}</button>
             <div>
               <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--i3);margin-bottom:2px">GROUP — ${groupLines.length} items <button onclick="editGroupHeader(${l.id})" style="background:none;border:none;cursor:pointer;font-size:11px;padding:0;margin-left:4px" title="Edit group name/description">✏️</button><button onclick="showAddToGroupDialog('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--bl);text-transform:none;letter-spacing:0;font-weight:600" title="Add an existing line from this quote into this group">+ Add line</button><button onclick="removeGroup('${l.groupId}')" style="background:none;border:none;cursor:pointer;font-size:10px;padding:0;margin-left:6px;color:var(--i2);text-transform:none;letter-spacing:0;font-weight:600" title="Ungroup — return items as individual lines (items kept)">↩ Ungroup</button></div>
-              <div class="l-name" style="font-weight:700">${cwEsc(l.name)}</div>
+              <div class="l-name" style="font-weight:700">${l.optional?`<span class="l-opt">${l.optionHidden?'Hidden option':'Optional extra'}</span>`:''}${cwEsc(l.name)}</div>
               <div class="l-xdesc" style="margin-top:3px;display:flex;align-items:center;gap:4px">
                 <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||l.name||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
                 <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
               </div>
               <div class="l-lab no-print" id="group-labmat-${l.groupId}" style="color:var(--i3)">🛠 Labour: £${groupLab.toFixed(2)} | Mat: £${groupMat.toFixed(2)}</div>
+              ${optSelectHtml(l)}
             </div>
           </div>
           <!-- PRINT ONLY: matches normal deliverable format — bold heading + regular description -->
@@ -4000,7 +4067,7 @@ function renderLines() {
           </select>
           <span class="print-only">${groupVat}%</span>
         </td>
-        <td class="r" id="group-amt-${l.groupId}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${groupTotal.toFixed(2)}</td>
+        <td class="r${l.optional?' opt-amt':''}" id="group-amt-${l.groupId}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600"${l.optional?' title="Not in the quote total"':''}>£${groupTotal.toFixed(2)}</td>
       </tr>`;
 
       // Render constituent items if expanded
@@ -4069,7 +4136,7 @@ function renderLines() {
 
     // Normal ungrouped line
     const a=amt(l), codeTag=l.code&&l.code!=='MISC'?`<div class="l-code">${l.code}</div>`:'';
-    const optTag=l.optional?`<span class="l-opt">Optional</span>`:'';
+    const optTag=l.optional?`<span class="l-opt">${l.optionHidden?'Hidden option':'Optional extra'}</span>`:'';
     const labTag=(l.labDays||l.labRate)?`<div class="l-lab" id="lab-tag-${l.id}">✱ ${l.labDays||0}d × £${l.labRate||0}/day = £${(l.labTotal||0).toFixed(2)}</div>`:'';
     const matTag=(l.matCost)?`<div id="mat-tag-${l.id}" class="no-print" style="display:inline-block;margin-top:4px;font-size:10px;background:#EEF9F0;color:#2D6A4F;border:1px solid #BBF7D0;border-radius:4px;padding:1px 7px;font-family:'DM Mono',monospace">Mat: £${lineMat(l).toFixed(2)}</div>`:'';
     const compTag = (l.misc && l.miscComponents && l.miscComponents.length)
@@ -4090,7 +4157,7 @@ function renderLines() {
           </div>
         </div>` : '';
     const isChecked = l.selected ? 'checked' : '';
-    rendered += `<tr draggable="true" data-drag-id="${l.id}" data-drag-group="" data-line-id="${l.id}">
+    rendered += `<tr class="${l.optional?'opt-row':''}" draggable="true" data-drag-id="${l.id}" data-drag-group="" data-line-id="${l.id}">
       <td class="no-print" style="vertical-align:middle;padding:0 2px">
         <div class="drag-handle" title="Drag to reorder"><svg viewBox="0 0 10 16"><circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/><circle cx="3" cy="6.5" r="1.2"/><circle cx="7" cy="6.5" r="1.2"/><circle cx="3" cy="10.5" r="1.2"/><circle cx="7" cy="10.5" r="1.2"/><circle cx="3" cy="14.5" r="1.2"/><circle cx="7" cy="14.5" r="1.2"/></svg></div>
       </td>
@@ -4110,7 +4177,7 @@ function renderLines() {
             <input type="text" id="xdesc-input-${l.id}" value="${(l.xdesc||'').replace(/"/g,'&quot;')}" onchange="upXdesc(${l.id},this.value)" placeholder="Client description (shown on printed quote)..." style="font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1">
             <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
           </div>
-          ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}
+          ${l.notes?`<div class="l-notes">${l.notes}</div>`:''}${labTag}<span id="lab-tag-anchor-${l.id}"></span>${matTag}<span id="mat-tag-anchor-${l.id}"></span>${compTag}${optSelectHtml(l)}
         </div>
         <div class="print-only" id="xd-print-${l.id}" style="text-align:left">
           <div class="l-name" id="name-print-${l.id}">${cwEsc(l.name)}</div>
@@ -4134,7 +4201,7 @@ function renderLines() {
         </select>
         <span class="print-only" id="vat-print-${l.id}" style="display:none;text-align:right">${l.vat}%</span>
       </td>
-      <td class="r" id="amt-cell-${l.id}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600">£${a.toFixed(2)}</td>
+      <td class="r${l.optional?' opt-amt':''}" id="amt-cell-${l.id}" style="vertical-align:top;padding-top:13px;font-family:'DM Mono',monospace;font-weight:600"${l.optional?' title="Not in the quote total"':''}>£${a.toFixed(2)}</td>
     </tr>`;
 
     // Add inline full edit row for non-misc deliverable lines
@@ -4203,8 +4270,9 @@ function effectiveAmt(l) {
 
 function recalc() {
   // Only count non-member lines (members are counted via their group header).
-  // Text notes carry no price and are excluded from all totals.
-  const visibleLines = lines.filter(l => !l.groupMember && !l.note);
+  // Text notes carry no price and are excluded from all totals. Optional extras / hidden
+  // options are priced but NOT sold yet — outside every total until switched on.
+  const visibleLines = lines.filter(l => !l.groupMember && !l.note && !l.optional);
   const allLines = lines; // include members for overview totals
   // Displayed Subtotal is PRE-discount; the discount line (negative amount) is shown on its
   // own totals row. VAT sums per-line over everything incl. the discount, so the discount's
@@ -4239,6 +4307,7 @@ function recalc() {
     if (l.groupId && !l.groupMember) return; // skip group headers - members counted individually
     if (l.note) return; // text notes carry no materials/labour
     if (l.discount) return; // a discount is not a cost — keep it out of the materials/labour view
+    if (l.optional) return; // optional extra / hidden option: priced, not sold — no cost or profit yet (members mirror their header)
     if (!l.qty) return; // zero-qty lines contribute £0 to the Subtotal — exclude from overview so stale labour/mat isn't counted
     const matCostTotal = lineMat(l);
     totalMat += matCostTotal;
@@ -4259,6 +4328,7 @@ function recalc() {
   if (ovMat) ovMat.textContent = '£' + totalMat.toFixed(2);
   if (ovLab) ovLab.textContent = '£' + totalLab.toFixed(2);
   if (ovProfit) ovProfit.textContent = '£' + totalProfit.toFixed(2);
+  renderOptExtras();
 }
 
 // ── ORDER LIST ──────────────────────────────────────────────────────────────────
@@ -4308,7 +4378,7 @@ function buildSupplierRollup(opts) {
     it.sources.push({ name: o.sourceName || '', qty: Math.round(o.qty * 1000) / 1000, misc: !!o.fromMisc, lineId: o.sourceLineId });
   }
   // Deliverable materials — scaled by line qty. Skip group headers (their materials live on members).
-  lines.filter(l => !l.misc && !l.note && !l.discount && !(l.groupId && !l.groupMember)).forEach(l => {
+  lines.filter(l => !l.misc && !l.note && !l.discount && !l.optional && !(l.groupId && !l.groupMember)).forEach(l => {
     const mats = l.materials || [];
     if (!mats.length) return;
     const matPrice = m => m.trueUnitPrice !== undefined ? m.trueUnitPrice : (m.qtyPerUnit > 0 ? m.pricePerUnit / m.qtyPerUnit : m.pricePerUnit);
@@ -4324,8 +4394,8 @@ function buildSupplierRollup(opts) {
       addItem(mplSupplier[m.stockCode], { stockCode: m.stockCode, description: m.description, unit: m.unit, qty, unitPrice, url: mplUrl[m.stockCode], sourceName: (l.code ? l.code + ' ' : '') + l.name, sourceLineId: l.id, overridePriced: f !== 1 });
     });
   });
-  // Misc-item components — fixed qty, NOT scaled by line qty.
-  lines.filter(l => l.misc && !l.note).forEach(l => {
+  // Misc-item components — fixed qty, NOT scaled by line qty. Optional lines aren't ordered.
+  lines.filter(l => l.misc && !l.note && !l.optional).forEach(l => {
     (l.miscComponents || []).forEach(c => {
       addItem((c.supplier || '').trim(), { stockCode: c.mplCode || '', description: c.desc, unit: c.unit, qty: c.qty || 0, unitPrice: c.cost || 0, supUnit: (c.cost || 0) / 1.1, url: c.url, sourceName: '📦 ' + l.name, fromMisc: true, sourceLineId: l.id });
     });
@@ -4528,14 +4598,14 @@ function spPickerMin(back) {
   return spISO(d);
 }
 function spQuoteLabour() {
-  const cost = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount).reduce((s,l) => s + (l.labTotal||0), 0);
+  const cost = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount && !l.optional).reduce((s,l) => s + (l.labTotal||0), 0);
   return { cost, manDays: cost / spRate() };
 }
 // Materials check: what the quote CHARGES for materials (matCost incl. the 10% markup,
 // same basis as the Overview bar) vs what this schedule will actually ORDER at supplier
 // cost (stock skipped, edits applied, added items included — misc components ÷1.1).
 function spQuoteMaterials() {
-  const charged = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount && l.qty)
+  const charged = lines.filter(l => !(l.groupId && !l.groupMember) && !l.note && !l.discount && !l.optional && l.qty)
     .reduce((s,l) => s + lineMat(l), 0);
   return { charged, allowed: charged / 1.1, profit: charged / 11 };
 }
@@ -6273,7 +6343,7 @@ function renderSchedule() {
   };
   let quoteListHtml = '';
   lines.forEach(l => {
-    if (l.note || l.discount) return;
+    if (l.note || l.discount || l.optional) return;   // optional extras aren't on the job until switched on
     if (l.groupId && !l.groupMember) {
       const members = lines.filter(x => x.groupMember === l.groupId);
       const gLab = members.reduce((s,m) => s + spManDaysOf(m), 0);
@@ -7023,8 +7093,8 @@ function renderOrderList() {
   const el = document.getElementById('order-list-content');
   if (!lines.length) { el.innerHTML='<div class="card"><div class="cb empty-lines">No items in current quote.</div></div>'; return; }
   let html = olSupplierRollupHtml();
-  const miscLines = lines.filter(l => l.misc && !l.note);
-  const nonMisc = lines.filter(l => !l.misc && !l.note && !l.discount);
+  const miscLines = lines.filter(l => l.misc && !l.note && !l.optional);
+  const nonMisc = lines.filter(l => !l.misc && !l.note && !l.discount && !l.optional);
   const seen = new Set();
   nonMisc.forEach(l => {
     if (l.groupMember) return;
@@ -7257,7 +7327,7 @@ function scheduleToText(total, rows){
 }
 // VAT-inclusive grand total of the current quote (same basis as recalc()).
 function contractGrandTotal(){
-  const vis = lines.filter(l => !l.groupMember && !l.note);
+  const vis = lines.filter(l => !l.groupMember && !l.note && !l.optional);
   const sub = vis.reduce((s,l) => s + effectiveAmt(l), 0);
   const vat = vis.reduce((s,l) => s + effectiveAmt(l)*(l.vat/100), 0);
   return round2(sub + vat);
@@ -7303,6 +7373,8 @@ function cloneWorksTable(){
   // line rows always use the 8-cell structure. Catches lab-edit + misc-edit panels (open or collapsed)
   // so editing UI never leaks into the contract.
   c.querySelectorAll('tbody tr').forEach(tr => { if (tr.querySelector('td[colspan]')) tr.remove(); });
+  // Optional extras / hidden options are not contracted work — never in the contract's table.
+  c.querySelectorAll('tbody tr.opt-row').forEach(tr => tr.remove());
   c.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
   return '<div class="cw-works" style="overflow-x:auto">' + c.outerHTML + '</div>';
 }
@@ -7706,7 +7778,7 @@ function openContractDialog(refArg){
     toast('⚠ Quote total changed since the last contract (' + money(cm.total||0) + ' → ' + money(total) + ')');
   }
   const srcLines = loadedHere ? lines : ((sq && sq.lines) || []);
-  const labDays = srcLines.filter(l => !l.note).reduce((s,l) => s + (l.labDays||0), 0);
+  const labDays = srcLines.filter(l => !l.note && !l.optional).reduce((s,l) => s + (l.labDays||0), 0);
   const suggestN = labDays > 0 ? Math.max(1, Math.ceil(labDays/5)) : 3;
   // Pre-fill from the saved contract if one exists (so re-opening remembers your settings).
   // A NEW contract defaults to TODAY — the day it's generated — NOT the quote date.
@@ -10248,7 +10320,7 @@ async function saveQuote() {
             xdesc:l.xdesc||'', notes:l.notes||'', qty:l.qty||0,
             unit_price:l.unitPrice||0, mat_cost:l.matCost||0,
             lab_days:l.labDays||0, lab_rate:l.labRate||0, lab_total:l.labTotal||0,
-            vat:vatNum(l.vat), optional:l.optional||false, misc:l.misc||false, unit:l.unit||'',
+            vat:vatNum(l.vat), optional:l.optional||false, option_hidden:!!l.optionHidden, misc:l.misc||false, unit:l.unit||'',
             materials_snapshot: materialsSnapshot,
             group_id: l.groupId||null,
             group_member: l.groupMember||null,
@@ -11606,7 +11678,7 @@ function sqAmt(l, sqLines) {
 // Ex-VAT / inc-VAT value of a whole saved quote
 function sqTotals(sq) {
   const sqLines = sq.lines || [];
-  const vis = sqLines.filter(l => !l.groupMember);
+  const vis = sqLines.filter(l => !l.groupMember && !l.optional);   // optional extras sit outside the total
   const ex = vis.reduce((s,l) => s + sqAmt(l, sqLines), 0);
   const inc = vis.reduce((s,l) => s + sqAmt(l, sqLines)*(1+(l.vat||0)/100), 0);
   return { ex, inc };
@@ -13733,14 +13805,17 @@ async function confirmGroup(selectedIds) {
     labRate: 0,
     labTotal: selected.reduce((s,l) => s + (l.labTotal||0), 0),
     vat: vatNum(selected[0].vat),
-    optional: false,
+    // Optional state lives on the header: the group is optional only if EVERY member was
+    // (hidden only if every member was hidden); members are then made to mirror it.
+    optional: selected.every(l => l.optional),
+    optionHidden: selected.every(l => l.optional && l.optionHidden),
     misc: false,
     unit: '',
     materials: [],
     groupExpanded: true
   };
 
-  selected.forEach(l => { l.groupMember = groupId; l.selected = false; });
+  selected.forEach(l => { l.groupMember = groupId; l.selected = false; l.optional = groupHeader.optional; l.optionHidden = groupHeader.optionHidden; });
   const memberLines = selected.map(l => ({...l}));
   lines = lines.filter(l => !selected.find(s => s.id === l.id));
   const pos = Math.min(firstIdx, lines.length);
@@ -13852,7 +13927,7 @@ function moveLinesToGroup(lineIds, groupId) {
     .map(id => lines.find(x => x.id === id))
     .filter(l => l && !l.groupMember && !l.groupId);
   if (!moving.length) return;
-  moving.forEach(l => { l.groupMember = groupId; l.selected = false; });
+  moving.forEach(l => { l.groupMember = groupId; l.selected = false; l.optional = !!header.optional; l.optionHidden = !!header.optionHidden; });   // a member follows its header's optional state
   // pull the moving lines out of their current positions
   lines = lines.filter(x => !moving.some(m => m.id === x.id));
   // re-insert right after the group's last existing member
