@@ -11941,8 +11941,7 @@ function renderSaved() {
     if (sortBy === 'newest') return new Date(b.saved||b.date||0) - new Date(a.saved||a.date||0);
     if (sortBy === 'oldest') return new Date(a.saved||a.date||0) - new Date(b.saved||b.date||0);
     if (sortBy === 'client') return (a.customer||'').localeCompare(b.customer||'');
-    const aTotal = (a.lines||[]).filter(l=>!l.groupMember).reduce((s,l)=>s+sqAmt(l,a.lines||[])*(1+(l.vat||0)/100),0);
-    const bTotal = (b.lines||[]).filter(l=>!l.groupMember).reduce((s,l)=>s+sqAmt(l,b.lines||[])*(1+(l.vat||0)/100),0);
+    const aTotal = sqTotals(a).inc, bTotal = sqTotals(b).inc;   // one definition of a quote's value (optional extras excluded)
     if (sortBy === 'value-high') return bTotal - aTotal;
     if (sortBy === 'value-low') return aTotal - bTotal;
     return 0;
@@ -11952,11 +11951,9 @@ function renderSaved() {
 
   el.innerHTML = filtered.map(sq => {
     // Correctly sum: exclude group members, use sqAmt to recalculate stale group headers
-    const sqLines = sq.lines || [];
-    const visLines = sqLines.filter(l => !l.groupMember);
-    const sub = visLines.reduce((s,l) => s + sqAmt(l, sqLines), 0);
-    const vat = visLines.reduce((s,l) => s + sqAmt(l, sqLines)*(l.vat||0)/100, 0);
-    const total = sub + vat;
+    // The row's figure = sqTotals (the same sum the sales report, the CRM push and the builder
+    // use) — it had its own copy, which still counted optional extras (Neal's Jen Wei Lee case).
+    const total = sqTotals(sq).inc;
     const d = sq.saved ? new Date(sq.saved).toLocaleDateString('en-GB',{day:'numeric',month:'short',year:'numeric'}) : sq.date||'';
     const status = sq.status || 'Draft';
     const statusCol = STATUS_COLORS[status] || '#6B7280';
