@@ -66,7 +66,14 @@ const P = {
   name: "fldoGJkWMYyZuHQeu", card: "fldiJjezHUzJ9Aael", amount: "fldQwX5mVfQcTUTD8", trigger: "fldZsRzUQgyR8Sjjf",
   triggerList: "fld4HqE9lpB6tBmPP", terms: "fldE0l2zKsDNyXBil", triggerDate: "fldKH5OaJWm6OBV59",
   invoiceSent: "fldiHkoBIlajLleVc", completed: "fldU9fUOIbmSXe4Gl", datePaid: "fldvzx8CPyuJjeZAq",
+  // Which contract wrote the row = the Quotes row Ref exactly as pushed (wantRef, so sandbox rows
+  // carry the ZZZ- prefix). Blank = pre-CRM Trello row or hand-added extra: never touched.
+  // CRM fix #44 (29/09/26): design + build rows share one card, so every comparison is scoped
+  // to same-ref rows — a build push no longer holds on the design rows, and a name shared across
+  // contracts ("25% on completion") can no longer patch or delete the other contract's row.
+  contractRef: "fldj2NVaoeUmifsVG",
 };
+const rowRef = (p: any) => String((p.fields || {})[P.contractRef] || "").trim();
 // A milestone is a FACT (never updated, never deleted) once any of these is set.
 const paymentLocked = (f: any) => !!f[P.invoiceSent] || !!f[P.completed] || !!f[P.datePaid];
 // ⚠ STAGE NAMES SHORTENED 19/09/26 (Airtable's kanban headers cut names over ~15 chars; Neal
@@ -281,20 +288,25 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   // Payments on supersede / merge (CRM + Neal, 05/09 + 14/09): DELETE this quote's own
   // milestones that are still just plans — uninvoiced, uncompleted, unpaid, name-matched to
   // THIS quote's schedule. Facts (Invoice Sent / Completed / Date Paid) are never deleted;
-  // hand-added rows survive because the scope is this schedule's names only.
+  // hand-added rows survive because the scope is this schedule's names only — and, since fix
+  // #44, only rows whose Contract Ref is THIS quote's ref (another contract's row of the same
+  // name, or a blank-ref hand-added row, is never deleted).
   const deleteOwnPlanMilestones = async (why: string) => {
     const sched: any[] = rec.cm && Array.isArray(rec.cm.scheduleStructured) ? rec.cm.scheduleStructured : [];
     if (!sched.length) return;
     const names = new Set(sched.map(e => String(e.label || "").trim().toLowerCase()).filter(Boolean));
     const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+    let otherRows = 0;
     for (const id of payIds) {
       const p = await A.get(T.payments, id);
       if (!p) continue;
+      if (rowRef(p) !== wantRef) { otherRows++; continue; }
       const nm = String(p.fields[P.name] || "").trim();
       if (!names.has(nm.toLowerCase())) continue;
       if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
       plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (${why})`, fields: {} });
     }
+    if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
   };
   // Aggregates AFTER this event, from the Airtable rows + this row's new state.
   const statusAfter = (newStatus: string | null) => {
@@ -468,10 +480,28 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         else cardPatch[CARD.name] = curName.trim() ? `${ref} ${curName.trim()}` : ref;
       } else plan.notes.push("Design contract — Job Number / Project Value / Card Name are build-contract facts, not written");
       // Payments: existing rows on this card via the card's reverse link (ids — a formula over
-      // {Card} would see names, not ids), matched by milestone name.
+      // {Card} would see names, not ids), matched by milestone name WITHIN THIS CONTRACT'S ROWS
+      // (Contract Ref = wantRef). Other contracts' rows (the design rows on a build push) and
+      // blank-ref rows (hand-added / pre-CRM) are never matched, patched or warned about — one
+      // note each at most, and a note never holds (CRM fix #44, 29/09/26: Mr Test step 23 held
+      // four times on ZZZ-DC-0007's rows; every design client going on to a build would have).
       const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
       const existing: any[] = [];
-      for (const id of payIds) { const p = await A.get(T.payments, id); if (p) existing.push(p); }
+      const otherByRef = new Map<string, number>();
+      let blankRows = 0;
+      for (const id of payIds) {
+        const p = await A.get(T.payments, id);
+        if (!p) continue;
+        const r = rowRef(p);
+        if (r === wantRef) existing.push(p);
+        else if (r) otherByRef.set(r, (otherByRef.get(r) || 0) + 1);
+        else blankRows++;
+      }
+      if (otherByRef.size) {
+        const total = [...otherByRef.values()].reduce((s, n) => s + n, 0);
+        plan.notes.push(`${total} payment row${total === 1 ? "" : "s"} from other contracts (${[...otherByRef.keys()].join(", ")}) left alone`);
+      }
+      if (blankRows) plan.notes.push(`${blankRows} payment row${blankRows === 1 ? "" : "s"} with no Contract Ref (hand-added or pre-CRM) left alone`);
       const byName = new Map<string, any>();
       existing.forEach(p => byName.set(String(p.fields[P.name] || "").trim().toLowerCase(), p));
       const sched: any[] = Array.isArray(cm.scheduleStructured) ? cm.scheduleStructured : [];
@@ -484,6 +514,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         const trigger = e.triggerList ? "On Card Move" : e.trigger === "weekly" ? "On Date" : e.trigger === "onCompletion" ? "On Completion" : "Manual";
         const fields: Record<string, unknown> = {
           [P.name]: e.label, [P.card]: [cardId], [P.amount]: round2(Number(e.amount) || 0), [P.trigger]: trigger, [P.terms]: e.terms || "Standard",
+          [P.contractRef]: wantRef,   // stamps which contract wrote the row (created rows only; a matched row already carries it)
         };
         if (e.triggerList) fields[P.triggerList] = e.triggerList;
         const ex = byName.get(key);
@@ -503,7 +534,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       existing.forEach(p => {
         const key = String(p.fields[P.name] || "").trim().toLowerCase();
-        if (key && !seen.has(key)) plan.warnings.push(`Existing payment "${p.fields[P.name]}" £${num(p.fields[P.amount])} is not in this schedule — left in place (hand-added or dropped; a person decides)`);
+        if (key && !seen.has(key)) plan.warnings.push(`Existing payment "${p.fields[P.name]}" £${num(p.fields[P.amount])} from ${wantRef} is not in this schedule — left in place (dropped from the schedule; a person decides)`);
       });
       break;
     }
