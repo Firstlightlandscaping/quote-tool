@@ -7977,6 +7977,21 @@ async function sigDeleteGuard(ref, isDesign, label) {
 }
 async function doGenerateContract(){
   const dref = cwDialogRef || g('in-ref');
+  // Confirm naming the linked card (CRM + Neal, 29/09): generating creates the payment rows on
+  // the CRM card, so it's an irreversible push. FIRST — before any signing link is revoked.
+  // Only when a card is linked (no card = the push holds and writes nothing). The row count
+  // mirrors what saveContractSnapshot will structure: typed lines with an amount in Custom
+  // mode, the built schedule in Standard.
+  {
+    const sqc = savedQuotes.find(x => x.ref === dref);
+    if (sqc && sqc.airtableCardId) {
+      const custom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
+      const n = custom
+        ? String((document.getElementById('cw-freetext')||{}).value || '').split(/\n/).map(lineAmount).filter(Boolean).length
+        : buildPaymentSchedule(cwDialogTotal, { depositPct: parseFloat((document.getElementById('cw-deposit')||{}).value) || 0, completionPct: parseFloat((document.getElementById('cw-completion')||{}).value) || 0, stagedCount: parseInt((document.getElementById('cw-weeks')||{}).value) || 0 }).length;
+      if (!confirm((sqc.contractMeta ? 'Regenerate' : 'Generate') + ' this contract for ' + (sqc.customer || dref) + ' (' + dref + ')?\n\nThis creates ' + n + ' payment row' + (n === 1 ? '' : 's') + ' on their CRM card and updates it (Job Number, Project Value).')) return;   // dialog stays open
+    }
+  }
   // Never-mutate rule (e-signing): a regenerated contract is a DIFFERENT document, so any
   // outstanding signing links must die with the old one — and regenerating over a SIGNED
   // contract deserves a deliberate pause. Best-effort — if the signing table isn't
@@ -9000,6 +9015,12 @@ async function dcCreate(existingRef) {
   if (!lines.length || !lines.some(l => +l.fee > 0)) { toast('Add at least one package line with a fee'); return; }
   const t = dcTotals(lines);
   const freeText = (document.getElementById('dc-schedule').value || '').trim();
+  // Confirm naming the linked card (CRM + Neal, 29/09) — same rule as build contracts, before
+  // any signing link is revoked or anything is written. Only when a card is linked.
+  if (dcCrmLink && dcCrmLink.cardId) {
+    const n = String(freeText).split(/\n/).map(lineAmount).filter(Boolean).length;
+    if (!confirm((existingRef ? 'Regenerate' : 'Generate') + ' this contract for ' + cust + (existingRef ? ' (' + existingRef + ')' : '') + '?\n\nThis creates ' + n + ' payment row' + (n === 1 ? '' : 's') + ' on their CRM card.')) return;
+  }
   const btn = document.getElementById('dc-create-btn');
   if (btn) { btn.disabled = true; btn.textContent = 'Creating…'; }
   const reEnable = () => { if (btn) { btn.disabled = false; btn.textContent = existingRef ? 'Regenerate contract' : 'Create contract'; } };
@@ -10269,7 +10290,7 @@ async function duplicateQuote(ref) {
   if (!(sq.lines || []).length) { toast(ref + ' has no lines to copy'); return; }
   let _supersedes = '';
   if ((sq.status||'Draft') !== 'Superseded' && (sq.status||'Draft') !== 'Estimate') {
-    if (confirm('Is this copy a REVISED VERSION replacing ' + ref + '?\n\nOK  = mark ' + ref + ' as Superseded (kept, but excluded from sales totals)\nCancel = plain copy, ' + ref + ' unchanged')) {
+    if (confirm('Is this copy a REVISED VERSION replacing ' + ref + '?\n\nOK  = mark ' + ref + ' as Superseded (kept, but excluded from sales totals)' + (sq.airtableCardId ? ' — this will move its CRM card to Amendments' : '') + '\nCancel = plain copy, ' + ref + ' unchanged')) {
       _supersedes = ref;
     }
   }
@@ -11684,6 +11705,14 @@ async function updateQuoteStatus(ref, status, opts) {
     renderSaved();                                   // snap the dropdown back
     return;
   }
+  // Confirms on the IRREVERSIBLE pushes only (CRM + Neal, 29/09 — Phil Knight QT-0104 was
+  // Declined by mistake, re-Sent, then Superseded). Sent / Accepted stay reflex clicks. Asked
+  // only when a push will actually fire: a genuine change on a quote with a linked card.
+  // Paths that already asked their own question (duplicate's revised-version confirm, merge)
+  // pass autoRevoke and are not asked twice. Decided BEFORE anything is written.
+  const willPush = (q.status || 'Draft') !== status && !!q.airtableCardId && !(opts && opts.autoRevoke);
+  if (willPush && status === 'Declined' && !confirm('Mark ' + ref + ' as Declined?\n\nThis will recompute the card\'s Quote Value (and may mark it Quote Rejected). Continue?')) { renderSaved(); return; }
+  if (willPush && status === 'Superseded' && !confirm('Mark ' + ref + ' as Superseded?\n\nThis will move the card to Amendments. Continue?')) { renderSaved(); return; }
   // A dead status must not leave a live signing link out there. Decided BEFORE anything
   // is written, so Cancel genuinely cancels; revoke + status change succeed or fail
   // together, so "declined but signable" can never arise from this path.
