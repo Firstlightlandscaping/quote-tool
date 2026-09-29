@@ -51,6 +51,7 @@ const T = { cards: "tblhrLdyfVW8zQchA", quotes: "tblwyYldJOSmtIVFl", payments: "
 const CARD = {
   name: "fld94ZrpnsYT0Bw9a", list: "fldqEdoSsR6whYUXd", quoteValue: "fld6I3tOHbq8DNG69",
   quoteSentDate: "fldUxILTHcPALSZax", projectValue: "fldlBfNkxOUZS7mvV", jobNumber: "fldTN5Sto5WIP9x8I",
+  quoteBy: "fldxs0tD9u1WjxpHm",          // single select, same options as Quotes.Quoted By (CRM, 29/09)
   contractSigned: "fldKqw7Qgx0ae2Ala", designContractSigned: "fldl15deSE4g5eLPc",
   quotesLink: "fld1NVqi5tSRBZMLV",        // reverse link → Quotes rows on this card
   paymentsLink: "fld8tUhJLwxpK11DM",      // reverse link → Payments rows on this card (CRM, 05/09)
@@ -361,6 +362,10 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       const all = statusAfter("Sent");
       cardPatch[CARD.quoteValue] = quoteValueFrom(all);
       cardPatch[CARD.quoteSentDate] = rec.dateSent;
+      // Card.Quote By from the quote's "Signed off by" (CRM, 29/09 — QT-0113 pushed with it blank).
+      // Overwrite is fine: the quoter can change on a revision. Same option check as the row.
+      if (rec.quotedBy && QUOTED_BY.has(rec.quotedBy)) cardPatch[CARD.quoteBy] = rec.quotedBy;
+      else if (rec.quotedBy) plan.notes.push(`Card Quote By not written — "${rec.quotedBy}" is not an Airtable option`);
       move(LIST.quoteSent, "quote sent");
       break;
     }
