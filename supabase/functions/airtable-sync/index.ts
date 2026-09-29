@@ -328,16 +328,6 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   };
   const otherAccepted = plan.siblings.some(s => s.status === "Accepted");
   const otherSent = plan.siblings.some(s => s.status === "Sent");
-  // Card.Quote By from the quote's "Signed off by" (CRM, 29/09 — QT-0113 pushed with it blank).
-  // Written on sent, accepted AND contract_generated (Neal, 29/09): a combined quote is marked
-  // Accepted directly and never passes through Sent, so Sent alone would leave its card blank.
-  // Overwrite is fine (the quoter can change on a revision); same option check as the row;
-  // the changed-fields filter below means a card already holding the name gets no write.
-  const cardQuoteBy = () => {
-    if (rec.isDesign || !rec.quotedBy) return;
-    if (QUOTED_BY.has(rec.quotedBy)) cardPatch[CARD.quoteBy] = rec.quotedBy;
-    else plan.notes.push(`Card Quote By not written — "${rec.quotedBy}" is not an Airtable option`);
-  };
 
   switch (event) {
     case "figures": {
@@ -372,7 +362,10 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       const all = statusAfter("Sent");
       cardPatch[CARD.quoteValue] = quoteValueFrom(all);
       cardPatch[CARD.quoteSentDate] = rec.dateSent;
-      cardQuoteBy();
+      // Card.Quote By from the quote's "Signed off by" (CRM, 29/09 — QT-0113 pushed with it blank).
+      // Overwrite is fine: the quoter can change on a revision. Same option check as the row.
+      if (rec.quotedBy && QUOTED_BY.has(rec.quotedBy)) cardPatch[CARD.quoteBy] = rec.quotedBy;
+      else if (rec.quotedBy) plan.notes.push(`Card Quote By not written — "${rec.quotedBy}" is not an Airtable option`);
       move(LIST.quoteSent, "quote sent");
       break;
     }
@@ -432,7 +425,6 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       upsertRow(f, "Quotes row → Accepted");
       cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter("Accepted"));
-      cardQuoteBy();
       if (otherSent) plan.notes.push("Another quote on this card is still Sent — card stays put, chase continues");
       else move(LIST.accepted, "quote accepted");
       break;
@@ -458,7 +450,6 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!rec.isDesign) {
         cardPatch[CARD.jobNumber] = ref;
         cardPatch[CARD.projectValue] = round2(Number(cm.total) || rec.valueInc);
-        cardQuoteBy();
         // Card Name gets the QT ref in front (CRM, 24/09/26): Airtable shows a linked card only
         // by its name, so staff read the job number off the board and every linked chip. Only
         // when the name carries NO quote ref yet — an existing ref is never rewritten or
