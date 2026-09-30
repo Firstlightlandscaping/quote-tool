@@ -1094,6 +1094,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
       <div style="display:flex;gap:6px">
         <button class="btn btn-sm" id="ct-mode-build" onclick="ctSetMode('build')">Build contract</button>
         <button class="btn btn-sm" id="ct-mode-design" onclick="ctSetMode('design')">Design contract</button>
+        <button class="btn btn-sm" id="ct-mode-design_scaled" onclick="ctSetMode('design_scaled')" title="Printed instead of the design terms when a design contract is ticked 'Scaled-back version'">Design — scaled-back</button>
       </div>
       <div style="font-size:12px;color:var(--i2)" id="ct-mode-intro">The standard terms printed on every <strong>Contract of Works</strong>. Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with. Select text and use <b>B</b> / <i>I</i> / <u>U</u> / • on a clause for formatting.</div>
       <div id="ct-editor"></div>
@@ -1604,6 +1605,7 @@ async function loadFromSupabase() {
   companySettings = (settingsRows && settingsRows.length) ? settingsRows[0] : null;
   contractTerms = normalizeContractTerms(companySettings && companySettings.contract_terms);
   designTerms = normalizeDesignTerms(companySettings && companySettings.design_terms);
+  designTermsScaled = normalizeDesignTermsScaled(companySettings && companySettings.design_terms_scaled);
   if (document.getElementById('ct-editor')) initContractTermsEditor();
   noteTemplates = normalizeNoteTemplates(companySettings && companySettings.note_templates);
   renderNoteTemplates();
@@ -7320,6 +7322,16 @@ function normalizeDesignTerms(raw){
   }
   return { version: 1, numbering: 'sections', sections: DESIGN_TERMS.map(s => ({ title: s.title, items: s.items.slice() })) };
 }
+// Scaled-back design terms (2026-09-30, Neal): same shape as designTerms, own column
+// (company_settings.design_terms_scaled). NO fallback — null until someone saves a set in the
+// Contracts tab, and the design contract's "Scaled-back version" tick stays disabled until then
+// (a silent fallback would print the FULL terms on a scaled-back contract).
+let designTermsScaled = null;
+function normalizeDesignTermsScaled(raw){
+  if (!(raw && Array.isArray(raw.sections))) return null;
+  const t = normalizeDesignTerms(raw);
+  return t.sections.length ? t : null;
+}
 
 // Cover letter body (after "Dear {customer}"). Quote ref is used as the contract Reference.
 // The "starting week ... confirmed via email" sentence was removed 2026-07-28 (Neal's call)
@@ -8922,7 +8934,7 @@ function renderDesignPackages() {
       <span style="font-family:'DM Mono',monospace;font-weight:600;flex:none;width:56px">${cwEsc(p.code)}</span>
       <div style="flex:1;min-width:0">
         <div style="font-weight:600;font-size:12px;color:var(--i1)">${cwEsc(p.name)}</div>
-        <div style="font-size:11px;color:var(--i3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(p.description||'')}">${cwEsc((p.description||'').split('\n')[0])}</div>
+        <div style="font-size:11px;color:var(--i3);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${cwEsc(p.description||'')}">${cwEsc((p.description||'').split('\n')[0])}${p.description_scaled ? ' <span style="color:var(--i2)">· has a scaled-back version</span>' : ''}</div>
       </div>
       <span style="font-family:'DM Mono',monospace;flex:none">${(+p.default_fee||0) > 0 ? '£' + (+p.default_fee).toFixed(2) : '<span style="color:#B45309">fee not set</span>'}</span>
       <button class="btn btn-outline btn-sm" onclick="dpOpenEditor(${p.id})">✎ Edit</button>
@@ -8957,6 +8969,8 @@ function dpOpenEditor(id) {
       </div>
       <div class="fg" style="margin:0 0 16px"><label>Client description — printed on the contract (auto-fills the line, editable per contract)</label>
         <textarea id="dp-desc" rows="12" style="width:100%;resize:vertical;font-size:12px;line-height:1.45">${p ? cwEsc(p.description||'') : ''}</textarea></div>
+      <div class="fg" style="margin:0 0 16px"><label>Scaled-back description — printed instead when a design contract is ticked <strong>Scaled-back version</strong> (same package, reduced service). Leave blank if this package is never offered scaled-back.</label>
+        <textarea id="dp-desc-scaled" rows="10" style="width:100%;resize:vertical;font-size:12px;line-height:1.45" placeholder="Leave blank if this package has no scaled-back version">${p ? cwEsc(p.description_scaled||'') : ''}</textarea></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('dp-dialog').remove()">Cancel</button>
         <button class="btn btn-primary" onclick="dpSave(${p ? p.id : 'null'})">${p ? 'Save changes' : 'Add package'}</button>
@@ -8970,10 +8984,11 @@ async function dpSave(id) {
   const name = (document.getElementById('dp-name').value || '').trim();
   const fee = parseFloat(document.getElementById('dp-fee').value);
   const description = (document.getElementById('dp-desc').value || '').trim();
+  const descriptionScaled = ((document.getElementById('dp-desc-scaled') || {}).value || '').trim();
   if (!code || !name) { toast('Enter a code and a name'); return; }
   const clash = designPackages.find(p => p.code === code && p.id !== id);
   if (clash) { toast('Code ' + code + ' is already used by "' + clash.name + '"'); return; }
-  const body = { code, name, description, default_fee: isNaN(fee) ? null : fee };
+  const body = { code, name, description, description_scaled: descriptionScaled || null, default_fee: isNaN(fee) ? null : fee };
   try {
     if (id != null) {
       await sb('PATCH', 'design_packages', body, '?id=eq.' + id);
@@ -8984,7 +8999,7 @@ async function dpSave(id) {
       const ins = await sb('POST', 'design_packages', [body], '', true);
       if (Array.isArray(ins) && ins[0]) designPackages.push(ins[0]);
     }
-  } catch (e) { toast('Save failed: ' + e.message + ' (run supabase/design-contracts.sql?)'); return; }
+  } catch (e) { toast('Save failed: ' + e.message + ' (run supabase/design-contracts.sql and supabase/design-scaled-back.sql?)'); return; }
   document.getElementById('dp-dialog').remove();
   renderDesignPackages();
   toast(id != null ? '✓ Package updated' : '✓ Package added');
@@ -9066,6 +9081,7 @@ function dcOpenEditor(ref) {
   dcCrmLink = { cardId: (dc && dc.airtable_card_id) || '', email: (dc && dc.client_email) || '' };
   dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
   dcTriggerOv = (dc && dc.contract_meta && Array.isArray(dc.contract_meta.scheduleStructured)) ? cwOvFromStructured(dc.contract_meta.scheduleStructured) : {};   // remember per-figure picks on regenerate
+  dcScaled = !!(dc && dc.contract_meta && dc.contract_meta.scaledBack);   // remember the scaled-back tick on regenerate
   removeDcDialog();
   const wrap = document.createElement('div');
   wrap.id = 'dc-dialog';
@@ -9081,6 +9097,9 @@ function dcOpenEditor(ref) {
         '<div class="cw-fg" style="max-width:180px"><label>Postcode</label><input type="text" id="dc-post" value="' + (dc ? cwEsc(dc.post || '') : '') + '"></div>' +
         '<div class="cw-fg"><label>Lines — package, quantity, fee (£ ex VAT, 20% VAT applied)</label><div id="dc-lines-host"></div>' +
         '<button class="btn btn-outline btn-sm" onclick="dcAddLine()">+ Add line</button></div>' +
+        '<label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;margin:6px 0 2px;cursor:' + (designTermsScaled ? 'pointer' : 'not-allowed') + ';color:' + (designTermsScaled ? 'var(--i1)' : 'var(--i3)') + '" title="' + (designTermsScaled ? 'Same package at a lower fee with a reduced service — prints the package\'s scaled-back description and the scaled-back design terms' : 'Set up the scaled-back design terms first (Contracts tab → Design — scaled-back)') + '">' +
+          '<input type="checkbox" id="dc-scaled" style="margin-top:2px"' + (dcScaled ? ' checked' : '') + (designTermsScaled ? '' : ' disabled') + ' onchange="dcScaledChanged(this.checked)">' +
+          '<span><strong>Scaled-back version</strong> <span style="color:var(--i3)">— same package, reduced service: prints the scaled-back description and terms. Set the lower fee on the line as usual.' + (designTermsScaled ? '' : ' (Not available until the scaled-back terms are saved in the Contracts tab.)') + '</span></span></label>' +
         '<div style="font-size:13px;font-weight:600;margin:10px 0 4px">Total: <span id="dc-total"></span></div>' +
         '<div class="cw-fg"><label>Payment schedule — printed exactly as typed (only the Total line is added automatically)</label>' +
         '<textarea id="dc-schedule" rows="4" oninput="dcSchedTouched=true;dcRefreshTotals()"></textarea>' +
@@ -9119,9 +9138,31 @@ function dcPaintLines() {
 function dcPickPackage(i, code) {
   const p = designPackages.find(x => x.code === code);
   if (!p) { dcLines[i] = { code: '', name: '', description: '', qty: dcLines[i].qty || 1, fee: '', vat: 20 }; }
-  else dcLines[i] = { code: p.code, name: p.name, description: p.description || '', qty: dcLines[i].qty || 1, fee: (+p.default_fee || 0) || '', vat: 20 };
+  else dcLines[i] = { code: p.code, name: p.name, description: dcPkgDesc(p, dcScaled), qty: dcLines[i].qty || 1, fee: (+p.default_fee || 0) || '', vat: 20 };
   dcPaintLines();
   dcRefreshTotals();
+}
+// ── SCALED-BACK VERSION (2026-09-30, Neal) ─────────────────────────────────────
+// Same package (e.g. "The Standard Package" — name, code and CRM strings unchanged), lower
+// fee, reduced service. The tick swaps each line's printed description to the package's
+// scaled-back one and prints the scaled-back design terms; both are frozen into the snapshot.
+let dcScaled = false;
+function dcPkgDesc(p, scaled) { return (scaled && p.description_scaled) ? p.description_scaled : (p.description || ''); }
+// Swap only descriptions still holding the OTHER variant word for word — a description
+// hand-edited on this contract is never overwritten by the tick.
+function dcScaledChanged(on) {
+  dcScaled = !!on;
+  let swapped = 0, kept = 0;
+  dcLines.forEach(l => {
+    const p = designPackages.find(x => x.code === l.code);
+    if (!p || !p.description_scaled) return;
+    const from = dcPkgDesc(p, !dcScaled), to = dcPkgDesc(p, dcScaled);
+    if ((l.description || '') === from) { l.description = to; swapped++; }
+    else if ((l.description || '') !== to) kept++;
+  });
+  dcPaintLines();
+  if (kept) toast('⚠ ' + kept + ' line' + (kept === 1 ? '' : 's') + ' had an edited description and ' + (kept === 1 ? 'was' : 'were') + ' left as typed — check ' + (kept === 1 ? 'it' : 'them') + ' with ✎');
+  else if (dcScaled && !swapped && dcLines.some(l => l.code)) toast('No package on this contract has a scaled-back description — set one in the package editor (Design tab)');
 }
 function dcAddLine() { dcLines.push({ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }); dcPaintLines(); }
 function dcToggleDesc(i) { const w = document.getElementById('dc-desc-wrap-' + i); if (w) w.style.display = w.style.display === 'none' ? 'block' : 'none'; }
@@ -9152,6 +9193,10 @@ async function dcCreate(existingRef) {
   if (!lines.length || !lines.some(l => +l.fee > 0)) { toast('Add at least one package line with a fee'); return; }
   const t = dcTotals(lines);
   const freeText = (document.getElementById('dc-schedule').value || '').trim();
+  // Which terms this contract freezes: ticked → the scaled-back set (the tick is disabled
+  // until it exists, but guard anyway — never print full terms on a scaled-back contract).
+  if (dcScaled && !designTermsScaled) { toast('⚠ The scaled-back design terms aren\'t set up yet — save them in the Contracts tab first, or untick Scaled-back version'); return; }
+  const useTerms = dcScaled ? designTermsScaled : designTerms;
   // Confirm naming the linked card (CRM + Neal, 29/09) — same rule as build contracts, before
   // any signing link is revoked or anything is written. Only when a card is linked.
   if (dcCrmLink && dcCrmLink.cardId) {
@@ -9197,8 +9242,12 @@ async function dcCreate(existingRef) {
       // it carries a triggerList; 'onConcepts' extends the trigger enum — pusher rule:
       // non-null triggerList ⇒ "On Card Move" to that list.
       scheduleStructured: cwStructureCustom(freeText, dcTriggerOv, 'dc'),   // per-figure picks from the dialog (paid / cash / ignore + the design map)
-      termsVersion: (designTerms && designTerms.version) || 1,
-      termsSnapshot: JSON.parse(JSON.stringify({ version: designTerms.version, numbering: 'sections', sections: designTerms.sections })),
+      // Scaled-back version: the scaled-back design terms are frozen instead of the standard
+      // ones (same package; the line descriptions were already swapped by the tick).
+      scaledBack: !!(dcScaled && useTerms === designTermsScaled),
+      termsSet: (dcScaled && useTerms === designTermsScaled) ? 'design_scaled' : 'design',
+      termsVersion: (useTerms && useTerms.version) || 1,
+      termsSnapshot: JSON.parse(JSON.stringify({ version: useTerms.version, numbering: 'sections', sections: useTerms.sections })),
       total: t.inc,
       design: true,
       status: (prev && prev.contract_meta && prev.contract_meta.status) || 'Generated',
@@ -9294,7 +9343,7 @@ function renderDesignContracts() {
     const cmStatus = (d.contract_meta && d.contract_meta.status) || 'Generated';
     return '<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--bd);flex-wrap:wrap">' +
       '<span style="font-family:\'DM Mono\',monospace;font-weight:600;flex:none;width:74px">' + cwEsc(d.ref) + '</span>' +
-      '<span style="flex:1;min-width:120px;color:var(--i1)">' + cwEsc(d.customer || '—') + (d.airtable_card_id ? crmLinkTagHtml(d.client_email) : '') + '</span>' +
+      '<span style="flex:1;min-width:120px;color:var(--i1)">' + cwEsc(d.customer || '—') + (d.airtable_card_id ? crmLinkTagHtml(d.client_email) : '') + (d.contract_meta && d.contract_meta.scaledBack ? ' <span title="Scaled-back version — reduced service, scaled-back description and terms" style="font-size:10px;color:var(--i2);border:1px solid var(--bd);border-radius:8px;padding:0 6px;margin-left:6px">scaled-back</span>' : '') + '</span>' +
       '<span style="color:var(--i3);flex:none">' + dt + '</span>' +
       '<span style="font-weight:600;flex:none;min-width:90px;text-align:right">' + money(t.inc) + '</span>' +
       '<button class="btn btn-outline btn-sm" onclick="viewDesignContract(\'' + d.ref + '\')">📄 View</button>' +
@@ -9418,30 +9467,36 @@ function dcsrPrint() {
 // Rich text is limited to the cwSanitizeHtml whitelist (bold/italic/underline/lists).
 let ctWorking = null;   // [{title, items:[html,...]}]
 let ctDirty = false;
-let ctMode = 'build';   // 'build' (contract_terms, flat numbering) | 'design' (design_terms, sections numbering)
+let ctMode = 'build';   // 'build' (contract_terms, flat numbering) | 'design' (design_terms, sections numbering) | 'design_scaled' (design_terms_scaled, sections numbering)
+const CT_MODE_LABEL = { build: 'build contract', design: 'design contract', design_scaled: 'scaled-back design' };
 function ctSessionEmail(){ try { return (SESSION && SESSION.email) || ''; } catch(e){ return ''; } }
 function ctStatus(msg){ const e=document.getElementById('ct-edit-status'); if(e) e.textContent = msg||''; }
 function ctMarkDirty(){ ctDirty=true; const e=document.getElementById('ct-dirty'); if(e) e.textContent='● unsaved changes'; }
 function ctClearDirty(){ ctDirty=false; const e=document.getElementById('ct-dirty'); if(e) e.textContent=''; }
 // The active mode's saved terms / fallback seed / storage column, in one place.
 function ctModeCfg(){
+  // The scaled-back set starts life as a COPY of the current design terms (its "seed") until
+  // its first save — so the first edit is "take the standard terms and trim them".
+  if (ctMode === 'design_scaled') return { terms: designTermsScaled, seed: (designTerms && designTerms.sections) || DESIGN_TERMS, column: 'design_terms_scaled' };
   return ctMode === 'design'
     ? { terms: designTerms, seed: DESIGN_TERMS, column: 'design_terms' }
     : { terms: contractTerms, seed: CONTRACT_TERMS, column: 'contract_terms' };
 }
 function ctSetMode(m){
   if (m === ctMode) return;
-  if (ctDirty && !confirm('Discard unsaved changes to the ' + ctMode + ' contract terms?')) return;
+  if (ctDirty && !confirm('Discard unsaved changes to the ' + CT_MODE_LABEL[ctMode] + ' terms?')) return;
   ctMode = m;
   initContractTermsEditor();
 }
 function ctPaintModeButtons(){
-  const b = document.getElementById('ct-mode-build'), d = document.getElementById('ct-mode-design');
-  if (!b || !d) return;
-  b.className = 'btn btn-sm ' + (ctMode === 'build' ? 'btn-primary' : 'btn-outline');
-  d.className = 'btn btn-sm ' + (ctMode === 'design' ? 'btn-primary' : 'btn-outline');
+  const btns = { build: document.getElementById('ct-mode-build'), design: document.getElementById('ct-mode-design'), design_scaled: document.getElementById('ct-mode-design_scaled') };
+  if (!btns.build || !btns.design) return;
+  Object.keys(btns).forEach(k => { if (btns[k]) btns[k].className = 'btn btn-sm ' + (ctMode === k ? 'btn-primary' : 'btn-outline'); });
   const intro = document.getElementById('ct-mode-intro');
-  if (intro) intro.innerHTML = ctMode === 'design'
+  if (intro) intro.innerHTML = ctMode === 'design_scaled'
+    ? 'The terms printed on a design contract ticked <strong>Scaled-back version</strong> — the same package at a lower fee with a reduced service. ' +
+      (designTermsScaled ? 'Edits apply to <strong>future</strong> contracts only.' : '<strong>Not saved yet:</strong> this starts as a copy of the standard design terms — trim it, then Save terms. Until then the tick on design contracts stays off.')
+    : ctMode === 'design'
     ? 'The standard terms printed on every <strong>design contract</strong> (sections numbered 1, 2, 3… with clauses i, ii, iii). Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with.'
     : 'The standard terms printed on every <strong>Contract of Works</strong>. Edits apply to <strong>future</strong> contracts only — already-generated contracts keep the terms they were created with. Select text and use <b>B</b> / <i>I</i> / <u>U</u> / • on a clause for formatting.';
 }
@@ -9512,7 +9567,7 @@ async function saveContractTerms(){
     .filter(s => s.title || s.items.length);
   if (!sections.length) { toast('Add at least one section with a clause'); return; }
   const obj = { version: (((cfg.terms && cfg.terms.version) || 1) + 1), updatedAt: new Date().toISOString(), updatedBy: ctSessionEmail(), sections };
-  if (ctMode === 'design') obj.numbering = 'sections';   // design always renders two-level
+  if (ctMode !== 'build') obj.numbering = 'sections';   // design (standard + scaled-back) always renders two-level
   const btn = document.getElementById('ct-save-btn'); if (btn) btn.disabled = true;
   ctStatus('Saving…');
   try {
@@ -9527,10 +9582,10 @@ async function saveContractTerms(){
       }
     }
     const fresh = { version: obj.version, updatedAt: obj.updatedAt, updatedBy: obj.updatedBy, numbering: obj.numbering, sections: obj.sections };
-    if (ctMode === 'design') designTerms = fresh; else contractTerms = fresh;
+    if (ctMode === 'design') designTerms = fresh; else if (ctMode === 'design_scaled') designTermsScaled = fresh; else contractTerms = fresh;
     if (companySettings) companySettings[cfg.column] = obj;
     initContractTermsEditor();
-    toast((ctMode === 'design' ? 'Design' : 'Contract') + ' terms saved (v' + obj.version + ')');
+    toast((ctMode === 'design' ? 'Design' : ctMode === 'design_scaled' ? 'Scaled-back design' : 'Contract') + ' terms saved (v' + obj.version + ')');
   } catch(e) {
     ctStatus('Save failed'); toast('Save failed: ' + e.message);
   } finally {
