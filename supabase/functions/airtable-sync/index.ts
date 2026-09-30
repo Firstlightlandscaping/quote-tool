@@ -75,6 +75,7 @@ const P = {
   // Cash / other rows (30/09/26, CRM cases A+B): the exact Milestone Name of the invoice
   // figure on the same schedule line; blank when the line has no invoice part.
   pairedInvoice: "fldbo214fdExqdc82",
+  invoiceNumber: "fldB61sGUQVKzh9rx",   // read only — named in the paid-deposit hold message when set
 };
 const rowRef = (p: any) => String((p.fields || {})[P.contractRef] || "").trim();
 // A milestone is a FACT (never updated, never deleted) once any of these is set.
@@ -537,7 +538,8 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         if (!ex) {
           if (!isCash && paidDepositElsewhere && /deposit/i.test(String(e.label))) {
             const pd = paidDepositElsewhere.fields;
-            plan.warnings.push(`This card already has a paid deposit (£${num(pd[P.amount])}, paid ${str(pd[P.datePaid])}, from ${rowRef(paidDepositElsewhere)}). If it carries over, set this line to Already paid.`);
+            const invNo = str(pd[P.invoiceNumber]);
+            plan.warnings.push(`This card already has a paid deposit (£${num(pd[P.amount])}${invNo ? `, invoice ${invNo}` : ""}, paid ${str(pd[P.datePaid])}, from ${rowRef(paidDepositElsewhere)}). If it carries over, set this line to Already paid.`);
           }
           plan.writes.push({ table: T.payments, op: "create", label: `Payment "${e.label}" £${fields[P.amount]} (${trigger})`, fields }); continue;
         }
