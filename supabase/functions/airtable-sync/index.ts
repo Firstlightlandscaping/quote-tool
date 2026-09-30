@@ -479,8 +479,22 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         // when the name carries NO quote ref yet — an existing ref is never rewritten or
         // replaced. "QT0017"-style refs (no hyphen, typed in Trello days) count as a ref too,
         // or they would be double-prefixed.
+        // Revised quote (CRM, 30/09 — Mr Test 26d: card stayed "QT-0094 …" after QT-0095's
+        // contract): when the name STARTS with the ref of a quote on THIS card whose Quotes row
+        // is Superseded, that prefix is swapped for this ref. Any other existing ref — a
+        // Trello-era one, one mid-name like "FL3323/QT-0082", or an active quote's — is still
+        // never touched. Sibling refs carry the sandbox prefix (ZZZ-), card names don't.
         const curName = str(cf[CARD.name]) || "";
-        if (HAS_QT_REF.test(curName)) plan.notes.push(`Card Name "${curName}" already carries a QT ref — left as it is`);
+        const lead = curName.match(/^\s*QT[-\s]?(\d+)\b/i);
+        const leadRef = lead ? "QT-" + lead[1] : null;
+        const supersededSib = leadRef && leadRef !== ref
+          ? plan.siblings.find(s => s.status === "Superseded" && s.ref.replace(refPrefix, "") === leadRef) : null;
+        if (supersededSib) {
+          const renamed = ref + curName.slice(lead![0].length);
+          cardPatch[CARD.name] = renamed;
+          plan.notes.push(`Card Name "${curName}" → "${renamed}" (${leadRef} was superseded)`);
+        }
+        else if (HAS_QT_REF.test(curName)) plan.notes.push(`Card Name "${curName}" already carries a QT ref — left as it is`);
         else cardPatch[CARD.name] = curName.trim() ? `${ref} ${curName.trim()}` : ref;
       } else plan.notes.push("Design contract — Job Number / Project Value / Card Name are build-contract facts, not written");
       // Payments: existing rows on this card via the card's reverse link (ids — a formula over

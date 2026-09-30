@@ -7721,7 +7721,25 @@ function parseScheduleLine(line) {
   if (!fs.length) return null;
   const label = t.slice(0, fs[0].idx).replace(/[:\s(\-–—]+$/, '').trim();
   const written = fs.length >= 3 && Math.abs(fs[fs.length - 1].amount - fs.slice(0, -1).reduce((s, f) => s + f.amount, 0)) < 0.05;
-  return { text: t, label, figures: fs.map(f => f.amount), written, paidHint: /\(paid\)/i.test(t) };
+  return { text: t, label, figures: fs.map(f => f.amount), pos: fs.map(f => ({ idx: f.idx, end: f.end })), written, paidHint: /\(paid\)/i.test(t) };
+}
+// Right-hand column of the printed schedule for a line with MORE than one figure (CRM, 30/09 —
+// "Start of works: £283.45 + Cash £200" printed as label "Start of works: £283.45 + Cash:"
+// and £200.00, split at the last £). Now: every part in the amount column, the typed wording
+// kept, each figure normalised to money(); a written total drops out of the run and prints
+// after it as "= £9,922.90".
+function cwMultiFigureRight(p) {
+  const n = p.figures.length, last = p.written ? n - 1 : n;
+  let s = '';
+  for (let i = 0; i < last; i++) {
+    if (i > 0) s += cwEsc(p.text.slice(p.pos[i - 1].end, p.pos[i].idx));
+    s += money(p.figures[i]);
+  }
+  const lastEnd = p.pos[last - 1].end;
+  const tail = p.written ? p.text.slice(lastEnd, p.pos[n - 1].idx).replace(/[\s:=)]+$/, '') : p.text.slice(lastEnd);
+  s += cwEsc(tail.replace(/^[\s)]+$/, ''));
+  if (p.written) s += ' = ' + money(p.figures[n - 1]);
+  return s;
 }
 // The trigger for figure `part` of a parsed line: the dialog's pick when valid for this mode,
 // else the default — "(paid)" in the text → Already paid; the first figure → the keyword rule
@@ -7842,8 +7860,10 @@ function formatMiddleLines(text, paidLines){
   return (text||'').split(/\n/).map(line => {
     const t = line.trim();
     if (!t) return '';
-    const p = paidLines && paidLines.size ? parseScheduleLine(line) : null;
-    const paidSfx = (p && paidLines.has(p.label) && !/paid/i.test(t)) ? ' <span style="font-weight:400">(paid)</span>' : '';
+    const p = parseScheduleLine(line);
+    const paidSfx = (p && paidLines && paidLines.has(p.label) && !/paid/i.test(t)) ? ' <span style="font-weight:400">(paid)</span>' : '';
+    // Several figures on one line → label = text before the first figure, every part on the right.
+    if (p && p.figures.length > 1) return '<div><span class="pl">' + cwEsc(p.label) + (p.label ? ':' : '') + '</span> ' + cwMultiFigureRight(p) + paidSfx + '</div>';
     const a = lineAmount(line);
     if (a) return '<div><span class="pl">' + cwEsc(a.label) + (a.label?':':'') + '</span> ' + money(a.value) + paidSfx + '</div>';
     return '<div>' + cwEsc(t) + paidSfx + '</div>';
