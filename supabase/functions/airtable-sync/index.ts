@@ -139,6 +139,35 @@ function quoteValueInc(lines: any[]): number {
   return round2(lines.filter(l => !l.group_member && !l.optional).reduce((s, l) => s + amt(l) * (1 + (l.vat || 0) / 100), 0));
 }
 
+// Walk quotes.supersedes_ref from `fromRef` looking for `targetRef` (the Card Name's lead ref).
+// supersedes_ref is ONE ref for a revision and a COMMA LIST for a merge, so the walk covers
+// both. Returns a plain-English reason ("QT-0094 was superseded by QT-0095", or the chain)
+// when targetRef is an ancestor, else null. Breadth-first, cycle-safe, 25-node cap.
+async function supersedesPath(fromRef: string, targetRef: string): Promise<string | null> {
+  const parent = new Map<string, string>();
+  const statusOf = new Map<string, string>();
+  const queue = [fromRef]; const seen = new Set([fromRef]);
+  while (queue.length && seen.size <= 25) {
+    const cur = queue.shift()!;
+    const row = (await sbGet(`quotes?ref=eq.${encodeURIComponent(cur)}&select=status,supersedes_ref`))[0];
+    if (!row) continue;
+    statusOf.set(cur, row.status || "");
+    for (const p of String(row.supersedes_ref || "").split(",").map((s: string) => s.trim().toUpperCase()).filter(Boolean)) {
+      if (seen.has(p)) continue;
+      seen.add(p); parent.set(p, cur);
+      if (p === targetRef) {
+        const chain = [p]; let c = p;
+        while (parent.has(c)) { c = parent.get(c)!; chain.push(c); }
+        const t = (await sbGet(`quotes?ref=eq.${encodeURIComponent(p)}&select=status`))[0];
+        const verb = t && t.status === "Merged" ? "merged into" : "superseded by";
+        return chain.length === 2 ? `${p} was ${verb} ${chain[1]}` : `${p} was ${verb} ${chain[1]}, which led to ${chain.slice(2).join(" → ")}`;
+      }
+      queue.push(p);
+    }
+  }
+  return null;
+}
+
 // The record the push is about, normalised across the two ref series.
 async function loadRecord(ref: string) {
   const isDesign = ref.startsWith("DC-");
@@ -479,20 +508,20 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         // when the name carries NO quote ref yet — an existing ref is never rewritten or
         // replaced. "QT0017"-style refs (no hyphen, typed in Trello days) count as a ref too,
         // or they would be double-prefixed.
-        // Revised quote (CRM, 30/09 — Mr Test 26d: card stayed "QT-0094 …" after QT-0095's
-        // contract): when the name STARTS with the ref of a quote on THIS card whose Quotes row
-        // is Superseded, that prefix is swapped for this ref. Any other existing ref — a
-        // Trello-era one, one mid-name like "FL3323/QT-0082", or an active quote's — is still
-        // never touched. Sibling refs carry the sandbox prefix (ZZZ-), card names don't.
+        // Revised / combined quote (CRM, 30/09 — Mr Test 26d: card stayed "QT-0094 …" after
+        // QT-0095's contract): when the name STARTS with the ref of a quote that THIS quote
+        // replaced — followed down the Supersedes chain (A→B→C renames an "A…" name to C), and a
+        // merge's comma list counts the same way (its originals hand the name on) — the prefix
+        // is swapped for this ref. An unrelated quote on the same card never renames it, and
+        // any other existing ref (Trello-era, mid-name like "FL3323/QT-0082") is never touched.
         const curName = str(cf[CARD.name]) || "";
         const lead = curName.match(/^\s*QT[-\s]?(\d+)\b/i);
         const leadRef = lead ? "QT-" + lead[1] : null;
-        const supersededSib = leadRef && leadRef !== ref
-          ? plan.siblings.find(s => s.status === "Superseded" && s.ref.replace(refPrefix, "") === leadRef) : null;
-        if (supersededSib) {
+        const via = leadRef && leadRef !== ref ? await supersedesPath(ref, leadRef) : null;
+        if (via) {
           const renamed = ref + curName.slice(lead![0].length);
           cardPatch[CARD.name] = renamed;
-          plan.notes.push(`Card Name "${curName}" → "${renamed}" (${leadRef} was superseded)`);
+          plan.notes.push(`Card Name "${curName}" → "${renamed}" (${via})`);
         }
         else if (HAS_QT_REF.test(curName)) plan.notes.push(`Card Name "${curName}" already carries a QT ref — left as it is`);
         else cardPatch[CARD.name] = curName.trim() ? `${ref} ${curName.trim()}` : ref;
