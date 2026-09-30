@@ -7479,7 +7479,7 @@ function renderContract(opts){
       // Only the Total line is auto (it's a fact of the quote, not a payment).
       payHtml = '<div class="cw-pay">' +
         '<div><span class="pl">Total:</span> ' + money(total) + '</div>' +
-        formatMiddleLines(opts.freeText) +
+        formatMiddleLines(opts.freeText, opts.paidLines) +
       '</div>';
     } else {
       // LEGACY custom (contracts generated before the freeTextFull flag): the free text was the
@@ -7567,7 +7567,7 @@ function viewSavedContract(ref){
   const sq = savedQuotes.find(q => q.ref === ref);
   if (!sq || !sq.contractMeta) { toast('No saved contract for ' + ref); return; }
   const m = sq.contractMeta, snap = m.snapshot;
-  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText, freeTextFull:!!m.freeTextFull, terms: m.termsSnapshot || null };
+  const optsFromMeta = { contractDate:m.contractDate, depositPct:m.depositPct, completionPct:m.completionPct, stagedCount:m.stagedCount, freeText:m.freeText, freeTextFull:!!m.freeTextFull, terms: m.termsSnapshot || null, paidLines: cwPaidLines(m.scheduleStructured) };
   if (!snap || !snap.lines) { if (loadQuote(ref)) renderContract(optsFromMeta); return; } // old contract: render from current quote (skipped if the user keeps unsaved work)
   // Temporarily load the snapshot into the (hidden) builder, render the contract, then restore.
   const ids = ['in-cust','in-a1','in-city','in-post','in-ref','in-vno','in-date'];
@@ -7680,8 +7680,127 @@ function crmBuildScheduleStructured(rows, freeText, ov) {
     return { label: e.label, amount: e.amount, trigger: t, triggerList: CRM_TRIGGER_DEFS[t].triggerList, terms: CRM_TRIGGER_DEFS[t].terms, week: t === 'weekly' ? lw : null };
   });
 }
-let cwTriggerOv = {};   // per-label trigger picks in the OPEN contract dialog (custom mode)
-function cwSetTrigger(el) { cwTriggerOv[el.dataset.label] = el.value; }
+// ── CUSTOM SCHEDULE LINE PARSER — several figures per line, paid / cash / ignore (2026-09-30,
+// CRM cases A + B from Mr Test step 26d and how Neal writes contracts) ──────────────────
+// A typed line can carry several £ figures ("Start of works: £283.45 + £200 cash"), and a
+// figure can be money already banked ("Deposit £241.72 (paid)" — a deposit carried over from
+// a superseded contract) or a stray number. Each figure gets its OWN trigger pick in the
+// dialog; the picks persist in scheduleStructured (entries carry `line` + `part`, so a
+// regenerate keeps them). Figures = every £-prefixed number, plus a bare trailing number
+// (the old one-figure rule, so legacy lines parse exactly as before). With 3+ figures, a
+// last figure equal to the sum of the rest (±5p) is the WRITTEN TOTAL — shown
+// "total – ignored", never pushed, never counted.
+//   Already paid   → counts in the total check, prints "(paid)", NOT pushed (the CRM would
+//                    otherwise raise an invoice task for banked money and hold the card)
+//   Cash / other   → counts, prints as typed, pushed as a CASH row paired to the line's invoice
+//                    figure (only the BACS part is invoiced — Xero reconciles to the bank)
+//   Ignore         → a stray £ figure: not counted, not pushed
+const CW_EXTRA_TRIGGERS = {
+  paid:   { short: 'Already paid',                hint: 'Counts in the total and prints "(paid)". NOT pushed to the CRM — the money is already banked.' },
+  cash:   { short: 'Cash / other – not invoiced', hint: 'Counts in the total. Pushed as a cash row paired to this line\'s invoice — never invoiced, the CRM chases it as cash.' },
+  ignore: { short: 'Ignore – not a payment',      hint: 'A stray £ figure in the wording — not counted, not pushed.' },
+};
+const CW_NON_INVOICE = { paid: true, cash: true, ignore: true };
+// Override targets for the DESIGN dialog (defaults still come from crmDesignTrigger's keyword rules).
+const CRM_DESIGN_TRIGGER_DEFS = {
+  onAcceptance: { triggerList: 'Design Contract', terms: 'Immediate', short: 'Deposit (design contract sent)' },
+  onConcepts:   { triggerList: 'To Be Updated',   terms: 'Standard',  short: 'After concepts' },
+  onCompletion: { triggerList: 'Order Booklet',   terms: 'Standard',  short: 'On completion' },
+  manual:       { triggerList: null,              terms: 'Standard',  short: 'Manual' },
+};
+function cwOvKey(label, part) { return part ? label + '#' + part : label; }
+function parseScheduleLine(line) {
+  const t = String(line || '').trim();
+  if (!t) return null;
+  const figs = [];
+  const re = /£\s*(\d[\d,]*(?:\.\d+)?)/g; let m;
+  while ((m = re.exec(t))) figs.push({ amount: parseFloat(m[1].replace(/,/g, '')), idx: m.index, end: m.index + m[0].length });
+  const tail = t.match(/(\d[\d,]*(?:\.\d+)?)\s*$/);
+  if (tail && !figs.some(f => tail.index >= f.idx && tail.index < f.end)) figs.push({ amount: parseFloat(tail[1].replace(/,/g, '')), idx: tail.index, end: t.length });
+  const fs = figs.filter(f => !isNaN(f.amount)).sort((a, b) => a.idx - b.idx);
+  if (!fs.length) return null;
+  const label = t.slice(0, fs[0].idx).replace(/[:\s(\-–—]+$/, '').trim();
+  const written = fs.length >= 3 && Math.abs(fs[fs.length - 1].amount - fs.slice(0, -1).reduce((s, f) => s + f.amount, 0)) < 0.05;
+  return { text: t, label, figures: fs.map(f => f.amount), written, paidHint: /\(paid\)/i.test(t) };
+}
+// The trigger for figure `part` of a parsed line: the dialog's pick when valid for this mode,
+// else the default — "(paid)" in the text → Already paid; the first figure → the keyword rule
+// (build or design map); every further figure → Cash / other. mode = 'qt' | 'dc'.
+function cwResolveTrigger(p, part, ov, mode) {
+  const defs = mode === 'dc' ? CRM_DESIGN_TRIGGER_DEFS : CRM_TRIGGER_DEFS;
+  const valid = k => !!(k && (CW_EXTRA_TRIGGERS[k] || defs[k]));
+  const pick = (ov || {})[cwOvKey(p.label, part)];
+  let t = valid(pick) ? pick : (p.paidHint ? 'paid' : part === 0 ? (mode === 'dc' ? crmDesignTrigger(p.label).trigger : crmScheduleTrigger(p.label)) : 'cash');
+  if (mode !== 'dc' && t === 'weekly' && crmWeekFromLabel(p.label) == null) t = crmScheduleTrigger(p.label);   // weekly needs its week in the label
+  if (CW_EXTRA_TRIGGERS[t]) return { trigger: t, triggerList: null, terms: null, week: null };
+  const d = defs[t] || defs.manual;
+  return { trigger: t, triggerList: d.triggerList, terms: d.terms, week: (mode !== 'dc' && t === 'weekly') ? crmWeekFromLabel(p.label) : null };
+}
+// Custom free text → scheduleStructured entries: one per non-total figure. A cash figure
+// becomes "<label> (cash / other)" paired to the line's invoice figure; its Trigger List is
+// the invoice's (informational — nothing fires on a cash row — so a DC deposit still reads
+// as design). paid / ignore entries are kept so a regenerate remembers the choice; the push
+// never writes them.
+function cwStructureCustom(text, ov, mode) {
+  const out = [];
+  String(text || '').split(/\n/).forEach(line => {
+    const p = parseScheduleLine(line); if (!p) return;
+    const parts = p.figures.map((amt, i) => ({ amt, i, written: p.written && i === p.figures.length - 1 }));
+    const res = parts.map(x => x.written ? null : cwResolveTrigger(p, x.i, ov, mode));
+    const invIdx = parts.findIndex((x, k) => !x.written && !CW_NON_INVOICE[res[k].trigger]);
+    const inv = invIdx >= 0 ? res[invIdx] : null;
+    parts.forEach((x, k) => {
+      if (x.written) return;
+      const r = res[k], base = { line: p.label, part: x.i, amount: x.amt, week: null };
+      if (r.trigger === 'cash') out.push({ ...base, label: p.label + ' (cash / other)', trigger: 'cash', triggerList: inv ? inv.triggerList : null, terms: 'Immediate', pairedLabel: inv ? p.label : null });
+      else if (CW_EXTRA_TRIGGERS[r.trigger]) out.push({ ...base, label: p.label, trigger: r.trigger, triggerList: null, terms: null });
+      else out.push({ ...base, label: p.label, trigger: r.trigger, triggerList: r.triggerList, terms: r.terms, week: r.week });
+    });
+  });
+  return out;
+}
+// What the ✓/⚠ check adds up: invoice + Already paid + Cash / other — never Ignore or a written total.
+function cwScheduleSum(text, ov, mode) { return round2(cwStructureCustom(text, ov, mode).filter(e => e.trigger !== 'ignore').reduce((s, e) => s + e.amount, 0)); }
+// Entries the push will actually write (paid + ignore never reach the CRM) — the confirm's row count.
+function cwPushableCount(entries) { return (entries || []).filter(e => e.trigger !== 'paid' && e.trigger !== 'ignore').length; }
+// Lines whose every figure is Already paid → the print appends " (paid)" when the text doesn't say so.
+function cwPaidLines(entries) {
+  const by = {};
+  (entries || []).forEach(e => { const k = e.line != null ? e.line : e.label; (by[k] = by[k] || []).push(e.trigger); });
+  return new Set(Object.keys(by).filter(k => by[k].length && by[k].every(t => t === 'paid')));
+}
+// Seed a dialog's pick map from a saved scheduleStructured (legacy entries: label, part 0).
+function cwOvFromStructured(entries) {
+  const ov = {};
+  (entries || []).forEach(e => { if (e && e.trigger) ov[cwOvKey(e.line != null ? e.line : e.label, e.part || 0)] = e.trigger; });
+  return ov;
+}
+// Preview rows for a dialog: one row per figure with its own dropdown; sub-figures indented;
+// a written total shows "total – ignored"; note lines (no figure) print as-is.
+function cwSchedulePreviewRows(text, ov, mode, onchange) {
+  const defs = mode === 'dc' ? CRM_DESIGN_TRIGGER_DEFS : CRM_TRIGGER_DEFS;
+  return String(text || '').split(/\n/).map(line => {
+    const t = line.trim(); if (!t) return '';
+    const p = parseScheduleLine(line);
+    if (!p) return '<tr><td colspan="3">' + cwEsc(t) + '</td></tr>';
+    return p.figures.map((amt, i) => {
+      const isTotal = p.written && i === p.figures.length - 1;
+      const name = i === 0 ? cwEsc(p.label || '—') : '<span style="color:var(--i3)">↳ figure ' + (i + 1) + '</span>';
+      if (isTotal) return '<tr><td>' + name + '</td><td class="r" style="color:var(--i3)">' + money(amt) + '</td><td style="text-align:right;padding-left:8px;font-size:10px;color:var(--i3)">total – ignored</td></tr>';
+      const r = cwResolveTrigger(p, i, ov, mode);
+      const canWeekly = mode !== 'dc' && crmWeekFromLabel(p.label) != null;
+      const opts = Object.keys(defs).filter(k => k !== 'weekly' || canWeekly).map(k => [k, defs[k].short]).concat(Object.keys(CW_EXTRA_TRIGGERS).map(k => [k, CW_EXTRA_TRIGGERS[k].short]));
+      const title = CW_EXTRA_TRIGGERS[r.trigger] ? CW_EXTRA_TRIGGERS[r.trigger].hint : 'When the CRM should raise this invoice — goes to Airtable with the contract, never printed on the contract itself' + (canWeekly || mode === 'dc' ? '' : '. Weekly isn\'t offered because the label doesn\'t say which week — put the week in the wording to use it');
+      const sel = '<select data-key="' + cwEsc(cwOvKey(p.label, i)) + '" onchange="' + onchange + '(this)" title="' + cwEsc(title) + '" style="font-size:10px;padding:1px 3px;border:1px solid var(--bd);border-radius:4px;color:' + (CW_EXTRA_TRIGGERS[r.trigger] ? '#B45309' : 'var(--i2)') + ';max-width:160px;background:white">' +
+        opts.map(([k, s]) => '<option value="' + k + '"' + (k === r.trigger ? ' selected' : '') + '>' + s + '</option>').join('') + '</select>';
+      return '<tr><td>' + name + '</td><td class="r">' + money(amt) + '</td><td style="text-align:right;padding-left:8px">' + sel + '</td></tr>';
+    }).join('');
+  }).join('');
+}
+let cwTriggerOv = {};   // per-figure trigger picks in the OPEN contract dialog (custom mode), keyed cwOvKey(label, part)
+function cwSetTrigger(el) { cwTriggerOv[el.dataset.key] = el.value; cdRefresh(); }   // re-render: a pick can change the total check
+let dcTriggerOv = {};   // the same for the design-contract dialog
+function dcSetTrigger(el) { dcTriggerOv[el.dataset.key] = el.value; dcRefreshTotals(); }
 // DESIGN-contract trigger mapping (Neal, 30/07 — unblocked once the completion column
 // existed in Trello/Airtable). Separate from the build map because the build keywords
 // misfire on design labels; list strings must match Airtable EXACTLY (case + spaces).
@@ -7716,13 +7835,18 @@ function parseAmounts(text){
 // Render free-text schedule lines like the standard schedule: bold label + amount aligned in a column
 // (via .pl). A line with no amount prints as-is (e.g. a note); amounts are normalised to £ format.
 // New custom contracts pass the WHOLE schedule through here; legacy ones pass middle lines only.
-function formatMiddleLines(text){
+// paidLines (Set of line labels, from cwPaidLines): a line marked Already paid prints " (paid)"
+// after it when the wording doesn't already say so — the client sees the money is banked and
+// the schedule still adds up.
+function formatMiddleLines(text, paidLines){
   return (text||'').split(/\n/).map(line => {
     const t = line.trim();
     if (!t) return '';
+    const p = paidLines && paidLines.size ? parseScheduleLine(line) : null;
+    const paidSfx = (p && paidLines.has(p.label) && !/paid/i.test(t)) ? ' <span style="font-weight:400">(paid)</span>' : '';
     const a = lineAmount(line);
-    if (a) return '<div><span class="pl">' + cwEsc(a.label) + (a.label?':':'') + '</span> ' + money(a.value) + '</div>';
-    return '<div>' + cwEsc(t) + '</div>';
+    if (a) return '<div><span class="pl">' + cwEsc(a.label) + (a.label?':':'') + '</span> ' + money(a.value) + paidSfx + '</div>';
+    return '<div>' + cwEsc(t) + paidSfx + '</div>';
   }).join('');
 }
 // The WHOLE standard schedule (Deposit + weeklies + Completion) as editable text — seeds the
@@ -7748,28 +7872,12 @@ function cdRefresh(){
     // Custom = the free text IS the whole schedule (Total is auto). Preview the lines as they'll
     // print and soft-check that the amounts add up to the contract total.
     const txt = (document.getElementById('cw-freetext')||{}).value || '';
-    // Each payment line gets an invoice-trigger dropdown (CRM only, never printed):
-    // defaults from the keyword mapping, remembered per label in cwTriggerOv.
-    const lineRows = txt.split(/\n/).map(line => {
-      const t = line.trim();
-      if (!t) return '';
-      const a = lineAmount(line);
-      if (a) {
-        const key = a.label || '—';
-        // "Weekly" is offered ONLY when the label states its week ("End of second week",
-        // "week 3") — weekly dates the invoice by that number, so on any other line the
-        // choice would force an invented date. Want weekly? Put the week in the label
-        // (the client should see it on the printed schedule anyway).
-        const canWeekly = crmWeekFromLabel(key) != null;
-        let cur = (cwTriggerOv[key] && CRM_TRIGGER_DEFS[cwTriggerOv[key]]) ? cwTriggerOv[key] : crmScheduleTrigger(key);
-        if (cur === 'weekly' && !canWeekly) cur = crmScheduleTrigger(key);
-        const sel = '<select data-label="' + cwEsc(key) + '" onchange="cwSetTrigger(this)" title="When the CRM should raise this invoice — goes to Airtable with the contract, never printed on the contract itself' + (canWeekly ? '' : '. Weekly isn\'t offered here because the label doesn\'t say which week — put the week in the wording to use it') + '" style="font-size:10px;padding:1px 3px;border:1px solid var(--bd);border-radius:4px;color:var(--i2);max-width:112px;background:white">' +
-          Object.keys(CRM_TRIGGER_DEFS).filter(k => k !== 'weekly' || canWeekly).map(k => '<option value="' + k + '"' + (k === cur ? ' selected' : '') + '>' + CRM_TRIGGER_DEFS[k].short + '</option>').join('') + '</select>';
-        return '<tr><td>' + cwEsc(key) + '</td><td class="r">' + money(a.value) + '</td><td style="text-align:right;padding-left:8px">' + sel + '</td></tr>';
-      }
-      return '<tr><td colspan="3">' + cwEsc(t) + '</td></tr>';   // note line, no amount
-    }).join('');
-    const sum = round2(parseAmounts(txt).reduce((s,a)=>s+a,0));
+    // Each £ figure gets an invoice-trigger dropdown (CRM only, never printed): defaults from
+    // the keyword mapping ("(paid)" → Already paid; extra figures on a line → Cash / other),
+    // remembered per figure in cwTriggerOv. "Weekly" is offered ONLY when the label states its
+    // week — weekly dates the invoice by that number, so elsewhere it would force an invented date.
+    const lineRows = cwSchedulePreviewRows(txt, cwTriggerOv, 'qt', 'cwSetTrigger');
+    const sum = cwScheduleSum(txt, cwTriggerOv, 'qt');
     const diff = round2(total - sum), ok = Math.abs(diff) < 0.01;
     body.innerHTML =
       '<table class="cw-preview-tbl">' +
@@ -7780,7 +7888,7 @@ function cdRefresh(){
         (ok ? '✓ Adds up — your lines total ' + money(sum) + ', matching the contract total'
             : '⚠ Your lines total ' + money(sum) + ' but the contract total is ' + money(total) + ' — off by ' + money(Math.abs(diff))) +
       '</div>' +
-      '<div style="margin-top:3px;font-size:10px;color:var(--i3)">Invoice trigger column → CRM only, never printed. Unrecognised lines default to Manual.</div>';
+      '<div style="margin-top:3px;font-size:10px;color:var(--i3)">Invoice trigger column → CRM only, never printed. Unrecognised lines default to Manual. A line with more than one £ figure gets a pick per figure: the first is invoiced, the rest default to cash / other. Write "(paid)" for money already banked.</div>';
     return;
   }
   const o = readScheduleOpts();
@@ -7824,8 +7932,7 @@ function openContractDialog(refArg){
   cwDialogRef = ref; cwDialogTotal = total;   // cdRefresh/fullScheduleText/doGenerateContract read these
   const cm = sq && sq.contractMeta;   // previously generated contract for this quote, if any
   // Seed the trigger picks from the last generated contract so re-opening remembers them.
-  cwTriggerOv = {};
-  if (cm && Array.isArray(cm.scheduleStructured)) cm.scheduleStructured.forEach(e => { if (e && e.label && CRM_TRIGGER_DEFS[e.trigger]) cwTriggerOv[e.label] = e.trigger; });
+  cwTriggerOv = (cm && Array.isArray(cm.scheduleStructured)) ? cwOvFromStructured(cm.scheduleStructured) : {};
   // Drift warning: the quote total changed since a contract was last generated from it.
   if (cm && Math.abs((cm.total||0) - total) > 0.005) {
     toast('⚠ Quote total changed since the last contract (' + money(cm.total||0) + ' → ' + money(total) + ')');
@@ -7987,7 +8094,7 @@ async function doGenerateContract(){
     if (sqc && sqc.airtableCardId) {
       const custom = document.querySelector('input[name="cw-mode"]:checked').value === 'custom';
       const n = custom
-        ? String((document.getElementById('cw-freetext')||{}).value || '').split(/\n/).map(lineAmount).filter(Boolean).length
+        ? cwPushableCount(cwStructureCustom((document.getElementById('cw-freetext')||{}).value || '', cwTriggerOv, 'qt'))
         : buildPaymentSchedule(cwDialogTotal, { depositPct: parseFloat((document.getElementById('cw-deposit')||{}).value) || 0, completionPct: parseFloat((document.getElementById('cw-completion')||{}).value) || 0, stagedCount: parseInt((document.getElementById('cw-weeks')||{}).value) || 0 }).length;
       if (!confirm((sqc.contractMeta ? 'Regenerate' : 'Generate') + ' this contract for ' + (sqc.customer || dref) + ' (' + dref + ')?\n\nThis creates ' + n + ' payment row' + (n === 1 ? '' : 's') + ' on their CRM card and updates it (Job Number, Project Value).')) return;   // dialog stays open
     }
@@ -8021,12 +8128,14 @@ async function doGenerateContract(){
       // Soft check: the typed schedule should add up to the contract total (the DIALOG's
       // quote — the builder may hold a different one, or nothing, until the load below).
       const total = cwDialogTotal;
-      const sum = round2(parseAmounts(txt).reduce((s,a)=>s+a,0));
+      const sum = cwScheduleSum(txt, cwTriggerOv, 'qt');   // invoice + paid + cash figures; never Ignore or a written total
       const diff = round2(total - sum);
       if (Math.abs(diff) > 0.01 && !confirm('Your payment lines add up to ' + money(sum) + ', but the contract total is ' + money(total) + ' (off by ' + money(Math.abs(diff)) + ').\n\nGenerate anyway?')) return;
     }
   }
   const opts = {
+    // lines marked Already paid print " (paid)" — resolved now, from the dialog's picks
+    paidLines: isCustom ? cwPaidLines(cwStructureCustom((document.getElementById('cw-freetext')||{}).value || '', cwTriggerOv, 'qt')) : new Set(),
     contractDate: (document.getElementById('cw-date')||{}).value || '',
     depositPct: parseFloat((document.getElementById('cw-deposit')||{}).value) || 0,
     completionPct: parseFloat((document.getElementById('cw-completion')||{}).value) || 0,
@@ -8059,7 +8168,7 @@ async function saveContractSnapshot(opts){
     // Airtable Phase 2: machine-readable schedule BESIDE the printed one (never replaces
     // it). Standard mode maps the generated labels; custom mode parses the free text with
     // the dialog's per-line trigger picks. Phase 3 pushes this to the CRM's Payments table.
-    scheduleStructured: crmBuildScheduleStructured(rows, rows ? null : opts.freeText, cwTriggerOv),
+    scheduleStructured: rows ? crmBuildScheduleStructured(rows, null, cwTriggerOv) : cwStructureCustom(opts.freeText, cwTriggerOv, 'qt'),
     termsVersion: (contractTerms && contractTerms.version) || CONTRACT_TERMS_VERSION,
     termsSnapshot: contractTerms ? JSON.parse(JSON.stringify({ version: contractTerms.version, sections: contractTerms.sections })) : null,
     total,
@@ -8936,6 +9045,7 @@ function dcOpenEditor(ref) {
   dcLines = dc ? JSON.parse(JSON.stringify(dc.lines || [])) : [{ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }];
   dcCrmLink = { cardId: (dc && dc.airtable_card_id) || '', email: (dc && dc.client_email) || '' };
   dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
+  dcTriggerOv = (dc && dc.contract_meta && Array.isArray(dc.contract_meta.scheduleStructured)) ? cwOvFromStructured(dc.contract_meta.scheduleStructured) : {};   // remember per-figure picks on regenerate
   removeDcDialog();
   const wrap = document.createElement('div');
   wrap.id = 'dc-dialog';
@@ -8955,7 +9065,8 @@ function dcOpenEditor(ref) {
         '<div class="cw-fg"><label>Payment schedule — printed exactly as typed (only the Total line is added automatically)</label>' +
         '<textarea id="dc-schedule" rows="4" oninput="dcSchedTouched=true;dcRefreshTotals()"></textarea>' +
         '<a href="#" onclick="dcSchedTouched=false;dcRefreshTotals();return false;" style="font-size:11px">↻ Reset to the default split</a>' +
-        '<span id="dc-sched-check" style="font-size:11px;margin-left:10px"></span></div>' +
+        '<span id="dc-sched-check" style="font-size:11px;margin-left:10px"></span>' +
+        '<div id="dc-sched-preview" style="margin-top:6px"></div></div>' +
         '<div class="cw-modal-btns"><button class="btn btn-primary" id="dc-create-btn" onclick="dcCreate(' + (isEdit ? '\'' + dc.ref + '\'' : 'null') + ')">' + (isEdit ? 'Regenerate contract' : 'Create contract') + '</button>' +
         '<button class="btn btn-outline" onclick="removeDcDialog()">Cancel</button></div>' +
       '</div></div>';
@@ -9002,11 +9113,17 @@ function dcRefreshTotals() {
   if (ta && !dcSchedTouched) ta.value = dcDefaultSchedule(dcLines);
   const chk = document.getElementById('dc-sched-check');
   if (chk && ta) {
-    const sum = round2(parseAmounts(ta.value).reduce((s, a) => s + a, 0));
+    const sum = cwScheduleSum(ta.value, dcTriggerOv, 'dc');   // invoice + paid + cash figures; never Ignore or a written total
     const ok = Math.abs(sum - t.inc) < 0.01;
     chk.style.color = ok ? '#15803D' : '#dc2626';
     chk.textContent = ok ? '✓ adds up to the total' : '⚠ lines total ' + money(sum) + ' ≠ ' + money(t.inc);
   }
+  // Per-figure invoice-trigger picks (CRM only, never printed) — same preview as the build dialog.
+  const pv = document.getElementById('dc-sched-preview');
+  if (pv && ta) pv.innerHTML = ta.value.trim()
+    ? '<table class="cw-preview-tbl">' + cwSchedulePreviewRows(ta.value, dcTriggerOv, 'dc', 'dcSetTrigger') + '</table>' +
+      '<div style="margin-top:3px;font-size:10px;color:var(--i3)">Invoice trigger column → CRM only, never printed. A line with more than one £ figure gets a pick per figure: the first is invoiced, the rest default to cash / other. Write "(paid)" for money already banked.</div>'
+    : '';
 }
 async function dcCreate(existingRef) {
   const cust = (document.getElementById('dc-cust').value || '').trim();
@@ -9018,7 +9135,7 @@ async function dcCreate(existingRef) {
   // Confirm naming the linked card (CRM + Neal, 29/09) — same rule as build contracts, before
   // any signing link is revoked or anything is written. Only when a card is linked.
   if (dcCrmLink && dcCrmLink.cardId) {
-    const n = String(freeText).split(/\n/).map(lineAmount).filter(Boolean).length;
+    const n = cwPushableCount(cwStructureCustom(freeText, dcTriggerOv, 'dc'));
     if (!confirm((existingRef ? 'Regenerate' : 'Generate') + ' this contract for ' + cust + (existingRef ? ' (' + existingRef + ')' : '') + '?\n\nThis creates ' + n + ' payment row' + (n === 1 ? '' : 's') + ' on their CRM card.')) return;
   }
   const btn = document.getElementById('dc-create-btn');
@@ -9059,8 +9176,7 @@ async function dcCreate(existingRef) {
       // never a guess. NB design completion is a CARD MOVE (unlike build completion), so
       // it carries a triggerList; 'onConcepts' extends the trigger enum — pusher rule:
       // non-null triggerList ⇒ "On Card Move" to that list.
-      scheduleStructured: String(freeText || '').split(/\n/).map(lineAmount).filter(Boolean)
-        .map(a => ({ label: a.label, amount: a.value, ...crmDesignTrigger(a.label), week: null })),
+      scheduleStructured: cwStructureCustom(freeText, dcTriggerOv, 'dc'),   // per-figure picks from the dialog (paid / cash / ignore + the design map)
       termsVersion: (designTerms && designTerms.version) || 1,
       termsSnapshot: JSON.parse(JSON.stringify({ version: designTerms.version, numbering: 'sections', sections: designTerms.sections })),
       total: t.inc,
@@ -9122,7 +9238,8 @@ function dcRenderFromMeta(meta) {
     renderLines(); recalc(); syncH();
     renderContract({
       contractDate: meta.contractDate, freeText: meta.freeText, freeTextFull: true,
-      terms: meta.termsSnapshot, designLabel: true, coverText: DESIGN_COVER_TEXT
+      terms: meta.termsSnapshot, designLabel: true, coverText: DESIGN_COVER_TEXT,
+      paidLines: cwPaidLines(meta.scheduleStructured)
     });
   } finally {
     lines = savedLines;

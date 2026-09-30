@@ -72,6 +72,9 @@ const P = {
   // to same-ref rows — a build push no longer holds on the design rows, and a name shared across
   // contracts ("25% on completion") can no longer patch or delete the other contract's row.
   contractRef: "fldj2NVaoeUmifsVG",
+  // Cash / other rows (30/09/26, CRM cases A+B): the exact Milestone Name of the invoice
+  // figure on the same schedule line; blank when the line has no invoice part.
+  pairedInvoice: "fldbo214fdExqdc82",
 };
 const rowRef = (p: any) => String((p.fields || {})[P.contractRef] || "").trim();
 // A milestone is a FACT (never updated, never deleted) once any of these is set.
@@ -487,11 +490,13 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       // four times on ZZZ-DC-0007's rows; every design client going on to a build would have).
       const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
       const existing: any[] = [];
+      const allRows: any[] = [];   // every row on the card, for the paid-deposit safety net
       const otherByRef = new Map<string, number>();
       let blankRows = 0;
       for (const id of payIds) {
         const p = await A.get(T.payments, id);
         if (!p) continue;
+        allRows.push(p);
         const r = rowRef(p);
         if (r === wantRef) existing.push(p);
         else if (r) otherByRef.set(r, (otherByRef.get(r) || 0) + 1);
@@ -504,21 +509,38 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (blankRows) plan.notes.push(`${blankRows} payment row${blankRows === 1 ? "" : "s"} with no Contract Ref (hand-added or pre-CRM) left alone`);
       const byName = new Map<string, any>();
       existing.forEach(p => byName.set(String(p.fields[P.name] || "").trim().toLowerCase(), p));
+      // Safety net (CRM, 30/09): a deposit already PAID under another contract on this card
+      // (a superseded contract's deposit). If this schedule would CREATE an invoiced deposit
+      // row, hold and say so — the line should be marked "Already paid" instead.
+      const paidDepositElsewhere = allRows.find(p => rowRef(p) !== wantRef && /deposit/i.test(String(p.fields[P.name] || "")) && !!p.fields[P.datePaid]);
       const sched: any[] = Array.isArray(cm.scheduleStructured) ? cm.scheduleStructured : [];
       if (!sched.length) plan.warnings.push("Contract has no structured payment schedule — no Payments written");
       const seen = new Set<string>();
       for (const e of sched) {
         const key = String(e.label || "").trim().toLowerCase();
         if (!key) continue;
+        // Schedule figures that never reach the CRM (30/09): Ignore = a stray £ in the wording;
+        // Already paid = money already banked (a second deposit row would raise an invoice task
+        // for it and leave the card's "contract ready" at 0).
+        if (e.trigger === "ignore") continue;
+        if (e.trigger === "paid") { plan.notes.push(`${e.label} £${round2(Number(e.amount) || 0)} (paid): already received, not pushed`); continue; }
         seen.add(key);
-        const trigger = e.triggerList ? "On Card Move" : e.trigger === "weekly" ? "On Date" : e.trigger === "onCompletion" ? "On Completion" : "Manual";
+        const isCash = e.trigger === "cash";   // checked FIRST — a cash row carries its invoice sibling's Trigger List for information only
+        const trigger = isCash ? "Cash / other" : e.triggerList ? "On Card Move" : e.trigger === "weekly" ? "On Date" : e.trigger === "onCompletion" ? "On Completion" : "Manual";
         const fields: Record<string, unknown> = {
-          [P.name]: e.label, [P.card]: [cardId], [P.amount]: round2(Number(e.amount) || 0), [P.trigger]: trigger, [P.terms]: e.terms || "Standard",
+          [P.name]: e.label, [P.card]: [cardId], [P.amount]: round2(Number(e.amount) || 0), [P.trigger]: trigger, [P.terms]: isCash ? "Immediate" : (e.terms || "Standard"),
           [P.contractRef]: wantRef,   // stamps which contract wrote the row (created rows only; a matched row already carries it)
         };
         if (e.triggerList) fields[P.triggerList] = e.triggerList;
+        if (isCash && e.pairedLabel) fields[P.pairedInvoice] = e.pairedLabel;   // the invoice row's exact Milestone Name; blank when the line has no invoice part
         const ex = byName.get(key);
-        if (!ex) { plan.writes.push({ table: T.payments, op: "create", label: `Payment "${e.label}" £${fields[P.amount]} (${trigger})`, fields }); continue; }
+        if (!ex) {
+          if (!isCash && paidDepositElsewhere && /deposit/i.test(String(e.label))) {
+            const pd = paidDepositElsewhere.fields;
+            plan.warnings.push(`This card already has a paid deposit (£${num(pd[P.amount])}, paid ${str(pd[P.datePaid])}, from ${rowRef(paidDepositElsewhere)}). If it carries over, set this line to Already paid.`);
+          }
+          plan.writes.push({ table: T.payments, op: "create", label: `Payment "${e.label}" £${fields[P.amount]} (${trigger})`, fields }); continue;
+        }
         const locked = paymentLocked(ex.fields);
         const curAmt = num(ex.fields[P.amount]);
         if (locked) {
