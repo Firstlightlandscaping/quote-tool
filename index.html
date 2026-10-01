@@ -2643,21 +2643,8 @@ function removeLineComponent(lineId, compIdx) {
   l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
   l.unitPrice = miscUnitPrice(l);
   isDirty = true;
-  // Keep the "Edit misc item" panel OPEN (2026-09-11, Neal): a full renderLines() collapsed it
-  // after every delete, so removing several components meant reopening the panel each time.
-  // Same in-place pattern as saveLineComp's edit path.
-  const listEl = document.getElementById('line-comps-edit-' + lineId);
-  if (listEl) {
-    listEl.innerHTML = miscEditComponentsHtml(l);
-    patchMiscLineDom(l);   // row unit price/amount, mat tag, group totals
-    const n = l.miscComponents.length;
-    const ct = document.getElementById('comp-toggle-' + lineId);
-    if (ct) { if (n) ct.textContent = '📦 ' + n + ' component' + (n !== 1 ? 's' : '') + ' ▶'; else ct.parentElement.style.display = 'none'; }
-    recalc();
-  } else {
-    renderLines();
-    recalc();
-  }
+  // Keep the "Edit misc item" panel OPEN (2026-09-11, Neal) — in-place refresh, no redraw.
+  miscRefreshComponents(l);
 }
 
 function showLineCompDialog(lineId, compIdx) {
@@ -2788,17 +2775,7 @@ function saveLineComp(lineId, compIdx) {
     l.unitPrice = miscUnitPrice(l);
     document.getElementById('line-comp-dialog').remove();
     isDirty = true;
-    const listEl = document.getElementById('line-comps-edit-' + lineId);
-    if (listEl) {
-      // Refresh just the components list inside the open panel so the edit shows immediately.
-      listEl.innerHTML = miscEditComponentsHtml(l);
-      patchMiscLineDom(l); // sync row unit price/amount, mat tag, group totals, etc.
-      recalc();
-    } else {
-      // Panel not in the DOM (edge case) — fall back to a full re-render so the change still shows.
-      renderLines();
-      recalc();
-    }
+    miscRefreshComponents(l);   // in place — the panel stays open (full redraw only as a fallback)
     toast('Component updated');
     return;
   }
@@ -2827,8 +2804,7 @@ function pushComponentToLine(lineId, comp) {
   l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
   l.unitPrice = miscUnitPrice(l);
   isDirty = true;
-  renderLines();
-  recalc();
+  miscRefreshComponents(l);   // in place — the item's open edit panel stays open (2026-10-01)
   return true;
 }
 
@@ -2976,8 +2952,7 @@ function acldAddDeliverable(lineId) {
   l.matCost = l.miscComponents.reduce((s,c) => s + (c.cost||0)*(c.qty||0), 0);
   l.unitPrice = miscUnitPrice(l);
   isDirty = true;
-  renderLines();
-  recalc();
+  miscRefreshComponents(l);   // in place — the item's open edit panel stays open (2026-10-01)
   if (sel) sel.value = '';
   const q = document.getElementById('acld-qty'); if (q) q.value = '';
   const srch = document.getElementById('acld-search'); if (srch) srch.value = '';
@@ -3943,6 +3918,40 @@ function lineMat(l) { return l.misc ? (l.matCost||0) : (l.matCost||0)*(l.qty||0)
 // Markup for the COMPONENTS list inside the Edit-misc-item panel. Extracted so saveLineComp
 // can patch this list in place after a component edit (keeping the panel open) without a full
 // renderLines() — which would collapse the panel back to the quote builder.
+// The read-only "📦 N components ▶" list on the misc ROW (renderLines + miscRefreshComponents).
+function miscRowCompsHtml(l) {
+  return (l.miscComponents||[]).map(c => `
+              <div style="padding:6px 8px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
+                <div style="font-weight:600">${c.qty} &times; ${cwEsc(c.desc)} <span style="font-weight:400;color:var(--i3)">(${cwEsc(c.unit)})</span></div>
+                ${c.cost ? `<div style="color:var(--i3)">Supplier: £${(c.supplierCost!==undefined?c.supplierCost:c.cost/1.1).toFixed(2)} · Charged: £${(+c.cost).toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
+                ${c.supplier ? `<div style="color:var(--i3)">Supplier: ${cwEsc(c.supplier)}</div>` : ''}
+                ${c.url ? `<div><a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Supplier link</a></div>` : ''}
+                ${c.notes ? `<div style="color:var(--i2);font-style:italic">${cwEsc(c.notes)}</div>` : ''}
+              </div>
+            `).join('');
+}
+// After ANY component change on a saved misc line (add / edit / delete): refresh it IN PLACE —
+// the open "Edit misc item" panel's list, the row's price / amount / Mat tag / group totals and
+// the row's "📦 N components" list. A full renderLines() collapsed the open panel (Neal: adding
+// components one after another kept shutting the item he was adding to — 2026-10-01). Falls back
+// to a full redraw only when the panel isn't in the page at all.
+function miscRefreshComponents(l) {
+  const listEl = document.getElementById('line-comps-edit-' + l.id);
+  if (!listEl) { renderLines(); recalc(); return; }
+  listEl.innerHTML = miscEditComponentsHtml(l);
+  patchMiscLineDom(l);
+  const n = (l.miscComponents || []).length;
+  const ct = document.getElementById('comp-toggle-' + l.id);
+  if (ct) {
+    const rowList = document.getElementById('misc-comps-' + l.id);
+    const open = rowList && rowList.style.display !== 'none';
+    ct.parentElement.style.display = n ? '' : 'none';
+    ct.textContent = '📦 ' + n + ' component' + (n !== 1 ? 's' : '') + (open ? ' ▼' : ' ▶');
+    if (rowList) rowList.innerHTML = miscRowCompsHtml(l);
+  }
+  // (a line drawn with NO components has no toggle yet — it appears at the next full redraw)
+  recalc();
+}
 function miscEditComponentsHtml(l) {
   return (l.miscComponents||[]).map((c,ci) => `
                     <div style="display:flex;align-items:center;gap:6px;padding:6px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
@@ -4196,15 +4205,7 @@ function renderLines() {
             📦 ${l.miscComponents.length} component${l.miscComponents.length!==1?'s':''} ▶
           </button>
           <div id="misc-comps-${l.id}" style="display:none;margin-top:6px">
-            ${l.miscComponents.map((c,ci) => `
-              <div style="padding:6px 8px;background:#F8FAFC;border-radius:4px;border:1px solid var(--bd);margin-bottom:4px;font-size:11px">
-                <div style="font-weight:600">${c.qty} &times; ${cwEsc(c.desc)} <span style="font-weight:400;color:var(--i3)">(${cwEsc(c.unit)})</span></div>
-                ${c.cost ? `<div style="color:var(--i3)">Supplier: £${(c.supplierCost!==undefined?c.supplierCost:c.cost/1.1).toFixed(2)} · Charged: £${c.cost.toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
-                ${c.supplier ? `<div style="color:var(--i3)">Supplier: ${cwEsc(c.supplier)}</div>` : ''}
-                ${c.url ? `<div><a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Supplier link</a></div>` : ''}
-                ${c.notes ? `<div style="color:var(--i2);font-style:italic">${c.notes}</div>` : ''}
-              </div>
-            `).join('')}
+            ${miscRowCompsHtml(l)}
           </div>
         </div>` : '';
     const isChecked = l.selected ? 'checked' : '';
