@@ -2294,7 +2294,7 @@ function addFromSearch() {
   const unitPrice = matCost + (qty>0 ? labTotal/qty : labTotal);
   const xdesc = document.getElementById('add-xdesc').value.trim() || selDel.xeroDescription || selDel.name;
   const notes = document.getElementById('add-notes').value.trim();
-  const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('add-vat').value),...optFromSelect('add-opt'),misc:false,materials:selDel.materials||[]});
+  const newId=pushLine({code:selDel.code,name:selDel.name,xdesc,notes,qty,unitPrice,matCost,labDays:days,labRate:rate,labTotal,vat:vatNum(document.getElementById('add-vat').value),...optFromSelect('add-opt'),misc:false,materials:JSON.parse(JSON.stringify(selDel.materials||[]))});   // own copy — a Price Manager edit to this deliverable mid-quote must not change a line already added (2026-10-01)
   const targetGroup=(document.getElementById('add-group')||{value:''}).value;
   let groupNote='';
   if (targetGroup) {
@@ -10488,7 +10488,10 @@ async function duplicateQuote(ref) {
   }
   crmLink = { cardId: sq.airtableCardId || '', email: sq.clientEmail || '', supersedes: _supersedes };
   // Load the quote data into lines — ref blank here; saveQuote() below assigns the number
-  lines = sq.lines.map(l => ({...l, id: ++uid}));
+  // Full copy — a shallow {...l} shared each misc line's components (and deliverable materials)
+  // with the ORIGINAL's in-memory version, so editing the copy's components changed the original
+  // too (QT-0053 incident class, 2026-10-01).
+  lines = JSON.parse(JSON.stringify(sq.lines)).map(l => ({...l, id: ++uid}));
   document.getElementById('in-cust').value = sq.customer||'';
   document.getElementById('in-a1').value = sq.addr1||'';
   document.getElementById('in-city').value = sq.city||'';
@@ -10690,8 +10693,28 @@ function loadQuote(ref) {
   document.getElementById('qh-summary').innerHTML=q.summaryHtml||'';
   // Restore the CRM link so a re-save doesn't wipe the stored card/supersede pointers
   crmLink = { cardId: q.airtableCardId || '', email: q.clientEmail || '', supersedes: q.supersedesRef || '' };
-  lines=q.lines.map(l=>({...l}));
+  // FULL copy (2026-10-01, QT-0053 incident): a shallow {...l} copy left the builder line and
+  // the in-memory saved quote SHARING each misc line's components array (and deliverable
+  // materials). Component edits therefore leaked into the "saved" version without its
+  // matCost, so reopening the quote unsaved ("discard changes") brought back the NEW
+  // components at the OLD price — and the next save wrote that mismatch (Cladding:
+  // 10 Millboard components £3,677.26 charged at ProClad's £1,778.07). JSON copy = the same
+  // copy saveQuote already makes, so the data shape is unchanged.
+  lines = JSON.parse(JSON.stringify(q.lines));
   uid=lines.reduce((m,l)=>Math.max(m,l.id),uid);
+  // Safety net (same incident): a misc item's material cost IS the sum of its components —
+  // re-add them on every open. A mismatch is corrected IN THE BUILDER ONLY and the quote is
+  // marked unsaved with a loud warning; nothing reaches the database or the CRM until Save.
+  // Lines with no components are left alone (legacy misc lines carry a typed matCost).
+  const _matFixed = [];
+  lines.forEach(l => {
+    if (!l.misc || !Array.isArray(l.miscComponents) || !l.miscComponents.length) return;
+    const sum = l.miscComponents.reduce((s, c) => s + (+c.cost || 0) * (+c.qty || 0), 0);
+    if (Math.abs(sum - (l.matCost || 0)) > 0.005) {
+      _matFixed.push((l.name || 'Custom item') + ': materials ' + money(l.matCost || 0) + ' → ' + money(sum));
+      l.matCost = sum;
+    }
+  });
   // Reconcile misc unit prices BEFORE group-header repair — unit price is always derived from
   // components (matCost) + labour, so correct any stored value that has drifted out of sync.
   let _miscFixed = 0;
@@ -10715,7 +10738,13 @@ function loadQuote(ref) {
   const _ugb = document.getElementById('ungroup-btn');
   if (_ugb) _ugb.style.display = lines.some(l=>l.groupId) ? 'inline-flex' : 'none';
   showTab('quote',document.querySelectorAll('.tab')[0]);
-  toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
+  if (_matFixed.length) {
+    isDirty = true;   // corrected in the builder only — the stored quote changes when you Save
+    recalc();
+    toast('⚠ ' + ref + ': ' + _matFixed.join(' · ') + ' — the saved price didn\'t match the components listed, so it has been corrected here. Check it, then Save to keep it.');
+  } else {
+    toast('Loaded: '+ref + (_miscFixed ? ' · adjusted '+_miscFixed+' misc unit price'+(_miscFixed!==1?'s':'')+' to match components + labour' : ''));
+  }
   return true;
 }
 async function deleteQuote(ref) {
