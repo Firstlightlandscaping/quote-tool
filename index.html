@@ -13838,10 +13838,18 @@ function checkAppVersion() {
     // Strong check (GitHub Pages sends Last-Modified): server stamp vs the stamp of
     // the copy we're RUNNING — catches a tab that loaded stale from cache at boot.
     const lm = Date.parse(r.headers.get('last-modified') || '');
-    if (lm && VERCHK.own && lm - VERCHK.own > 60000) { VERCHK.warned = true; showStaleAppBanner(); return; }
-    // Fallback (servers without Last-Modified, e.g. npx serve): the first check
-    // records the content fingerprint, later checks flag any change — catches a
-    // deploy that lands while the tab is open.
+    if (lm) {
+      // A server that dates its copy (GitHub Pages) is judged on the date ALONE — it also
+      // catches a deploy landing while the tab is open (the server's date moves past ours).
+      // The ETag fallback below must NOT run here (2026-10-02, Neal: banner kept appearing
+      // with no release): Pages serves the SAME file with different ETags — gzipped
+      // W/"…66-…" vs plain "…65-…", stamped a second apart — so whichever variant a later
+      // check happened to get looked like a "change".
+      if (VERCHK.own && lm - VERCHK.own > 60000) { VERCHK.warned = true; showStaleAppBanner(); }
+      return;
+    }
+    // Fallback ONLY for servers without Last-Modified (e.g. npx serve — local testing):
+    // the first check records the content fingerprint, later checks flag any change.
     const et = r.headers.get('etag');
     if (et) {
       if (VERCHK.etag === null) VERCHK.etag = et;
