@@ -16,6 +16,16 @@
 --   4. Hand the CRM chat the email + password out of band (their environment, never this repo).
 --
 -- To change the reader's email or table list, edit the two constants and re-run.
+--
+-- ⚠ 2026-10-02: the staff policy ALSO excludes designer logins (supabase/designer-access.sql).
+-- This script now writes BOTH exclusions, so re-running it can never hand designers full access.
+-- (designer-access.sql writes the identical policy — either script may be re-run.)
+
+create or replace function public.fl_is_designer() returns boolean
+language sql stable
+as $$ select coalesce(auth.jwt() -> 'app_metadata' ->> 'fl_role', '') = 'designer' $$;
+revoke execute on function public.fl_is_designer() from public, anon;
+grant execute on function public.fl_is_designer() to authenticated;
 
 do $$
 declare
@@ -38,8 +48,8 @@ begin
     execute format('drop policy if exists fl_authenticated_all on public.%I', t);
     execute format($p$create policy fl_authenticated_all on public.%I
                     for all to authenticated
-                    using ((auth.jwt() ->> 'email') is distinct from %L)
-                    with check ((auth.jwt() ->> 'email') is distinct from %L)$p$, t, reader_email, reader_email);
+                    using ((auth.jwt() ->> 'email') is distinct from %L and not (select public.fl_is_designer()))
+                    with check ((auth.jwt() ->> 'email') is distinct from %L and not (select public.fl_is_designer()))$p$, t, reader_email, reader_email);
     -- 2. The reader gets SELECT only, and only on the read list.
     execute format('drop policy if exists fl_crm_reader_select on public.%I', t);
     if t = any(read_tables) then

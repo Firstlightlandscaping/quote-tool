@@ -6,6 +6,11 @@
 -- you've confirmed you can log in to the target project. The dashboard bypasses RLS, so a
 -- bad policy can always be undone from there (see the disable snippet at the bottom).
 
+-- ⚠ RE-RUNNING THIS ON A DB THAT ALREADY HAS IT: it drops EVERY policy and recreates a plain
+-- using(true) staff policy — which would give the CRM reader write access and designers full
+-- access. Afterwards ALWAYS re-run supabase/designer-access.sql (it restores both carve-outs
+-- and the designer policies). Only the first-time setup should ever need this script.
+
 -- ── Enable RLS + an authenticated-only "full access" policy on all app tables ────────
 -- No policy for the anon role = anon is denied everything (full lockdown).
 do $$

@@ -687,6 +687,8 @@ async function stamp(ref: string, event: string, kind?: string): Promise<string 
   } catch (e) { return "Pushed, but the push record was not saved on our side: " + (e as Error).message; }
 }
 
+import { isDesigner } from "../_shared/caller.ts";
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "Method not allowed." });
@@ -697,6 +699,8 @@ Deno.serve(async (req: Request) => {
     const event = String(body.event || "");
     if (!/^(QT|DC)-\d+$/.test(ref)) return json(400, { error: "Bad ref." });
     if (!EVENTS.has(event)) return json(400, { error: "Bad event." });
+    // Designer logins (2026-10-02) push their own DESIGN contracts only — never a quote.
+    if (isDesigner(req) && !ref.startsWith("DC-")) return json(403, { ok: false, error: "Design logins can only push design contracts." });
     // clear:true (Neal, 08/09): acknowledge an event WITHOUT writing to Airtable — the CRM
     // already has it (day-one backlog after the Trello import, or a hand-made change).
     // Stamps crm_pushed so the badge clears; nothing else happens.

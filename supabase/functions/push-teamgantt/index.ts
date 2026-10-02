@@ -296,10 +296,17 @@ async function handle(req: Request): Promise<Response> {
   return json(200, { ok: true, projectId: pid, projectName: projName, warnings: noteWarnings, test: mode === "test" });
 }
 
+import { isDesigner } from "../_shared/caller.ts";
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") {
     return new Response(JSON.stringify({ ok: false, error: "Use POST." }), { status: 405, headers: { ...CORS, "Content-Type": "application/json" } });
+  }
+  // Designer logins (2026-10-02) never reach the schedule — this fn reads quotes with the
+  // service role, which bypasses the database rules, so this check IS the rule.
+  if (isDesigner(req)) {
+    return new Response(JSON.stringify({ ok: false, error: "Not available for design logins." }), { status: 403, headers: { ...CORS, "Content-Type": "application/json" } });
   }
   try {
     return await handle(req);

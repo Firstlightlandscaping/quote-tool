@@ -110,9 +110,12 @@ function renderEmail(tpl: { subject: string; body: string }, signer: any, row: a
   return { subject, text, html };
 }
 
+import { isDesigner } from "../_shared/caller.ts";
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "Method not allowed." });
+  if (isDesigner(req)) return json(403, { error: "Not available for design logins." });   // 2026-10-02
   try {
     let body: any;
     try { body = await req.json(); } catch (_e) { return json(400, { error: "Bad request." }); }
