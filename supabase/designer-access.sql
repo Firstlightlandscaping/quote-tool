@@ -18,7 +18,9 @@
 --      crm-reader-policy.sql (both exclusions in one policy; re-running either script alone
 --      would drop the other's exclusion, so after this script exists, run THIS one).
 --   3. Designer policies — exactly what the Design tab needs, nothing more:
---        design_contracts  read + create + edit   (NO delete — staff only)
+--        design_contracts  read + create + edit + delete  (delete allowed 2026-10-04, Neal —
+--                          the app's delete guard still applies: a signed contract's signing
+--                          record is kept, a live link is revoked first)
 --        design_packages   read only
 --        dc_counter        read + update          (next_dc_number() runs as the caller)
 --        contract_signing  read + create + edit, DC- refs ONLY (never a quote's signing row)
@@ -66,16 +68,19 @@ begin
     execute format('drop policy if exists fl_designer_select on public.%I', t);
     execute format('drop policy if exists fl_designer_insert on public.%I', t);
     execute format('drop policy if exists fl_designer_update on public.%I', t);
+    execute format('drop policy if exists fl_designer_delete on public.%I', t);
   end loop;
 end $$;
 
--- design_contracts: read, create, edit (contract_meta, CRM link, push stamps). No delete.
+-- design_contracts: read, create, edit (contract_meta, CRM link, push stamps), delete.
 create policy fl_designer_select on public.design_contracts for select to authenticated
   using ((select public.fl_is_designer()));
 create policy fl_designer_insert on public.design_contracts for insert to authenticated
   with check ((select public.fl_is_designer()));
 create policy fl_designer_update on public.design_contracts for update to authenticated
   using ((select public.fl_is_designer())) with check ((select public.fl_is_designer()));
+create policy fl_designer_delete on public.design_contracts for delete to authenticated
+  using ((select public.fl_is_designer()));
 
 -- design_packages: read only (editing packages stays with staff).
 create policy fl_designer_select on public.design_packages for select to authenticated
