@@ -550,10 +550,12 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     case "declined": {
       if (rec.isDesign) throw new Error("A design contract is not marked Declined through this event");
       // A declined quote's contract is dead (CRM + Neal, 04/10): remove its own unbilled Payments
-      // rows — or HOLD the whole push, nothing removed, when any is invoiced / completed / paid /
-      // has an invoice number ("…then push again" — 📇 CRM → Push again once cleared). A quote
-      // with no contract has no rows of its own, so nothing changes for it.
-      if (!(await removeOwnRowsOrHold("quote declined, contract never invoiced", "push"))) break;
+      // rows — or BLOCK the whole push, nothing removed, when any is invoiced / completed / paid /
+      // has an invoice number. A quote with no contract has no rows of its own, so nothing
+      // changes for it.
+      // (the app dry-runs this BEFORE changing the status and refuses on a block — so the
+      // wording names that action; CRM 04/10)
+      if (!(await removeOwnRowsOrHold("quote declined, contract never invoiced", "mark it Declined"))) break;
       const decF: Record<string, unknown> = { [Q.status]: "Declined" };
       upsertRow(decF, "Quotes row → Declined" + markSigningRevoked(decF));
       // Quote Value only when the pool still has something in it (CRM, 20/09/26): an empty

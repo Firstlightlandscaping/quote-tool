@@ -12045,9 +12045,28 @@ async function updateQuoteStatus(ref, status, opts) {
     catch (e) { /* signing table absent \u2014 nothing to guard */ }
   }
   const declineAsked = willPush && status === 'Declined';
+  // Declined checks the CRM FIRST (CRM + Neal, 04/10 — the design-contract delete pattern): a
+  // dry run of the "declined" push. If the quote's contract has a row that is invoiced /
+  // completed / paid / carries an invoice number, the status change is REFUSED outright — the
+  // quote keeps its status, nothing is pushed, no pending push, no "later" — and the CRM's
+  // message is shown. If the CRM can't be reached, also refuse (try again). Only a clean plan
+  // carries on to the confirm, the link revoke and the real push below.
+  if (declineAsked) {
+    toast('Checking the CRM…');
+    let plan;
+    try { plan = await crmPushCall(ref, 'declined', { dryRun: true }); }
+    catch (e) { toast('⛔ ' + ref + ' NOT marked Declined — couldn\'t check the CRM (' + e.message + '). Try again.'); renderSaved(); return; }
+    const blocked = (plan && Array.isArray(plan.blocked)) ? plan.blocked : [];
+    if (blocked.length) {
+      const facts = (plan.notes || []).filter(n => /^Payment "/.test(n)).join('\n');
+      alert(ref + ' was NOT marked Declined — nothing has been changed.\n\n' + blocked.join('\n') + (facts ? '\n\n' + facts : ''));
+      renderSaved();   // snap the dropdown back
+      return;
+    }
+  }
   const hasContract = !!(q.contractMeta && q.contractMeta.generatedAt);
   if (declineAsked && !confirm('Mark ' + ref + ' as Declined?\n\nThis will recompute the card\'s Quote Value (and may mark it Quote Rejected).' +
-      (hasContract ? '\n\nIts contract\'s payment rows will be removed from the CRM \u2014 unless one is already invoiced, in which case the push holds and nothing is removed.' : '') +
+      (hasContract ? '\n\nIts contract\'s payment rows will be removed from the CRM (none of them is invoiced \u2014 checked just now).' : '') +
       (act ? '\n\nThe live signing link will be revoked.' : '') + '\n\nContinue?')) { renderSaved(); return; }
   if (willPush && status === 'Superseded' && !confirm('Mark ' + ref + ' as Superseded?\n\nThis will move the card to Amendments. Continue?')) { renderSaved(); return; }
   // A dead status must not leave a live signing link out there. Decided BEFORE anything
