@@ -9147,7 +9147,13 @@ function dcOpenEditor(ref) {
   if (!designPackages.filter(p => !p.is_archived).length && !dc) { toast('Add a design package first (Contracts tab)'); return; }
   dcLines = dc ? JSON.parse(JSON.stringify(dc.lines || [])) : [{ code: '', name: '', description: '', qty: 1, fee: '', vat: 20 }];
   dcCrmLink = { cardId: (dc && dc.airtable_card_id) || '', email: (dc && dc.client_email) || '' };
-  dcSchedTouched = !!(dc && dc.contract_meta && dc.contract_meta.freeText);
+  // A reopened contract's schedule counts as TYPED (frozen; the red "lines total ≠" check guards
+  // it) — UNLESS it is still exactly the default split for the lines it was saved with. Then it
+  // follows fee / package / quantity changes like a new contract's does (Neal, 04/10: changing
+  // the fee on a regenerate meant pressing "Reset to the default split" every time). Any
+  // hand-edit — even one character — keeps it frozen, exactly as before.
+  const savedSched = (dc && dc.contract_meta && dc.contract_meta.freeText) || '';
+  dcSchedTouched = !!savedSched && savedSched.trim() !== dcDefaultSchedule(dc.lines || []).trim();
   dcTriggerOv = (dc && dc.contract_meta && Array.isArray(dc.contract_meta.scheduleStructured)) ? cwOvFromStructured(dc.contract_meta.scheduleStructured) : {};   // remember per-figure picks on regenerate
   dcScaled = !!(dc && dc.contract_meta && dc.contract_meta.scaledBack);   // remember the scaled-back tick on regenerate
   removeDcDialog();
