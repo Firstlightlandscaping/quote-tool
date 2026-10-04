@@ -499,8 +499,16 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       if (!mine.length) plan.notes.push(`No payment rows written by ${wantRef} on this card`);
       if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
-      if (own) upsertRow({ [Q.status]: "Cancelled" }, `Quotes row ${str(own.fields[Q.status])} → Cancelled`);
-      else plan.notes.push(`${ref} has no Quotes row in the CRM — nothing to mark Cancelled`);
+      if (own) {
+        // Signing Status (CRM, 04/10): a link that was out (sent / viewed) is revoked by the
+        // delete, so say so — otherwise the row read "Cancelled" + "sent", as if still out.
+        // Signed stays signed (it really happened; Cancelled already tells the story); never
+        // linked (blank) stays blank.
+        const f: Record<string, unknown> = { [Q.status]: "Cancelled" };
+        const ss = str(own.fields[Q.signingStatus]).toLowerCase();
+        if (ss === "sent" || ss === "viewed") f[Q.signingStatus] = "revoked";
+        upsertRow(f, `Quotes row ${str(own.fields[Q.status])} → Cancelled` + (f[Q.signingStatus] ? `, Signing Status ${ss} → revoked` : ""));
+      } else plan.notes.push(`${ref} has no Quotes row in the CRM — nothing to mark Cancelled`);
       plan.notes.push("Card not moved — the office sets the outcome");
       break;
     }
