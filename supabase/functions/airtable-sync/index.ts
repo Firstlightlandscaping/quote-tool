@@ -341,6 +341,51 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     }
     if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
   };
+  // ALL-OR-NOTHING cleanup of THIS contract's Payments rows — the design-contract delete
+  // (04/10) and a build quote's Declined (04/10), both CRM + Neal. Every row whose Contract Ref
+  // is this contract goes, but only if NONE of them is invoiced / completed / paid / carries an
+  // invoice number; otherwise BLOCK the whole push and remove nothing (stricter than supersede,
+  // which keeps the facts and deletes the rest: a dead contract must not leave half a schedule
+  // behind). Other contracts' rows and blank-ref hand-added rows are never touched (fix #44).
+  // Returns false when blocked (the caller stops adding writes).
+  const removeOwnRowsOrHold = async (why: string, againVerb: string): Promise<boolean> => {
+    const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+    const mine: any[] = [];
+    let otherRows = 0;
+    for (const id of payIds) {
+      const p = await A.get(T.payments, id);
+      if (!p) continue;
+      if (rowRef(p) !== wantRef) { otherRows++; continue; }
+      mine.push(p);
+    }
+    const lockedRows = mine.filter(p => paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber]));
+    if (lockedRows.length) {
+      lockedRows.forEach(p => {
+        const f = p.fields;
+        const what = f[P.datePaid] ? "paid" : f[P.completed] ? "completed" : str(f[P.invoiceNumber]) ? "invoice " + str(f[P.invoiceNumber]) : "invoiced";
+        plan.notes.push(`Payment "${str(f[P.name])}" £${num(f[P.amount])} is ${what}`);
+      });
+      plan.blocked.push(`An invoice for this contract has already gone out. Void it in Xero and clear the invoice number on the CRM card first, then ${againVerb} again.`);
+      return false;
+    }
+    for (const p of mine) {
+      plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${str(p.fields[P.name])}" £${num(p.fields[P.amount])} (${why})`, fields: {} });
+    }
+    if (!mine.length) plan.notes.push(`No payment rows written by ${wantRef} on this card`);
+    if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
+    return true;
+  };
+  // Signing Status on a dead contract (CRM, 04/10): a link that was out (sent / viewed) has been
+  // revoked, so say so — else the row reads Cancelled/Declined + "sent", as if still out. Signed
+  // stays signed (it really happened); never linked (blank) stays blank. Adds to `f`; returns a
+  // label suffix.
+  const markSigningRevoked = (f: Record<string, unknown>): string => {
+    if (!own) return "";
+    const ss = str(own.fields[Q.signingStatus]).toLowerCase();
+    if (ss !== "sent" && ss !== "viewed") return "";
+    f[Q.signingStatus] = "revoked";
+    return `, Signing Status ${ss} → revoked`;
+  };
   // Aggregates AFTER this event, from the Airtable rows + this row's new state.
   const statusAfter = (newStatus: string | null) => {
     const all = plan.siblings.map(s => ({ status: s.status, value: s.value, dateSent: null as string | null }));
@@ -475,39 +520,11 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       //   - the card is NEVER moved (the office sets the outcome; the card archives itself).
       // Other contracts' rows and blank-ref hand-added rows are never touched (fix #44 scope).
       if (!rec.isDesign) throw new Error("Only a design contract is deleted through this event");
-      const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
-      const mine: any[] = [];
-      let otherRows = 0;
-      for (const id of payIds) {
-        const p = await A.get(T.payments, id);
-        if (!p) continue;
-        if (rowRef(p) !== wantRef) { otherRows++; continue; }
-        mine.push(p);
-      }
-      const lockedRows = mine.filter(p => paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber]));
-      if (lockedRows.length) {
-        lockedRows.forEach(p => {
-          const f = p.fields;
-          const what = f[P.datePaid] ? "paid" : f[P.completed] ? "completed" : str(f[P.invoiceNumber]) ? "invoice " + str(f[P.invoiceNumber]) : "invoiced";
-          plan.notes.push(`Payment "${str(f[P.name])}" £${num(f[P.amount])} is ${what}`);
-        });
-        plan.blocked.push("An invoice for this contract has already gone out. Void it in Xero and clear the invoice number on the CRM card first, then delete again.");
-        break;
-      }
-      for (const p of mine) {
-        plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${str(p.fields[P.name])}" £${num(p.fields[P.amount])} (contract deleted, never invoiced)`, fields: {} });
-      }
-      if (!mine.length) plan.notes.push(`No payment rows written by ${wantRef} on this card`);
-      if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
+      if (!(await removeOwnRowsOrHold("contract deleted, never invoiced", "delete"))) break;
       if (own) {
-        // Signing Status (CRM, 04/10): a link that was out (sent / viewed) is revoked by the
-        // delete, so say so — otherwise the row read "Cancelled" + "sent", as if still out.
-        // Signed stays signed (it really happened; Cancelled already tells the story); never
-        // linked (blank) stays blank.
         const f: Record<string, unknown> = { [Q.status]: "Cancelled" };
-        const ss = str(own.fields[Q.signingStatus]).toLowerCase();
-        if (ss === "sent" || ss === "viewed") f[Q.signingStatus] = "revoked";
-        upsertRow(f, `Quotes row ${str(own.fields[Q.status])} → Cancelled` + (f[Q.signingStatus] ? `, Signing Status ${ss} → revoked` : ""));
+        const sig = markSigningRevoked(f);
+        upsertRow(f, `Quotes row ${str(own.fields[Q.status])} → Cancelled` + sig);
       } else plan.notes.push(`${ref} has no Quotes row in the CRM — nothing to mark Cancelled`);
       plan.notes.push("Card not moved — the office sets the outcome");
       break;
@@ -532,7 +549,13 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     }
     case "declined": {
       if (rec.isDesign) throw new Error("A design contract is not marked Declined through this event");
-      upsertRow({ [Q.status]: "Declined" }, "Quotes row → Declined");
+      // A declined quote's contract is dead (CRM + Neal, 04/10): remove its own unbilled Payments
+      // rows — or HOLD the whole push, nothing removed, when any is invoiced / completed / paid /
+      // has an invoice number ("…then push again" — 📇 CRM → Push again once cleared). A quote
+      // with no contract has no rows of its own, so nothing changes for it.
+      if (!(await removeOwnRowsOrHold("quote declined, contract never invoiced", "push"))) break;
+      const decF: Record<string, unknown> = { [Q.status]: "Declined" };
+      upsertRow(decF, "Quotes row → Declined" + markSigningRevoked(decF));
       // Quote Value only when the pool still has something in it (CRM, 20/09/26): an empty
       // pool means the CRM has no information, not zero — pre-CRM cards carry a Trello figure
       // the push never owned, and 12 retro-linked declines would have wiped them to £0.

@@ -12037,17 +12037,25 @@ async function updateQuoteStatus(ref, status, opts) {
   // Paths that already asked their own question (duplicate's revised-version confirm, merge)
   // pass autoRevoke and are not asked twice. Decided BEFORE anything is written.
   const willPush = (q.status || 'Draft') !== status && !!q.airtableCardId && !(opts && opts.autoRevoke);
-  if (willPush && status === 'Declined' && !confirm('Mark ' + ref + ' as Declined?\n\nThis will recompute the card\'s Quote Value (and may mark it Quote Rejected). Continue?')) { renderSaved(); return; }
+  // Live signing link looked up FIRST (2026-10-04): the Declined confirm below names it, so one
+  // question covers both and the link is then revoked without a second dialog (CRM + Neal).
+  let act = null;
+  if (SIG_DEAD_STATUSES.includes(status) && USE_SUPABASE) {
+    try { act = (await sigFetchRows(ref)).find(sigIsActive) || null; }
+    catch (e) { /* signing table absent \u2014 nothing to guard */ }
+  }
+  const declineAsked = willPush && status === 'Declined';
+  const hasContract = !!(q.contractMeta && q.contractMeta.generatedAt);
+  if (declineAsked && !confirm('Mark ' + ref + ' as Declined?\n\nThis will recompute the card\'s Quote Value (and may mark it Quote Rejected).' +
+      (hasContract ? '\n\nIts contract\'s payment rows will be removed from the CRM \u2014 unless one is already invoiced, in which case the push holds and nothing is removed.' : '') +
+      (act ? '\n\nThe live signing link will be revoked.' : '') + '\n\nContinue?')) { renderSaved(); return; }
   if (willPush && status === 'Superseded' && !confirm('Mark ' + ref + ' as Superseded?\n\nThis will move the card to Amendments. Continue?')) { renderSaved(); return; }
   // A dead status must not leave a live signing link out there. Decided BEFORE anything
   // is written, so Cancel genuinely cancels; revoke + status change succeed or fail
   // together, so "declined but signable" can never arise from this path.
   if (SIG_DEAD_STATUSES.includes(status) && USE_SUPABASE) {
-    let act = null;
-    try { act = (await sigFetchRows(ref)).find(sigIsActive) || null; }
-    catch (e) { /* signing table absent \u2014 nothing to guard */ }
     if (act) {
-      const proceed = (opts && opts.autoRevoke) || await sigDeadStatusDialog(ref, status);
+      const proceed = (opts && opts.autoRevoke) || declineAsked || await sigDeadStatusDialog(ref, status);
       if (!proceed) { renderSaved(); return; }        // snap the dropdown back to reality
       try { await sigRevokeRow(act.id); }
       catch (e) { toast('Could not revoke the signing link \u2014 status NOT changed: ' + e.message); renderSaved(); return; }
