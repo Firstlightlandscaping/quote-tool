@@ -9418,7 +9418,7 @@ async function dcDelete(ref) {
     catch (e) { toast('⛔ ' + ref + ' NOT deleted — the CRM could not be updated (' + e.message + '). Nothing was changed; try again.'); return; }
     if (r && r.held) {
       const why = (r.blocked && r.blocked.length ? r.blocked : (r.hold || [])).join('\n') || 'The CRM held this change.';
-      const facts = (r.notes || []).filter(n => /^Payment "/.test(n)).join('\n');
+      const facts = (Array.isArray(r.notes) ? r.notes : []).map(n => String(n || '')).filter(n => /^Payment "/.test(n)).join('\n');
       alert(ref + ' was NOT deleted — nothing has been changed.\n\n' + why + (facts ? '\n\n' + facts : ''));
       return;
     }
@@ -12056,9 +12056,9 @@ async function updateQuoteStatus(ref, status, opts) {
     let plan;
     try { plan = await crmPushCall(ref, 'declined', { dryRun: true }); }
     catch (e) { toast('⛔ ' + ref + ' NOT marked Declined — couldn\'t check the CRM (' + e.message + '). Try again.'); renderSaved(); return; }
-    const blocked = (plan && Array.isArray(plan.blocked)) ? plan.blocked : [];
+    const blocked = (plan && Array.isArray(plan.blocked)) ? plan.blocked.filter(Boolean).map(String) : [];
     if (blocked.length) {
-      const facts = (plan.notes || []).filter(n => /^Payment "/.test(n)).join('\n');
+      const facts = ((plan && Array.isArray(plan.notes)) ? plan.notes : []).map(n => String(n || '')).filter(n => /^Payment "/.test(n)).join('\n');
       alert(ref + ' was NOT marked Declined — nothing has been changed.\n\n' + blocked.join('\n') + (facts ? '\n\n' + facts : ''));
       renderSaved();   // snap the dropdown back
       return;

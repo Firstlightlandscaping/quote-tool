@@ -381,7 +381,9 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   // label suffix.
   const markSigningRevoked = (f: Record<string, unknown>): string => {
     if (!own) return "";
-    const ss = str(own.fields[Q.signingStatus]).toLowerCase();
+    // (null-guarded 04/10: a contract never sent has NO Signing Status — str() returns null, and
+    // .toLowerCase() on it failed the whole push: "Cannot read properties of null")
+    const ss = String(own.fields[Q.signingStatus] || "").toLowerCase();
     if (ss !== "sent" && ss !== "viewed") return "";
     f[Q.signingStatus] = "revoked";
     return `, Signing Status ${ss} → revoked`;
