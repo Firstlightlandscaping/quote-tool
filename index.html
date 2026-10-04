@@ -8139,7 +8139,9 @@ function sigSignedRegenDialog(ref) {
 // of the delete or the client could sign a deal that no longer exists. Handles ALL
 // confirmation for the delete flow; falls back to the plain confirm when there is no
 // signing history (or the table is unreachable). Returns true = go ahead and delete.
-async function sigDeleteGuard(ref, isDesign, label) {
+// deferRevoke (2026-10-04, dcDelete): ASK only — the caller revokes the live link(s) itself,
+// after the CRM has agreed to the delete (a CRM hold must leave the link live).
+async function sigDeleteGuard(ref, isDesign, label, deferRevoke) {
   const noun = isDesign ? 'design contract' : 'quote';
   let rows = [];
   if (USE_SUPABASE) { try { rows = await sigFetchRows(ref); } catch (e) {} }
@@ -8168,11 +8170,12 @@ async function sigDeleteGuard(ref, isDesign, label) {
     });
     if (!ok) return false;
     // rare: signed older version + a NEWER live link out — that link dies with the record too
-    if (active) { try { await sigRevokeRow(active.id); toast('Outstanding signing link revoked'); } catch (e) {} }
+    if (active && !deferRevoke) { try { await sigRevokeRow(active.id); toast('Outstanding signing link revoked'); } catch (e) {} }
     return true;
   }
   if (active) {
     if (!confirm(ref + ' has a signing link out with the client (sent ' + sigDateOnly(active.sent_at) + ').\n\nDeleting this ' + noun + ' REVOKES the link — the client will no longer be able to sign. Continue?')) return false;
+    if (deferRevoke) return true;
     try { await sigRevokeRow(active.id); toast('Signing link revoked'); }
     catch (e) { toast('Could not revoke the signing link: ' + e.message); return false; }
     return true;
@@ -9387,15 +9390,46 @@ function viewDesignContract(ref) {
   if (!dc || !dc.contract_meta) { toast('No contract found for ' + ref); return; }
   dcRenderFromMeta(dc.contract_meta);
 }
+// Delete a design contract (CRM + Neal, 04/10 — any contract, signed or not; designers too).
+// ORDER MATTERS: ask → CRM → revoke links → delete the row.
+//   1. sigDeleteGuard ASKS only (deferRevoke) — signed: "kept as a legal record" dialog;
+//      live link: "this revokes it"; else a plain confirm.
+//   2. CRM "deleted" event FIRST (the fn reads the contract from the DB, so it must still exist):
+//      removes this contract's own unbilled payment rows + marks its Quotes row Cancelled — or
+//      HOLDS when any of its rows is invoiced/paid, and then NOTHING happens here either (the
+//      link stays live, the contract stays). A contract never linked to a card skips this.
+//   3. Revoke every live signing link, 4. delete the row. The signing record itself is never
+//      deleted (no FK — a signed contract's evidence survives, shown as "deleted" in the panel).
+// Re-running after a part-failure is safe: the CRM event is idempotent (no rows left, row
+// already Cancelled).
 async function dcDelete(ref) {
   const dc = designContracts.find(d => d.ref === ref);
   if (!dc) return;
-  if (!(await sigDeleteGuard(ref, true, dc.customer || ''))) return;
+  if (!(await sigDeleteGuard(ref, true, dc.customer || '', true))) return;
+  if (dc.airtable_card_id) {
+    let r;
+    try { r = await crmPushCall(ref, 'deleted', { confirm: true }); }
+    catch (e) { toast('⛔ ' + ref + ' NOT deleted — the CRM could not be updated (' + e.message + '). Nothing was changed; try again.'); return; }
+    if (r && r.held) {
+      const why = (r.blocked && r.blocked.length ? r.blocked : (r.hold || [])).join('\n') || 'The CRM held this change.';
+      const facts = (r.notes || []).filter(n => /^Payment "/.test(n)).join('\n');
+      alert(ref + ' was NOT deleted — nothing has been changed.\n\n' + why + (facts ? '\n\n' + facts : ''));
+      return;
+    }
+  }
+  try {
+    const rows = await sigFetchRows(ref);
+    for (const row of rows.filter(sigIsActive)) await sigRevokeRow(row.id);
+  } catch (e) {
+    toast('⛔ ' + ref + ' NOT deleted — could not revoke its signing link (' + e.message + '). Try again.');
+    return;
+  }
   try { await sb('DELETE', 'design_contracts', null, '?ref=eq.' + encodeURIComponent(ref)); }
-  catch (e) { toast('Delete failed: ' + e.message); return; }
+  catch (e) { toast('⛔ Delete failed: ' + e.message + ' — try again.'); return; }
   designContracts = designContracts.filter(d => d.ref !== ref);
   renderDesignContracts();
-  toast(ref + ' deleted');
+  sigRefreshStatuses();
+  toast(ref + ' deleted' + (dc.airtable_card_id ? ' — CRM updated (unbilled payments removed, marked Cancelled)' : ''));
 }
 function renderDesignContracts() {
   const el = document.getElementById('dc-list');
@@ -9712,7 +9746,7 @@ function crmSplitAddress(blob) {
 // pushes in a row (accepted → contract generated → signed). The panel walks them in order.
 // Orphans (no linked card) warn and deep-link to the picker; nothing is written.
 const CRM_PUSH_EVENT_FOR_STATUS = { Sent: 'sent', Accepted: 'accepted', Declined: 'declined', Superseded: 'superseded', Merged: 'merged' };
-const CRM_PUSH_EVENT_LABEL = { figures: 'Quote figures updated', sent: 'Quote sent', superseded: 'Quote superseded', merged: 'Quote merged', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed' };
+const CRM_PUSH_EVENT_LABEL = { figures: 'Quote figures updated', sent: 'Quote sent', superseded: 'Quote superseded', merged: 'Quote merged', accepted: 'Quote accepted', declined: 'Quote declined', contract_generated: 'Contract generated', contract_sent: 'Contract sent', contract_signed: 'Contract signed', deleted: 'Contract deleted' };
 // Readable names for the plan (ids are the wire format; names are for the human).
 const CRM_FIELD_NAMES = {
   fld94ZrpnsYT0Bw9a: 'Card Name', fldxs0tD9u1WjxpHm: 'Quote By', fldqEdoSsR6whYUXd: 'List', fld6I3tOHbq8DNG69: 'Quote Value', fldUxILTHcPALSZax: 'Quote Sent Date', fldTN5Sto5WIP9x8I: 'Job Number',

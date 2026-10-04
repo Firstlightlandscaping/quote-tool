@@ -100,7 +100,7 @@ const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_
 const LIST = { quoteSent: "Quote Sent", accepted: "Quote Accepted", amendments: "Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
-const EVENTS = new Set(["figures", "sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed"]);
+const EVENTS = new Set(["figures", "sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed", "deleted"]);
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
 // QT- → Contract Sent, DC- → Design Contract — unless it's already past the guard.
 const LIST_CONTRACT_SENT = { qt: "Contract Sent", dc: "Design Contract" };
@@ -462,6 +462,46 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       plan.notes.push("Card stage not moved — the combined quote's own events move it");
       plan.notes.push("No financial write on merge (figure stays until the combined quote is pushed)");
       await deleteOwnPlanMilestones("merged schedule, never invoiced");
+      break;
+    }
+    case "deleted": {
+      // A DESIGN contract deleted in the app (CRM + Neal, 04/10). Sent BEFORE the app deletes
+      // its row (this fn reads the contract from the database). Rules:
+      //   - its OWN Payments rows (Contract Ref = this contract) go, but only if NONE of them is
+      //     invoiced / completed / paid / carries an invoice number — otherwise BLOCK and remove
+      //     nothing (stricter than supersede, which keeps the facts and deletes the rest: a
+      //     deleted contract must not leave half a schedule behind);
+      //   - its Quotes row → Status "Cancelled" (exact option name, CRM 04/10);
+      //   - the card is NEVER moved (the office sets the outcome; the card archives itself).
+      // Other contracts' rows and blank-ref hand-added rows are never touched (fix #44 scope).
+      if (!rec.isDesign) throw new Error("Only a design contract is deleted through this event");
+      const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+      const mine: any[] = [];
+      let otherRows = 0;
+      for (const id of payIds) {
+        const p = await A.get(T.payments, id);
+        if (!p) continue;
+        if (rowRef(p) !== wantRef) { otherRows++; continue; }
+        mine.push(p);
+      }
+      const lockedRows = mine.filter(p => paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber]));
+      if (lockedRows.length) {
+        lockedRows.forEach(p => {
+          const f = p.fields;
+          const what = f[P.datePaid] ? "paid" : f[P.completed] ? "completed" : str(f[P.invoiceNumber]) ? "invoice " + str(f[P.invoiceNumber]) : "invoiced";
+          plan.notes.push(`Payment "${str(f[P.name])}" £${num(f[P.amount])} is ${what}`);
+        });
+        plan.blocked.push("An invoice for this contract has already gone out. Void it in Xero and clear the invoice number on the CRM card first, then delete again.");
+        break;
+      }
+      for (const p of mine) {
+        plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${str(p.fields[P.name])}" £${num(p.fields[P.amount])} (contract deleted, never invoiced)`, fields: {} });
+      }
+      if (!mine.length) plan.notes.push(`No payment rows written by ${wantRef} on this card`);
+      if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
+      if (own) upsertRow({ [Q.status]: "Cancelled" }, `Quotes row ${str(own.fields[Q.status])} → Cancelled`);
+      else plan.notes.push(`${ref} has no Quotes row in the CRM — nothing to mark Cancelled`);
+      plan.notes.push("Card not moved — the office sets the outcome");
       break;
     }
     case "accepted": {
