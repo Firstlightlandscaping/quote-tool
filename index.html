@@ -11405,30 +11405,12 @@ function ramsIssueDialog() {
   // Layer stack: review/manage dialogs 17000 (.cw-modal-back default) → THIS 17500 →
   // document viewer 18000 → login gate 20001. The original inline 10000 OVERRODE the
   // class and hid this picker under the review dialog ("button does nothing", QT-0085).
-  const opRow = (name, checked) => {
-    const em = ((ramsLibrary && ramsLibrary.operativeEmails) || {})[name];
-    // ✉ tag: click to set/change the person's email (saved to the library, DB-only —
-    // the personal-data rule). No email = link gets copied by hand for that person.
-    const tag = '<button type="button" class="no-print" onclick="event.preventDefault();ramsSetOpEmail(\'' + cwEsc(name).replace(/'/g, "\\'").replace(/"/g, '&quot;') + '\',this)" ' +
-      'style="margin-left:auto;font-size:10px;border:1px solid var(--bd);border-radius:8px;background:none;cursor:pointer;padding:1px 7px;color:' + (em ? 'var(--i3)' : '#B45309') + '" ' +
-      'title="' + (em ? cwEsc(em) + ' — click to change' : 'No email — link will need copying by hand. Click to add.') + '">' + (em ? '✉' : 'no email') + '</button>';
-    return '<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;font-size:13px">' +
-      '<input type="checkbox" data-name="' + cwEsc(name).replace(/"/g, '&quot;') + '" ' + (checked ? 'checked' : '') + '><span>' + cwEsc(name) + '</span>' + tag + '</label>';
-  };
   wrap.innerHTML =
     '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:420px;max-width:95vw">' +
       '<h3>Issue to the crew — ' + cwEsc(row.quote_ref) + '</h3>' +
       '<div style="font-size:12px;color:var(--i2);margin-bottom:10px">This freezes the approved document and creates a private signing link for each person. Links are valid for 90 days and can be re-issued any time.</div>' +
       '<div style="font-weight:700;font-size:12px;margin-bottom:4px">Who is working on this job?</div>' +
-      '<div id="rams-ops" style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;max-height:220px;overflow-y:auto">' +
-        // staff (directors) + the crew list from the library (rams_library.operatives —
-        // NOT the staff table, which stays directors-only for the quote sign-off dropdown)
-        [...new Set([...staffList, ...((ramsLibrary && ramsLibrary.operatives) || [])])].map(n => opRow(n, false)).join('') +
-      '</div>' +
-      '<div style="display:flex;gap:6px;margin-top:8px">' +
-        '<input type="text" id="rams-op-new" placeholder="Add another (e.g. a subcontractor)" style="flex:1" onkeydown="if(event.key===\'Enter\')ramsAddOpRow()">' +
-        '<button class="btn btn-outline btn-sm" onclick="ramsAddOpRow()">＋ Add</button>' +
-      '</div>' +
+      ramsOpPickerHtml([]) +
       '<div class="cw-modal-btns" style="margin-top:14px">' +
         '<button class="btn btn-primary" onclick="ramsDoIssue()">▶ Create signing links</button>' +
         '<button class="btn btn-outline" onclick="document.getElementById(\'rams-issue-dialog\').remove()">Cancel</button>' +
@@ -11436,18 +11418,51 @@ function ramsIssueDialog() {
     '</div></div>';
   document.body.appendChild(wrap);
 }
-function ramsAddOpRow() {
+// ── The crew picker — ONE implementation for the first issue AND "＋ Add a person" (Neal,
+// 08/10: adding someone later must look and work like issuing — saved people ticked, their
+// saved email used — not a typed name in a pop-up). The list = staff (directors) + the crew
+// list in the library (rams_library.operatives — NOT the staff table, which stays
+// directors-only for the quote sign-off dropdown). `exclude` = people already on this RAMS.
+function ramsOpRowHtml(name, checked) {
+  const em = ((ramsLibrary && ramsLibrary.operativeEmails) || {})[name];
+  // ✉ tag: click to set/change the person's email (saved to the library, DB-only —
+  // the personal-data rule). No email = link gets copied by hand for that person.
+  const tag = '<button type="button" class="no-print" onclick="event.preventDefault();ramsSetOpEmail(\'' + cwEsc(name).replace(/'/g, "\\'").replace(/"/g, '&quot;') + '\',this)" ' +
+    'style="margin-left:auto;font-size:10px;border:1px solid var(--bd);border-radius:8px;background:none;cursor:pointer;padding:1px 7px;color:' + (em ? 'var(--i3)' : '#B45309') + '" ' +
+    'title="' + (em ? cwEsc(em) + ' — click to change' : 'No email — link will need copying by hand. Click to add.') + '">' + (em ? '✉' : 'no email') + '</button>';
+  return '<label style="display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;font-size:13px">' +
+    '<input type="checkbox" data-name="' + cwEsc(name).replace(/"/g, '&quot;') + '" ' + (checked ? 'checked' : '') + '><span>' + cwEsc(name) + '</span>' + tag + '</label>';
+}
+function ramsOpPickerHtml(exclude) {
+  const ex = new Set((exclude || []).map(n => String(n || '').trim().toLowerCase()));
+  const names = [...new Set([...staffList, ...((ramsLibrary && ramsLibrary.operatives) || [])])].filter(n => !ex.has(String(n).trim().toLowerCase()));
+  return '<div id="rams-ops" style="border:1px solid var(--bd);border-radius:8px;padding:8px 12px;max-height:220px;overflow-y:auto">' +
+      (names.length ? names.map(n => ramsOpRowHtml(n, false)).join('') : '<div style="font-size:12px;color:var(--i3)">Everyone on the saved list is already on this RAMS — add someone new below.</div>') +
+    '</div>' +
+    '<div style="display:flex;gap:6px;margin-top:8px">' +
+      '<input type="text" id="rams-op-new" placeholder="Add someone new (e.g. a subcontractor)" style="flex:1" onkeydown="if(event.key===\'Enter\')ramsAddOpRow()">' +
+      '<button class="btn btn-outline btn-sm" onclick="ramsAddOpRow()">＋ Add</button>' +
+    '</div>' +
+    '<div style="font-size:11px;color:var(--i3);margin-top:4px">Someone new is saved to the list for next time — click their “no email” tag to save an email too.</div>';
+}
+// A name typed into the picker is ticked AND saved to the crew list (Neal, 08/10: "saved once
+// it's been entered"), with the same ✉ tag as everyone else so an email can be saved straight
+// away. A name already on the list just gets ticked (no duplicate row).
+async function ramsAddOpRow() {
   const inp = document.getElementById('rams-op-new');
   const name = (inp.value || '').trim();
   if (!name) return;
   const box = document.getElementById('rams-ops');
-  const label = document.createElement('label');
-  label.style.cssText = 'display:flex;gap:8px;align-items:center;padding:3px 0;cursor:pointer;font-size:13px';
-  label.innerHTML = '<input type="checkbox" checked><span></span>';
-  label.querySelector('input').dataset.name = name;
-  label.querySelector('span').textContent = name;
-  box.appendChild(label);
+  const existing = [...box.querySelectorAll('input[type=checkbox]')].find(c => (c.dataset.name || '').trim().toLowerCase() === name.toLowerCase());
+  if (existing) { existing.checked = true; inp.value = ''; inp.focus(); return; }
+  const hint = box.querySelector('div'); if (hint && !box.querySelector('label')) hint.remove();
+  box.insertAdjacentHTML('beforeend', ramsOpRowHtml(name, true));
   inp.value = ''; inp.focus();
+  const known = [...staffList, ...((ramsLibrary && ramsLibrary.operatives) || [])].some(n => String(n).trim().toLowerCase() === name.toLowerCase());
+  if (!known && ramsLibrary) {
+    ramsLibrary.operatives = [...(ramsLibrary.operatives || []), name];
+    try { await ramsPersistLibrary(); } catch (e) { toast('⚠ ' + name + ' added for this RAMS, but not saved to the list: ' + e.message); }
+  }
 }
 // Set/change an operative's email — library map (name → email), DB-only.
 async function ramsSetOpEmail(name, btn) {
@@ -11709,28 +11724,55 @@ async function ramsSignerAddEmail(idx) {
 // validity is document-wide, so on a fully-signed RAMS it restarts at 90 days for the newcomer
 // (nobody else is unsigned, so no old link is revived); with other people still unsigned the
 // right tool is 🔁 Re-issue (it rotates their tokens), so the add refuses and says so.
-async function ramsAddOperative() {
+// Opens the SAME crew picker as the first issue (ramsOpPickerHtml), minus the people already
+// on this RAMS. Checks run BEFORE the dialog opens so nothing is picked in vain.
+function ramsAddOperative() {
   const row = ramsDialogRow;
   if (!row || !['issued', 'signed'].includes(row.status)) { toast('Only an issued or signed RAMS can take another person'); return; }
   const expired = row.expires_at && new Date(row.expires_at) < new Date();
   const othersUnsigned = (row.signers || []).some(s => !s.signed_at);
   if (expired && othersUnsigned) { toast('⚠ The signing links on this RAMS have expired — use 🔁 Re-issue links first, then add the person'); return; }
-  if (row.status === 'signed' && !confirm('Add a person to this fully signed RAMS?\n\nEveryone else\'s signature stands. The RAMS goes back to "Issued" — here and in the CRM — until the new person signs, then returns to "Signed".')) return;
-  const name = (prompt('Name of the person joining the job (e.g. a labourer or subcontractor):') || '').trim();
-  if (!name) return;
-  if ((row.signers || []).some(s => (s.name || '').trim().toLowerCase() === name.toLowerCase()) &&
-      !confirm(name + ' is already on this RAMS. Add them again with a second link?')) return;
-  const known = ((ramsLibrary && ramsLibrary.operativeEmails) || {})[name] || '';
-  const email = (prompt('Their email for the signing link (blank = copy the link by hand):', known) || '').trim() || null;
-  const signers = [...(row.signers || []), { name, token: sigToken(), email }];
-  const patch = { signers, status: 'issued', signed_at: null };
+  const old = document.getElementById('rams-issue-dialog');
+  if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'rams-issue-dialog';   // same id + layer as the issue picker (one picker open at a time)
+  wrap.innerHTML =
+    '<div class="cw-modal-back" style="z-index:17500"><div class="cw-modal" style="width:420px;max-width:95vw">' +
+      '<h3>Add people to this RAMS — ' + cwEsc(row.quote_ref) + '</h3>' +
+      '<div style="font-size:12px;color:var(--i2);margin-bottom:10px">Each person gets their own private signing link. Everyone already on this RAMS keeps their signature' +
+        (row.status === 'signed' ? ' — the RAMS goes back to <strong>Issued</strong> (here and in the CRM) until the new people sign, then returns to <strong>Signed</strong>.' : '.') +
+        (expired ? ' The links had expired, so their validity restarts at 90 days.' : '') + '</div>' +
+      '<div style="font-weight:700;font-size:12px;margin-bottom:4px">Who is joining the job?</div>' +
+      ramsOpPickerHtml((row.signers || []).map(s => s.name)) +
+      '<div class="cw-modal-btns" style="margin-top:14px">' +
+        '<button class="btn btn-primary" onclick="ramsDoAddPeople()">▶ Add and create their links</button>' +
+        '<button class="btn btn-outline" onclick="document.getElementById(\'rams-issue-dialog\').remove()">Cancel</button>' +
+      '</div>' +
+    '</div></div>';
+  document.body.appendChild(wrap);
+}
+async function ramsDoAddPeople() {
+  const row = ramsDialogRow;
+  // Same typed-but-not-Added gate as the first issue (a95ed31 family).
+  const pending = (document.getElementById('rams-op-new') || { value: '' }).value.trim();
+  if (pending && !confirm('You typed “' + pending + '” but didn’t press ＋ Add — continue WITHOUT them?\n\n(Cancel goes back so you can add them.)')) return;
+  const onAlready = new Set((row.signers || []).map(s => String(s.name || '').trim().toLowerCase()));
+  const names = [...document.querySelectorAll('#rams-ops input[type=checkbox]:checked')].map(c => c.dataset.name).filter(n => n && !onAlready.has(n.trim().toLowerCase()));
+  if (!names.length) { toast('Tick at least one person (or add someone new)'); return; }
+  const emails = (ramsLibrary && ramsLibrary.operativeEmails) || {};
+  const expired = row.expires_at && new Date(row.expires_at) < new Date();
+  const added = names.map(n => ({ name: n, token: sigToken(), email: emails[n] || null }));
+  const patch = { signers: [...(row.signers || []), ...added], status: 'issued', signed_at: null };
   if (expired) patch.expires_at = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
   try { await sb('PATCH', 'rams_docs', patch, '?id=eq.' + row.id); }
   catch (e) { toast('Add failed: ' + e.message); return; }
+  const pick = document.getElementById('rams-issue-dialog'); if (pick) pick.remove();
   const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + row.id);
   ramsManageDialog(rows[0]); ramsRefreshStatuses();
-  if (email) ramsSendLinks(row.id); else toast(name + ' added — copy their link from the list');
-  ramsPushCrm({ id: row.id });                             // signatures string gains a name → CRM
+  const noEmail = added.filter(a => !a.email).map(a => a.name);
+  if (added.some(a => a.email)) ramsSendLinks(row.id);   // emails only the new, not-yet-emailed signers
+  if (noEmail.length) toast(noEmail.join(', ') + ' added — no email saved, copy their link from the list');
+  ramsPushCrm({ id: row.id });                             // Issued + "N of M signed — outstanding: …" → CRM
 }
 async function ramsUnissue() {
   const row = ramsDialogRow;
