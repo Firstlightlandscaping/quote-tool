@@ -1029,7 +1029,6 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
         <button class="btn btn-outline btn-sm" onclick="newQuote();showTab('quote',document.querySelectorAll('.tab')[0])">+ New Quote</button>
       </div>
     </div>
-    <div id="crm-rej-strip" class="no-print" style="display:none"></div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;padding:12px 16px;border-bottom:1px solid var(--bd)">
       <input type="text" id="sq-search" placeholder="Search by client or ref..." oninput="renderSaved()" style="flex:2;min-width:200px">
       <select id="sq-sign-filter" onchange="renderSaved()" style="flex:1;min-width:130px">
@@ -9995,87 +9994,60 @@ async function crmPushAuto(ref, event) {
     crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's') + (r.card && r.card.name ? ' · ' + r.card.name : ''), 8000);
   } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); }
 }
-// ── Lost in the CRM → Declined here (CRM, 08/10) ───────────────────────────────────
+// ── Lost in the CRM → Declined here (CRM, 08/10) — COMPLETELY SILENT (Neal, 08/10) ───────
 // The CRM records "why we lost it" as Quote Rejection Reason on the card. Opening Saved
 // Quotes asks the CRM (crm-rejections edge fn — READ-ONLY token) which linked cards carry
-// one, then:
-//   SENT quote on such a card      → marked Declined with the normal tidy-up (dry run first:
-//                                    a block = NOT declined, listed with the reason; the
-//                                    declined push writes the Quotes row + Quote Value only,
-//                                    never the reason, so the human pick is never overwritten)
-//   ACCEPTED quote on such a card  → listed for a person, never changed (e.g. Vanderstock)
-//   SENT quote whose decline would MOVE the card (another quote on it is Accepted — the
-//                                    push's stranding rule) → listed, not declined
-// Results go in the amber/green strip at the top of the list. Throttled to once per 5 minutes;
-// silent when the CRM can't be reached (the next open tries again).
+// one. A SENT quote on such a card is declined ONLY when the "declined" dry run is completely
+// clean (nothing blocked / held / to decide, and the card wouldn't move). Everything else —
+// Accepted quotes, invoiced rows, card-moving cases, a live signing link, the CRM not
+// answering — is left exactly as it is, silently (admin set the reason, so they already know).
+// No box, no toast, no CRM banner: the quote just shows as Declined in the list.
+// Order = CRM FIRST, then our status: if the push fails, nothing has changed on either side
+// (no "to push" badge) and the next Saved Quotes open simply tries again. status_changed_at
+// is taken BEFORE the push so the fn's "declined" stamp is newer → nothing reads as pending.
+// The push never writes the reason, so the human pick is never overwritten.
 const CRM_CARD_LIST_FIELD = 'fldqEdoSsR6whYUXd';   // Cards.List — a dry-run write to it = the push would move the card
-let crmRejLastRun = 0, crmRejBusy = false, crmRejReport = { declined: [], people: [] };
-function crmRejHidden() { try { return JSON.parse(localStorage.getItem('fl_crm_rej_hidden') || '{}'); } catch (e) { return {}; } }
-function crmRejHide(key) {
-  try { const h = crmRejHidden(); h[key] = 1; localStorage.setItem('fl_crm_rej_hidden', JSON.stringify(h)); } catch (e) {}
-  crmRejPaint();
-}
-function crmRejDismissDeclined() { crmRejReport.declined = []; crmRejPaint(); }
+let crmRejLastRun = 0, crmRejBusy = false;
 async function crmCheckRejections(force) {
   if (!USE_SUPABASE || crmRejBusy || document.body.classList.contains('designer-mode')) return;
-  if (!force && Date.now() - crmRejLastRun < 5 * 60 * 1000) { crmRejPaint(); return; }
-  const linked = savedQuotes.filter(q => q.airtableCardId && ['Sent', 'Accepted'].includes(q.status || ''));
-  if (!linked.length) return;
+  if (!force && Date.now() - crmRejLastRun < 5 * 60 * 1000) return;
+  const sent = savedQuotes.filter(q => q.airtableCardId && (q.status || '') === 'Sent');
+  if (!sent.length) return;
   crmRejBusy = true;
   try {
     await ensureFreshToken();
     const res = await fetch(SUPABASE_URL + '/functions/v1/crm-rejections', {
       method: 'POST',
       headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cards: [...new Set(linked.map(q => q.airtableCardId))] }),
+      body: JSON.stringify({ cards: [...new Set(sent.map(q => q.airtableCardId))] }),
     });
     const d = await res.json().catch(() => ({}));
     if (!res.ok || d.error) return;                    // silent — next open tries again
     crmRejLastRun = Date.now();
     const reasons = d.reasons || {};
-    const people = [];
-    for (const q of linked) {
-      const why = reasons[q.airtableCardId];
-      if (!why) continue;
-      if (q.status === 'Accepted') { people.push({ ref: q.ref, customer: q.customer, why, note: 'is ACCEPTED — not changed. Check by hand.' }); continue; }
-      // Same refusal rule as a hand-picked Declined: dry run first, a block = nothing changes.
-      let plan;
-      try { plan = await crmPushCall(q.ref, 'declined', { dryRun: true }); }
-      catch (e) { people.push({ ref: q.ref, customer: q.customer, why, note: 'NOT marked Declined — couldn\'t check the CRM (' + e.message + '). Will try again.' }); crmRejLastRun = 0; continue; }
-      const blocked = (plan && Array.isArray(plan.blocked)) ? plan.blocked.filter(Boolean).map(String) : [];
-      if (blocked.length) { people.push({ ref: q.ref, customer: q.customer, why, note: 'NOT marked Declined — ' + blocked.join(' ') }); continue; }
-      // Declining would MOVE the card (another quote on it is Accepted → the push's stranding
-      // rule sends it to Quote Accepted). A card the CRM says was lost must not move on our
-      // say-so — a person decides.
-      const moves = (plan && Array.isArray(plan.writes) ? plan.writes : []).some(w => w && w.fields && CRM_CARD_LIST_FIELD in w.fields);
-      if (moves) { people.push({ ref: q.ref, customer: q.customer, why, note: 'is Sent, but declining it would move the card (' + ((plan.notes || []).find(n => /^Card "/.test(String(n))) || 'another quote on it is Accepted') + ') — not changed. Check by hand.' }); continue; }
-      await updateQuoteStatus(q.ref, 'Declined', { autoRevoke: true });
-      if ((savedQuotes.find(x => x.ref === q.ref) || {}).status === 'Declined')
-        crmRejReport.declined.push({ ref: q.ref, customer: q.customer, why });
+    for (const q of sent) {
+      if (!reasons[q.airtableCardId]) continue;
+      try { await crmQuietDecline(q); }
+      catch (e) { console.warn('CRM decline skipped:', q.ref, e.message); }   // silent — tried again next open
     }
-    crmRejReport.people = people;
   } catch (e) { /* silent — next open tries again */ }
-  finally { crmRejBusy = false; crmRejPaint(); }
+  finally { crmRejBusy = false; }
 }
-function crmRejPaint() {
-  const el = document.getElementById('crm-rej-strip');
-  if (!el) return;
-  const hidden = crmRejHidden();
-  const people = crmRejReport.people.filter(p => !hidden[p.ref + '|' + p.why]);
-  const dec = crmRejReport.declined;
-  if (!dec.length && !people.length) { el.style.display = 'none'; el.innerHTML = ''; return; }
-  const who = p => `<b>${cwEsc(p.ref)}</b>${p.customer ? ' ' + cwEsc(p.customer) : ''}`;
-  el.style.cssText = 'padding:10px 16px;border-bottom:1px solid var(--bd);font-size:12px;display:flex;flex-direction:column;gap:6px';
-  el.innerHTML =
-    (dec.length ? `<div style="background:#F0FDF4;border:1px solid #BBF7D0;color:#166534;border-radius:6px;padding:8px 10px;display:flex;gap:10px;align-items:flex-start">
-        <div style="flex:1">${dec.map(p => `✓ ${who(p)} marked Declined: card says <i>${cwEsc(p.why)}</i>`).join('<br>')}</div>
-        <button class="btn btn-outline btn-sm" onclick="crmRejDismissDeclined()" title="Hide this list">OK</button></div>` : '') +
-    (people.length ? `<div style="background:#FFFBEB;border:1px solid #FDE68A;color:#92400E;border-radius:6px;padding:8px 10px">
-        <div style="font-weight:600;margin-bottom:3px">⚠ The CRM says these were lost — needs a person</div>
-        ${people.map(p => `<div style="display:flex;gap:8px;align-items:baseline">
-          <span style="flex:1">${who(p)} ${cwEsc(p.note)} Card says <i>${cwEsc(p.why)}</i>.</span>
-          <button class="btn btn-outline btn-sm" style="padding:1px 7px" data-k="${cwEsc(p.ref + '|' + p.why)}" onclick="crmRejHide(this.dataset.k)" title="Hide this one on this computer (comes back if the card's reason changes)">×</button></div>`).join('')}
-      </div>` : '');
+async function crmQuietDecline(q) {
+  const sig = sigStatusMap[q.ref];
+  if (sig && sigIsActive(sig)) return;                  // a live signing link → a person decides
+  const plan = await crmPushCall(q.ref, 'declined', { dryRun: true });
+  if (!plan || plan.orphan || plan.skipped) return;
+  if ((plan.blocked || []).length || (plan.hold || []).length || plan.needsDecision) return;
+  if ((plan.writes || []).some(w => w && w.fields && CRM_CARD_LIST_FIELD in w.fields)) return;   // would move the card
+  const changedAt = new Date().toISOString();
+  const r = await crmPushCall(q.ref, 'declined', {});   // CRM first
+  if (!r || r.held) return;
+  await sb('PATCH', 'quotes', { status: 'Declined', status_changed_at: changedAt }, '?ref=eq.' + encodeURIComponent(q.ref));
+  q.status = 'Declined';
+  q.statusChangedAt = changedAt;
+  (q.crmPushed = q.crmPushed || {}).declined = new Date().toISOString();
+  renderSaved();
 }
 // ── "Update the CRM figures" for a SENT quote edited in place (Neal, 25/09) ─────────
 // The push only fires on a STATUS change, so fixing a sent quote ("forgot the tree", "can
