@@ -11575,8 +11575,15 @@ function ramsManageDialog(row) {
       : '<button class="btn btn-outline btn-sm" onclick="ramsChase(' + row.id + ',' + i + ')" title="Send a reminder with their existing link">🔔 Chase</button>';
     const copy = (!s.signed_at && !expired)
       ? '<button class="btn btn-outline btn-sm" onclick="ramsCopyLink(\'' + s.token + '\',this)">📋 Copy link</button>' : '';
+    // Fix a mistake on an UNSIGNED person (Neal, 08/10 — a link emailed to the wrong address):
+    // ✎ change their email (old link killed, fresh link to the right address) or ✕ remove them.
+    // A signed person is never removed or altered — the signature is the record (✎ Revise exists
+    // for a wrong team).
+    const fix = s.signed_at ? ''
+      : (s.email && !expired ? '<button class="btn btn-outline btn-sm" onclick="ramsSignerChangeEmail(' + i + ')" title="Wrong address? The link already sent stops working and a fresh one goes to the corrected address">✎ email</button>' : '') +
+        '<button class="btn btn-outline btn-sm" style="color:#DC2626" onclick="ramsSignerRemove(' + i + ')" title="Take this person off the RAMS — their link stops working; everyone else is unaffected">✕</button>';
     return '<div style="display:flex;gap:10px;align-items:center;padding:5px 0;border-bottom:1px solid var(--bd)">' +
-      '<span style="flex:1;font-weight:600;font-size:13px">' + cwEsc(s.name) + '</span>' + st + chased + act + copy + '</div>';
+      '<span style="flex:1;font-weight:600;font-size:13px">' + cwEsc(s.name) + '</span>' + st + chased + act + copy + fix + '</div>';
   };
   const chaseable = signers.filter(s => !s.signed_at && s.email && s.email_sent_at);
   const wrap = document.createElement('div');
@@ -11715,6 +11722,53 @@ async function ramsSignerAddEmail(idx) {
     await ramsPersistLibrary();
   }
   ramsSendLinks(row.id);
+}
+// ✎ email on an UNSIGNED person whose link went to the wrong address (Neal, 08/10): new TOKEN
+// (sign-rams finds signers by token, so the mis-sent link stops working at once), the corrected
+// address, email/viewed/chase stamps cleared so send-rams-links mails the fresh link, and the
+// crew list's saved email updated (it was probably the source of the mistake). Nothing changes
+// for the CRM — same people, same counts.
+async function ramsSignerChangeEmail(idx) {
+  const row = ramsDialogRow;
+  const s = (row.signers || [])[idx];
+  if (!s || s.signed_at) return;
+  const v = (prompt('Correct email address for ' + s.name + ':', s.email || '') || '').trim();
+  if (!v || v === s.email) return;
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) { toast('That doesn’t look like an email address'); return; }
+  if (!confirm('The link already sent to ' + (s.email || 'the old address') + ' will stop working, and a fresh link goes to ' + v + '. Continue?')) return;
+  const signers = row.signers.map((x, i) => i === idx ? { name: x.name, token: sigToken(), email: v } : x);
+  try { await sb('PATCH', 'rams_docs', { signers }, '?id=eq.' + row.id); }
+  catch (e) { toast('Save failed: ' + e.message); return; }
+  if (ramsLibrary && ((ramsLibrary.operativeEmails || {})[s.name] || '') !== v) {
+    (ramsLibrary.operativeEmails = ramsLibrary.operativeEmails || {})[s.name] = v;
+    await ramsPersistLibrary();
+  }
+  ramsSendLinks(row.id);                                   // mails only not-yet-emailed signers = this one
+}
+// ✕ on an UNSIGNED person (Neal, 08/10): off this RAMS, their link dies (token gone). If everyone
+// left has signed, the RAMS is Signed again (signed_at = the latest remaining signature). The CRM
+// push updates the count / status. The last person can't be removed here — nothing would be left
+// to sign; ↩ Un-issue (nothing signed) or ✎ Revise is the tool for that.
+async function ramsSignerRemove(idx) {
+  const row = ramsDialogRow;
+  const s = (row.signers || [])[idx];
+  if (!s || s.signed_at) return;
+  const rest = row.signers.filter((x, i) => i !== idx);
+  if (!rest.length) { toast('⚠ ' + s.name + ' is the only person on this RAMS — use ↩ Un-issue (or ✎ Revise) instead'); return; }
+  const allSigned = rest.every(x => x.signed_at);
+  if (!confirm('Remove ' + s.name + ' from this RAMS?\n\nTheir signing link stops working. Everyone else is unaffected' +
+      (allSigned ? ', and as everyone left has signed, the RAMS goes back to “Signed” (here and in the CRM).' : '.'))) return;
+  const patch = { signers: rest };
+  if (allSigned) {
+    patch.status = 'signed';
+    patch.signed_at = rest.map(x => x.signed_at).sort().slice(-1)[0];
+  }
+  try { await sb('PATCH', 'rams_docs', patch, '?id=eq.' + row.id); }
+  catch (e) { toast('Remove failed: ' + e.message); return; }
+  const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + row.id);
+  ramsManageDialog(rows[0]); ramsRefreshStatuses();
+  toast(s.name + ' removed' + (allSigned ? ' — RAMS is signed again' : ''));
+  ramsPushCrm({ id: row.id });                             // count / outstanding names (and Signed) → CRM
 }
 // ＋ Add a person to an ISSUED or fully SIGNED RAMS (CRM / ops managers, 08/10): the newcomer
 // gets their own link; every existing signature stands. The document goes back to Issued until
