@@ -11575,7 +11575,12 @@ function ramsManageDialog(row) {
                  : ' · links valid until ' + sigDateOnly(row.expires_at)) + '</div>' +
       '<div style="border:1px solid var(--bd);border-radius:8px;padding:4px 12px;margin-bottom:12px">' +
         signers.map(signerRow).join('') +
-        '<div style="padding:6px 0;font-size:11px;color:var(--i3)">' + signedCount + ' of ' + signers.length + ' signed</div>' +
+        // "＋ Add a person" lives HERE, beside the people (CRM / ops managers, 08/10): it used to be
+        // a footer button among six, and was hidden altogether once everyone had signed — so the
+        // only visible way to add a late labourer or subbie was ✎ Revise, which voids every
+        // signature. Adding keeps everyone else's signature.
+        '<div style="display:flex;align-items:center;gap:10px;padding:6px 0;font-size:11px;color:var(--i3)"><span style="flex:1">' + signedCount + ' of ' + signers.length + ' signed</span>' +
+          (['issued', 'signed'].includes(row.status) ? '<button class="btn btn-primary btn-sm" onclick="ramsAddOperative()" title="A new labourer or subbie joining the job gets their own signing link — everyone else\'s signature stands">＋ Add a person to this RAMS</button>' : '') + '</div>' +
       '</div>' +
       '<div class="cw-modal-btns" style="flex-wrap:wrap">' +
         (signers.some(s => !s.signed_at && s.email && !s.email_sent_at) && !expired
@@ -11584,7 +11589,6 @@ function ramsManageDialog(row) {
           ? '<button class="btn btn-outline" onclick="ramsChaseAll()" title="Reminder to everyone who has a link but hasn\'t signed">🔔 Chase all unsigned (' + chaseable.length + ')</button>' : '') +
         '<button class="btn btn-outline" onclick="ramsViewIssued()">👁 View document</button>' +
         (row.status !== 'signed' ? '<button class="btn btn-outline" onclick="ramsReissue()" title="New links for everyone not yet signed; validity restarts at 90 days">🔁 Re-issue links</button>' : '') +
-        (row.status !== 'signed' ? '<button class="btn btn-outline" onclick="ramsAddOperative()">＋ Add operative</button>' : '') +
         (signedCount === 0 ? '<button class="btn btn-outline" onclick="ramsUnissue()" title="Nothing signed yet — withdraw the links and go back to the approved review">↩ Un-issue</button>' : '') +
         '<button class="btn btn-outline" onclick="ramsRevise()" title="Site or scope changed? A revision supersedes ALL signatures and everyone re-signs">✎ Revise…</button>' +
         '<button class="btn btn-outline" onclick="document.getElementById(\'rams-dialog\').remove()">Close</button>' +
@@ -11697,14 +11701,31 @@ async function ramsSignerAddEmail(idx) {
   }
   ramsSendLinks(row.id);
 }
+// ＋ Add a person to an ISSUED or fully SIGNED RAMS (CRM / ops managers, 08/10): the newcomer
+// gets their own link; every existing signature stands. The document goes back to Issued until
+// they sign (sign-rams flips it to Signed again when the last person signs, and pushes the CRM);
+// the CRM push below sends Status Issued + "N of M signed — outstanding: <name>", so the CRM's
+// own 2-day chase / "RAMS NOT SIGNED — job has started" task takes over. Expired links: the
+// validity is document-wide, so on a fully-signed RAMS it restarts at 90 days for the newcomer
+// (nobody else is unsigned, so no old link is revived); with other people still unsigned the
+// right tool is 🔁 Re-issue (it rotates their tokens), so the add refuses and says so.
 async function ramsAddOperative() {
-  const name = (prompt('Operative name (e.g. a subcontractor joining the job):') || '').trim();
+  const row = ramsDialogRow;
+  if (!row || !['issued', 'signed'].includes(row.status)) { toast('Only an issued or signed RAMS can take another person'); return; }
+  const expired = row.expires_at && new Date(row.expires_at) < new Date();
+  const othersUnsigned = (row.signers || []).some(s => !s.signed_at);
+  if (expired && othersUnsigned) { toast('⚠ The signing links on this RAMS have expired — use 🔁 Re-issue links first, then add the person'); return; }
+  if (row.status === 'signed' && !confirm('Add a person to this fully signed RAMS?\n\nEveryone else\'s signature stands. The RAMS goes back to "Issued" — here and in the CRM — until the new person signs, then returns to "Signed".')) return;
+  const name = (prompt('Name of the person joining the job (e.g. a labourer or subcontractor):') || '').trim();
   if (!name) return;
+  if ((row.signers || []).some(s => (s.name || '').trim().toLowerCase() === name.toLowerCase()) &&
+      !confirm(name + ' is already on this RAMS. Add them again with a second link?')) return;
   const known = ((ramsLibrary && ramsLibrary.operativeEmails) || {})[name] || '';
   const email = (prompt('Their email for the signing link (blank = copy the link by hand):', known) || '').trim() || null;
-  const row = ramsDialogRow;
   const signers = [...(row.signers || []), { name, token: sigToken(), email }];
-  try { await sb('PATCH', 'rams_docs', { signers, status: 'issued', signed_at: null }, '?id=eq.' + row.id); }
+  const patch = { signers, status: 'issued', signed_at: null };
+  if (expired) patch.expires_at = new Date(Date.now() + 90 * 24 * 3600 * 1000).toISOString();
+  try { await sb('PATCH', 'rams_docs', patch, '?id=eq.' + row.id); }
   catch (e) { toast('Add failed: ' + e.message); return; }
   const rows = await sb('GET', 'rams_docs', null, '?id=eq.' + row.id);
   ramsManageDialog(rows[0]); ramsRefreshStatuses();
