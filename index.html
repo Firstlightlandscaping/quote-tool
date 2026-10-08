@@ -8791,11 +8791,10 @@ function sigInjectIntoDoc(doc, row) {
 // at a time (CRM correction 08/10: a contract regenerated + signed again on the same quote
 // number is attached too). Dedupe = per signing (crm_pushed["signed_doc:<id>"]), never by ref
 // or filename; the filename carries the signed date; uploads only ever APPEND.
-// AUTOMATIC only for signings on/after SD_AUTO_FROM. Older ones (BACKFILL) are only in the 📎
-// list in the ✍ Contracts panel, attached one by one by a person — and only backfill skips a
-// card that already holds a file naming the ref (Trello-era copies). Runs when Saved Quotes
-// opens, one signing at a time, in the background.
-const SD_AUTO_FROM_LIVE = '2099-01-01T00:00:00Z';      // ⚠ set to the go-live moment when shipped
+// ONLY signings on/after SD_AUTO_FROM (go-live) — nothing older, ever (CRM 08/10: no backfill;
+// Trello-era copies are already on the cards). Runs SILENTLY when Saved Quotes opens, one
+// signing at a time, in the background — no banner, no button (CRM 08/10).
+const SD_AUTO_FROM_LIVE = '2026-10-08T18:50:00Z';      // go-live 08/10/26 — nothing signed before this is ever attached (CRM: no backfill)
 const SD_AUTO_FROM_SANDBOX = '2026-10-05T00:00:00Z';   // sandbox test: Mr Test's QT-0100 / QT-0102 / DC-0013
 function sdAutoFrom() { return SUPABASE_URL === _DEFAULT_URL ? SD_AUTO_FROM_LIVE : SD_AUTO_FROM_SANDBOX; }
 const sdFailed = {};   // signing id → message: failed this session, no automatic retry until a reload
@@ -8882,17 +8881,12 @@ function sdBlobB64(blob) {
 }
 // One SIGNING (CRM correction 08/10 — a contract regenerated and signed again on the same
 // quote number is a new signing and goes on the card too): check first (cheap), then make +
-// send the PDF only when needed. mode 'backfill' = signed before go-live → the fn also skips
-// when the card already holds a file naming the ref. Returns the fn's answer.
-async function sdAttach(ref, signingId, mode) {
+// send the PDF only when needed. Returns the fn's answer.
+async function sdAttach(ref, signingId) {
+  const mode = 'new';
   const chk = await sdCall(ref, { signingId, mode, dryRun: true });
   if (chk.orphan || chk.skipped) return chk;
   if (chk.sent) return { ...chk, skipped: 'already sent to the card' };
-  if (mode === 'backfill' && (chk.matches || []).length) {     // Trello-era copy already there → stamp only
-    const d = await sdCall(ref, { signingId, mode });
-    crmMarkPushed(ref, 'signed_doc:' + signingId);
-    return d;
-  }
   const rows = await sb('GET', 'contract_signing', null, '?id=eq.' + signingId + '&select=*');
   if (!rows || !rows[0]) throw new Error('signed contract not found');
   const pdf = await sdBlobB64(await sdMakePdf(rows[0]));
@@ -8915,81 +8909,13 @@ async function sdAutoAttach() {
   sdBusy = true;
   try {
     for (const r of due) {
-      crmNoticeBanner('busy', '📎 Attaching the signed contract ' + r.quote_ref + ' to the CRM…', 0);
-      try {
-        const d = await sdAttach(r.quote_ref, r.id, 'new');
-        crmNoticeBanner('ok', d.attached ? '✓ Signed contract ' + r.quote_ref + ' attached to the CRM card' : '✓ ' + r.quote_ref + ' — ' + (d.skipped || d.warning || 'nothing to attach'), 6000);
-      } catch (e) {
-        sdFailed[r.id] = e.message;
-        crmNoticeBanner('busy', '⚠ Signed contract ' + r.quote_ref + ' NOT attached to the CRM: ' + e.message + ' — use 📎 in ✍ Contracts to retry.', 10000);
-      }
+      // SILENT (CRM, 08/10): staff never see this run — no banner on success or failure. A
+      // failure is retried on the next page load (console only, for debugging).
+      try { await sdAttach(r.quote_ref, r.id); }
+      catch (e) { sdFailed[r.id] = e.message; console.warn('signed contract PDF not attached:', r.quote_ref, e.message); }
     }
   } finally { sdBusy = false; }
 }
-// The list (CRM guard 2): EVERY signed online signing, newest first, checked live against the
-// card (dry run — nothing written). Signed before go-live = BACKFILL (nothing old is ever
-// attached automatically; a person clicks 📎, and a card already holding a file naming the ref
-// is skipped). Signed after = attached automatically; listed here so a failure can be retried.
-async function sdBackfillDialog() {
-  let list;
-  try { list = await sbAllPages('contract_signing', '?select=id,quote_ref,customer,status,signed_at&status=eq.signed&order=id'); }
-  catch (e) { toast('Could not load signed contracts: ' + e.message); return; }
-  list.sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)));
-  const from = new Date(sdAutoFrom());
-  const old = document.getElementById('sd-dialog'); if (old) old.remove();
-  const wrap = document.createElement('div');
-  wrap.id = 'sd-dialog';
-  wrap.innerHTML =
-    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)document.getElementById(\'sd-dialog\').remove()">' +
-      '<div class="cw-modal" style="width:780px;max-width:95vw;max-height:88vh;overflow:auto">' +
-        '<h3>📎 Signed contracts in the CRM</h3>' +
-        '<div class="cw-modal-sub">Every contract signed online, newest first. Signed from ' + sigDateOnly(sdAutoFrom()) + ': attached to the card automatically (each signing once). ' +
-          'Signed before that (<b>backfill</b>): never attached automatically — 📎 attaches one, and a card that already holds a file naming the ref is left as it is.</div>' +
-        (list.length ? '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
-          '<tr style="text-align:left;color:var(--i3)"><th style="padding:4px">Ref</th><th>Client</th><th>Signed</th><th>On the card?</th><th></th></tr>' +
-          list.map(r => {
-            const rec = crmPushRec(r.quote_ref);
-            const back = new Date(r.signed_at) < from;
-            return '<tr style="border-top:1px solid var(--bd)"><td style="padding:5px 4px;font-family:\'DM Mono\',monospace">' + cwEsc(r.quote_ref) + '</td>' +
-              '<td>' + cwEsc(r.customer || (rec && rec.customer) || '') + '</td><td>' + (r.signed_at ? sigDateOnly(r.signed_at) : '') +
-              (back ? ' <span style="color:var(--i3);font-size:10px">backfill</span>' : '') + '</td>' +
-              '<td id="sd-st-' + r.id + '" style="color:var(--i3)">checking…</td><td id="sd-act-' + r.id + '" style="text-align:right"></td></tr>';
-          }).join('') + '</table>'
-          : '<em style="color:var(--i3)">No contracts have been signed online yet.</em>') +
-        '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-outline" onclick="document.getElementById(\'sd-dialog\').remove()">Close</button></div>' +
-      '</div></div>';
-  document.body.appendChild(wrap);
-  for (const r of list) {
-    if (!document.getElementById('sd-dialog')) return;   // closed — stop checking
-    await sdPaintRow(r.quote_ref, r.id, new Date(r.signed_at) < from ? 'backfill' : 'new');
-  }
-}
-async function sdPaintRow(ref, signingId, mode) {
-  const st = document.getElementById('sd-st-' + signingId), act = document.getElementById('sd-act-' + signingId);
-  if (!st || !act) return;
-  const rec = crmPushRec(ref);
-  if (!rec || !rec.cardId) { st.innerHTML = '<span style="color:#B45309">no CRM card linked</span>'; act.innerHTML = ''; return; }
-  try {
-    const d = await sdCall(ref, { signingId, mode, dryRun: true });
-    if (d.orphan || d.skipped) { st.textContent = d.warning || d.skipped; act.innerHTML = ''; return; }
-    if (d.sent) { st.innerHTML = '<span style="color:#15803D">✓ sent ' + cwEsc(String(d.sentAt).slice(0, 10)) + '</span>'; act.innerHTML = ''; return; }
-    if (mode === 'backfill' && (d.matches || []).length) { st.innerHTML = '<span style="color:#15803D">✓ already on the card</span> <span style="color:var(--i3)">' + cwEsc(d.matches.join(', ')) + '</span>'; act.innerHTML = ''; return; }
-    st.innerHTML = '<span style="color:#B91C1C">✗ not attached</span>';
-    act.innerHTML = '<button class="btn btn-outline btn-sm" onclick="sdAttachNow(\'' + cwEsc(ref) + '\',' + Number(signingId) + ',\'' + mode + '\')" title="Attach as: ' + cwEsc(d.filename || '') + '">📎 Attach</button>';
-  } catch (e) { st.innerHTML = '<span style="color:#B91C1C">couldn\'t check: ' + cwEsc(e.message) + '</span>'; act.innerHTML = ''; }
-}
-async function sdAttachNow(ref, signingId, mode) {
-  const st = document.getElementById('sd-st-' + signingId), act = document.getElementById('sd-act-' + signingId);
-  if (act) act.innerHTML = '';
-  if (st) st.textContent = 'making the PDF…';
-  try {
-    const d = await sdAttach(ref, signingId, mode);
-    delete sdFailed[signingId];
-    toast(d.attached ? '✓ ' + ref + ' attached to the CRM card' : ref + ' — ' + (d.skipped || d.warning || 'nothing attached'));
-  } catch (e) { toast('⚠ ' + ref + ' NOT attached: ' + e.message); }
-  sdPaintRow(ref, signingId, mode);
-}
-
 // ── CONTRACTS PANEL (Saved Quotes header) ─────────────────────────────────────
 // The signing worklist — signing state is a SECOND AXIS from quote status (every
 // contract-stage quote is Accepted), so it gets its own panel instead of polluting
@@ -9172,7 +9098,6 @@ async function openContractsPanel(designMode) {
       '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
         '<h3>✍ ' + (wantDesign ? 'Design contracts' : 'Contracts') + ' — e-signature overview</h3>' +
         '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No ' + (wantDesign ? 'design ' : '') + 'contracts sent for signature yet') + '</div>' +
-        '<div style="margin:-4px 0 10px"><button class="btn btn-outline btn-sm" onclick="sdBackfillDialog()" title="Is each signed contract\'s PDF on its CRM card? Attach the ones that are missing">📎 Signed contracts in the CRM</button></div>' +
         // Needs attention is sub-grouped so the admin question "who do I chase?" is one
         // look (Neal, 2026-08-31). Groups render only when non-empty, never fold — this
         // section must not hide anything. Same buckets, same actions, presentation only.
