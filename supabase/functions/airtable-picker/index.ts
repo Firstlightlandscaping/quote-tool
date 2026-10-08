@@ -2,7 +2,7 @@
 //
 // READ-ONLY by construction: uses AIRTABLE_PICKER_TOKEN, a token scoped to
 // data.records:read only — a bug in this path cannot write to the CRM.
-// verify_jwt (default on) gates it to logged-in staff; the token and base id live
+// A real login is required (loginCheck — verify_jwt alone is NOT a gate); the token and base id live
 // as function secrets and never ship in the public page.
 //
 // Trigger: POST from the app (empty body). Returns:
@@ -21,6 +21,8 @@
 // Airtable gotchas honoured: requests ONLY the five picker fields; responses keyed
 // by field ID (returnFieldsByFieldId) so renames can't break us; pages followed via
 // offset (100 records/page).
+
+import { loginCheck } from "../_shared/caller.ts";
 
 const CARDS_TABLE = "tblhrLdyfVW8zQchA";
 const PICKER_VIEW = "viwYQkKb9VgRwlLuN"; // "Quote tool picker"
@@ -46,6 +48,10 @@ Deno.serve(async (req) => {
       status: 405, headers: { ...CORS, "Content-Type": "application/json" },
     });
   }
+  // A real login (2026-10-08): verify_jwt alone let the page's PUBLIC key through, and this
+  // function then returned the whole CRM card list to anyone. Designers stay allowed.
+  const denied = await loginCheck(req);
+  if (denied) return new Response(JSON.stringify({ error: denied }), { status: 401, headers: { ...CORS, "Content-Type": "application/json" } });
   try {
     const token = Deno.env.get("AIRTABLE_PICKER_TOKEN");
     const base = Deno.env.get("AIRTABLE_BASE_ID");

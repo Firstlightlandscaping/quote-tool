@@ -26,11 +26,13 @@ function sbHeaders() {
   return { apikey: KEY, Authorization: "Bearer " + KEY, "Content-Type": "application/json" };
 }
 
-import { isDesigner } from "../_shared/caller.ts";
+import { isDesigner, loginCheck } from "../_shared/caller.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "Method not allowed." });
+  const denied = await loginCheck(req);   // a real login — verify_jwt alone let the public key in
+  if (denied) return json(401, { error: denied });
   if (isDesigner(req)) return json(403, { error: "Not available for design logins." });   // 2026-10-02
   try {
     let body: any;

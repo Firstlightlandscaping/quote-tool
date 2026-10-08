@@ -785,11 +785,13 @@ async function stamp(ref: string, event: string, kind?: string): Promise<string 
   } catch (e) { return "Pushed, but the push record was not saved on our side: " + (e as Error).message; }
 }
 
-import { isDesigner } from "../_shared/caller.ts";
+import { isDesigner, loginCheck } from "../_shared/caller.ts";
 
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "Method not allowed." });
+  const denied = await loginCheck(req);   // a real login — verify_jwt alone let the public key in
+  if (denied) return json(401, { ok: false, error: denied });
   try {
     let body: any;
     try { body = await req.json(); } catch (_e) { return json(400, { error: "Bad request." }); }
