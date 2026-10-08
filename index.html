@@ -8502,13 +8502,16 @@ function sigRenderDialog(a, rows, forceNew) {
   } else if (signed && !active) {
     // Full trail, not just the signed date — answers "when did you send it?" and
     // "when did they open it?" months later, without digging in the database.
+    // One flowing line per signer (CRM, 08/10 — "Sent" on its own read as if still waiting):
+    // "Link sent 8 Oct → opened 8 Oct → signed 8 Oct 20:20"; the name leads only when 2+ sign.
+    const many = (signed.signers || []).length > 1;
     const trail =
       '<div style="font-size:11px;color:var(--i2);background:#F8FAFC;border:1px solid var(--bd);border-radius:8px;padding:9px 11px;margin-top:10px">' +
-        '<div><strong>Sent</strong> ' + sigDateOnly(signed.sent_at) + '</div>' +
-        (signed.signers || []).map(s =>
-          '<div style="margin-top:3px">' + cwEsc(s.name) + ' — ' +
-            (s.viewed_at ? 'opened ' + sigDateOnly(s.viewed_at) + ', ' : '') +
-            (s.signed_at ? 'signed ' + sigDateOnly(s.signed_at) + ' at ' + sigTimeOnly(s.signed_at) : 'not signed') +
+        (signed.signers || []).map((s, i) =>
+          '<div' + (i ? ' style="margin-top:3px"' : '') + '>' + (many ? '<strong>' + cwEsc(s.name) + '</strong>: ' : '') +
+            'Link sent ' + sigDateOnly(signed.sent_at) +
+            (s.viewed_at ? ' → opened ' + sigDateOnly(s.viewed_at) : '') +
+            (s.signed_at ? ' → signed ' + sigDateOnly(s.signed_at) + ' ' + sigTimeOnly(s.signed_at) : ' → not signed') +
           '</div>').join('') +
       '</div>';
     body = '<div style="font-size:13px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:8px;padding:10px 12px">✓ <strong>Signed</strong> ' +
@@ -8521,7 +8524,7 @@ function sigRenderDialog(a, rows, forceNew) {
       '</div>' +
       // A variation after signing = regenerate the contract, then send the NEW version.
       // The signed row above stays forever as the record of what was agreed first.
-      '<div style="font-size:11px;color:var(--i3);margin-top:10px">Contract changed since? Regenerate it, then ' +
+      '<div style="font-size:11px;color:var(--i3);margin-top:10px">If this contract changes later: regenerate it, then ' +
       '<a href="#" onclick="sigReopenNew(\'' + ref + '\');return false;">send the new version for signature</a>.</div>';
   } else if (active) {
     const st = (active.signers || []);
