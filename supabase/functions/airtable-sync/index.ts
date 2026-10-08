@@ -53,6 +53,7 @@ const CARD = {
   quoteSentDate: "fldUxILTHcPALSZax", projectValue: "fldlBfNkxOUZS7mvV", jobNumber: "fldTN5Sto5WIP9x8I",
   quoteBy: "fldxs0tD9u1WjxpHm",          // single select, same options as Quotes.Quoted By (CRM, 29/09)
   contractSigned: "fldKqw7Qgx0ae2Ala", designContractSigned: "fldl15deSE4g5eLPc",
+  documents: "fldZCN98PNMG7TuGE",       // multipleAttachments — the signed contract PDF goes here (CRM, 08/10)
   quotesLink: "fld1NVqi5tSRBZMLV",        // reverse link → Quotes rows on this card
   paymentsLink: "fld8tUhJLwxpK11DM",      // reverse link → Payments rows on this card (CRM, 05/09)
 };
@@ -100,7 +101,7 @@ const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_
 const LIST = { quoteSent: "Quote Sent", accepted: "Quote Accepted", amendments: "Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
-const EVENTS = new Set(["figures", "sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed", "deleted"]);
+const EVENTS = new Set(["signed_doc", "figures", "sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed", "deleted"]);
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
 // QT- → Contract Sent, DC- → Design Contract — unless it's already past the guard.
 const LIST_CONTRACT_SENT = { qt: "Contract Sent", dc: "Design Contract" };
@@ -787,6 +788,58 @@ async function stamp(ref: string, event: string, kind?: string): Promise<string 
 
 import { isDesigner, loginCheck } from "../_shared/caller.ts";
 
+// ── signed_doc (CRM, 08/10/26): the SIGNED contract as a PDF → Cards.Documents ────────────
+// The PDF is made by the staff app in the browser (html2pdf, image pages — no third party)
+// from the stored signed document, and sent here as base64. This function only:
+//   * checks the contract really is signed (latest contract_signing row status 'signed');
+//   * GUARD 1 (CRM): skips when the card's Documents already holds ANY file whose name
+//     contains the contract's ref ("QT-0109" / "QT 0109" / "QT0109") — many signed contracts
+//     are already there under older names; a skip still stamps, so the app never retries;
+//   * uploads via Airtable's uploadAttachment endpoint, which APPENDS to the field (existing
+//     attachments untouched; 5 MB per file);
+//   * stamps crm_pushed.signed_doc.
+// dryRun = the check only (no pdf needed; a real call without a pdf only stamps an already-attached one): { attached, matches[], filename } — the app's backfill
+// list. Sandbox: with AIRTABLE_TEST_CARD set, only contracts whose OWN card is the test card
+// are handled (the sandbox holds copies of real contracts; the redirect would pile them all
+// onto the test card).
+async function signedDoc(ref: string, body: any) {
+  const rec = await loadRecord(ref);
+  if (!rec) return json(404, { ok: false, error: "Record not found: " + ref });
+  if (!rec.cardId) return json(200, { ok: true, orphan: true, ref, event: "signed_doc", warning: "No CRM card linked to " + ref + " — link the client first (📇)." });
+  const forcedCard = Deno.env.get("AIRTABLE_TEST_CARD") || "";
+  const refPrefix = Deno.env.get("AIRTABLE_TEST_REF_PREFIX") || "";
+  if (forcedCard && rec.cardId !== forcedCard) return json(200, { ok: true, skipped: "Sandbox: only contracts linked to the test card are attached", ref, event: "signed_doc" });
+  const sig = (await sbGet(`contract_signing?quote_ref=eq.${encodeURIComponent(ref)}&select=id,status,signed_at&order=id.desc&limit=1`))[0];
+  if (!sig || sig.status !== "signed") return json(409, { ok: false, error: ref + " has no signed online contract — nothing to attach." });
+  const A = at();
+  const card = await A.get(T.cards, forcedCard || rec.cardId);
+  if (!card) throw new Error("Card not found in the CRM");
+  const docs: any[] = Array.isArray((card.fields || {})[CARD.documents]) ? card.fields[CARD.documents] : [];
+  const [pre, num] = ref.split("-");
+  const refRe = new RegExp("(^|[^A-Za-z])" + pre + "[-\\s_]?" + num + "(?![0-9])", "i");
+  const matches = docs.map(d => String(d.filename || "")).filter(n => refRe.test(n));
+  const clean = (t: string) => t.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
+  const filename = (rec.isDesign ? "Design contract " : "Contract ") + refPrefix + ref + (rec.customer ? " " + clean(rec.customer) : "") + " signed.pdf";
+  const cardInfo = { id: card.id, name: str((card.fields || {})[CARD.name]) || "" };
+  const pdf = typeof body.pdf === "string" ? body.pdf : "";
+  if (body.dryRun === true) return json(200, { ok: true, dryRun: true, ref, event: "signed_doc", attached: matches.length > 0, matches, filename, card: cardInfo, signedAt: sig.signed_at });
+  if (matches.length) {
+    const w = await stamp(ref, "signed_doc", "skipped");
+    return json(200, { ok: true, skipped: "Already on the card: " + matches.join(", "), ref, event: "signed_doc", matches, card: cardInfo, ...(w ? { warning: w } : {}) });
+  }
+  if (!pdf) return json(400, { ok: false, error: "No PDF sent." });
+  if (!/^JVBER/.test(pdf)) return json(400, { ok: false, error: "That isn't a PDF." });
+  if (pdf.length * 0.75 > 5 * 1024 * 1024) return json(413, { ok: false, error: "PDF is over Airtable's 5 MB limit." });
+  const r = await fetch(`https://content.airtable.com/v0/${Deno.env.get("AIRTABLE_BASE_ID")}/${card.id}/${CARD.documents}/uploadAttachment`, {
+    method: "POST",
+    headers: { Authorization: "Bearer " + Deno.env.get("AIRTABLE_SYNC_TOKEN"), "Content-Type": "application/json" },
+    body: JSON.stringify({ contentType: "application/pdf", file: pdf, filename }),
+  });
+  if (!r.ok) throw new Error(`Airtable upload: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
+  const w = await stamp(ref, "signed_doc");
+  return json(200, { ok: true, attached: true, ref, event: "signed_doc", filename, card: cardInfo, ...(w ? { warning: w } : {}) });
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
   if (req.method !== "POST") return json(405, { error: "Method not allowed." });
@@ -801,6 +854,7 @@ Deno.serve(async (req: Request) => {
     if (!EVENTS.has(event)) return json(400, { error: "Bad event." });
     // Designer logins (2026-10-02) push their own DESIGN contracts only — never a quote.
     if (isDesigner(req) && !ref.startsWith("DC-")) return json(403, { ok: false, error: "Design logins can only push design contracts." });
+    if (event === "signed_doc") return await signedDoc(ref, body);
     // clear:true (Neal, 08/09): acknowledge an event WITHOUT writing to Airtable — the CRM
     // already has it (day-one backlog after the Trello import, or a hand-made change).
     // Stamps crm_pushed so the badge clears; nothing else happens.

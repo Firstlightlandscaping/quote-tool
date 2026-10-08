@@ -2190,7 +2190,7 @@ function showTab(id, btn) {
   btn.classList.add('on');
   if (id === 'orderlist') renderOrderList();
   if (id === 'schedule') renderSchedule();
-  if (id === 'saved') crmCheckRejections();
+  if (id === 'saved') { crmCheckRejections(); sdAutoAttach(); }
 }
 
 // ── HEADER SYNC ───────────────────────────────────────────────────────────────
@@ -8782,6 +8782,199 @@ function sigInjectIntoDoc(doc, row) {
   } catch (e) {}
 }
 
+// ── SIGNED CONTRACT PDF → CRM Cards.Documents (CRM, 08/10) ───────────────────────
+// The CRM wants the signed contract on the card as a PDF. There's no server that can turn
+// HTML into a PDF, so the STAFF app makes it in the browser: the stored signed document
+// (contract_html + the signatures/audit block, exactly what sigViewSigned shows) is drawn
+// in an off-screen frame by html2pdf.js (vendor/ — our own copy, script-src 'self'; image
+// pages, no third party) and sent to airtable-sync's "signed_doc" event, which skips a card
+// that already holds ANY file naming the ref (CRM guard 1), uploads (appends) and stamps
+// crm_pushed.signed_doc.
+// AUTOMATIC only for contracts signed on/after SD_AUTO_FROM (CRM guard 2 — older ones are
+// in the 📎 list in the ✍ Contracts panel, attached one by one by a person). Runs when
+// Saved Quotes opens, one contract at a time, in the background.
+const SD_AUTO_FROM_LIVE = '2099-01-01T00:00:00Z';      // ⚠ set to the go-live moment when shipped
+const SD_AUTO_FROM_SANDBOX = '2026-10-05T00:00:00Z';   // sandbox test: Mr Test's QT-0100 / QT-0102 / DC-0013
+function sdAutoFrom() { return SUPABASE_URL === _DEFAULT_URL ? SD_AUTO_FROM_LIVE : SD_AUTO_FROM_SANDBOX; }
+const sdFailed = {};   // ref → message: failed this session, no automatic retry until a reload
+let sdBusy = false;
+async function sdCall(ref, extra) {
+  await ensureFreshToken();
+  const res = await fetch(SUPABASE_URL + '/functions/v1/airtable-sync', {
+    method: 'POST',
+    headers: { apikey: SUPABASE_KEY, Authorization: 'Bearer ' + ((SESSION && SESSION.access_token) || SUPABASE_KEY), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref, event: 'signed_doc', ...extra }),
+  });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok || !d.ok) throw new Error((d && d.error) || ('HTTP ' + res.status));
+  return d;
+}
+// The signed document → PDF Blob. Drawn INSIDE the document's own frame (the library is
+// loaded into it) so the contract's own styles apply.
+async function sdMakePdf(row) {
+  const iframe = document.createElement('iframe');
+  iframe.setAttribute('aria-hidden', 'true');
+  iframe.style.cssText = 'position:fixed;left:-12000px;top:0;width:820px;height:1200px;border:0';
+  document.body.appendChild(iframe);
+  try {
+    await new Promise(res => { iframe.onload = res; iframe.srcdoc = row.contract_html; });
+    const doc = iframe.contentDocument, win = iframe.contentWindow;
+    sigInjectIntoDoc(doc, row);
+    // the fingerprint line fills in asynchronously; images (banner, signatures) are data URIs
+    for (let i = 0; i < 50; i++) {
+      const h = doc.getElementById('esign-hash');
+      if ((!h || h.textContent) && [...doc.images].every(im => im.complete)) break;
+      await new Promise(r => setTimeout(r, 100));
+    }
+    sdKeepHeadings(doc);
+    await new Promise((res, rej) => {
+      const s = doc.createElement('script');
+      s.src = new URL('vendor/html2pdf.bundle.min.js', location.href).href;
+      s.onload = res; s.onerror = () => rej(new Error('PDF library failed to load'));
+      doc.head.appendChild(s);
+    });
+    // Options are rebuilt INSIDE the frame (win.JSON) — the library checks arrays with
+    // instanceof, which fails for an array made in this window ("Invalid margin array").
+    const make = (scale, quality) => win.html2pdf().set(win.JSON.parse(JSON.stringify({
+      margin: [10, 8, 12, 8],
+      image: { type: 'jpeg', quality },
+      html2canvas: { scale, backgroundColor: '#ffffff', logging: false },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+      pagebreak: { mode: ['css', 'avoid-all'] },
+    }))).from(doc.getElementById('contract-view') || doc.body).outputPdf('blob');
+    let blob = await make(1.6, 0.82);
+    if (blob.size > 4.5 * 1024 * 1024) blob = await make(1.1, 0.7);   // Airtable's limit is 5 MB
+    if (blob.size > 4.9 * 1024 * 1024) throw new Error('PDF is too big for the CRM (' + (blob.size / 1048576).toFixed(1) + ' MB)');
+    return blob;
+  } finally { iframe.remove(); }
+}
+// Keep each terms heading with its first clause (a heading alone at the foot of a page, its
+// clauses on the next — seen on QT-0086). The page-break engine keeps ELEMENTS whole, so the
+// heading + first clause are wrapped as one: the first <li> moves into its own <ol> beside
+// the heading (its value= number travels with it; section-numbered lists get start="2" on
+// the rest). Only the off-screen copy drawn for the PDF is changed — never the stored document.
+function sdKeepHeadings(doc) {
+  doc.querySelectorAll('.cw-section-h').forEach(h => {
+    const ol = h.nextElementSibling;
+    if (!ol || ol.tagName !== 'OL' || !ol.firstElementChild) return;
+    const wrap = doc.createElement('div');
+    const first = doc.createElement('ol');
+    for (const a of ol.attributes) first.setAttribute(a.name, a.value);
+    const li = ol.firstElementChild;
+    // the contract's CSS targets .cw-terms>ol / >li (direct children) — carry the computed
+    // spacing across, since the moved list now sits inside the wrapper
+    const cs = doc.defaultView.getComputedStyle(ol), lcs = doc.defaultView.getComputedStyle(li);
+    first.style.paddingLeft = cs.paddingLeft; first.style.marginTop = cs.marginTop; first.style.marginBottom = '0';
+    li.style.paddingLeft = lcs.paddingLeft; li.style.marginBottom = lcs.marginBottom;
+    if (!li.hasAttribute('value') && ol.children.length > 1 && !ol.hasAttribute('start')) ol.setAttribute('start', '2');
+    first.appendChild(li);
+    ol.style.marginTop = '0';
+    h.parentNode.insertBefore(wrap, h);
+    wrap.appendChild(h);
+    wrap.appendChild(first);
+    if (!ol.children.length) { first.style.marginBottom = cs.marginBottom; ol.remove(); }   // one-clause section
+  });
+}
+function sdBlobB64(blob) {
+  return new Promise((res, rej) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(',')[1] || ''); fr.onerror = () => rej(new Error('Could not read the PDF')); fr.readAsDataURL(blob); });
+}
+// One contract: check the card first (cheap), make + send the PDF only when needed.
+// Returns { attached | skipped | orphan, filename?, matches? }.
+async function sdAttach(ref) {
+  const chk = await sdCall(ref, { dryRun: true });
+  if (chk.orphan || chk.skipped) return chk;
+  if (chk.attached) { const d = await sdCall(ref, {}); crmMarkPushed(ref, 'signed_doc'); return d; }   // already there → stamp only
+  const rows = await sb('GET', 'contract_signing', null, '?quote_ref=eq.' + encodeURIComponent(ref) + '&status=eq.signed&select=*&order=id.desc&limit=1');
+  if (!rows || !rows[0]) throw new Error('signed contract not found');
+  const pdf = await sdBlobB64(await sdMakePdf(rows[0]));
+  const d = await sdCall(ref, { pdf });
+  crmMarkPushed(ref, 'signed_doc');
+  return d;
+}
+async function sdAutoAttach() {
+  if (!USE_SUPABASE || sdBusy || document.body.classList.contains('designer-mode')) return;
+  const from = new Date(sdAutoFrom());
+  const due = Object.values(sigStatusMap || {}).filter(r => {
+    if (r.status !== 'signed' || !r.signed_at || new Date(r.signed_at) < from || sdFailed[r.quote_ref]) return false;
+    const rec = crmPushRec(r.quote_ref);
+    return rec && rec.cardId && !(rec.crmPushed || {}).signed_doc;
+  });
+  if (!due.length) return;
+  sdBusy = true;
+  try {
+    for (const r of due) {
+      crmNoticeBanner('busy', '📎 Attaching the signed contract ' + r.quote_ref + ' to the CRM…', 0);
+      try {
+        const d = await sdAttach(r.quote_ref);
+        crmNoticeBanner('ok', d.attached ? '✓ Signed contract ' + r.quote_ref + ' attached to the CRM card' : '✓ ' + r.quote_ref + ' — ' + (d.skipped || d.warning || 'nothing to attach'), 6000);
+      } catch (e) {
+        sdFailed[r.quote_ref] = e.message;
+        crmNoticeBanner('busy', '⚠ Signed contract ' + r.quote_ref + ' NOT attached to the CRM: ' + e.message + ' — use 📎 in ✍ Contracts to retry.', 10000);
+      }
+    }
+  } finally { sdBusy = false; }
+}
+// The one-off list (CRM guard 2): every signed online contract, attached to its card or not,
+// checked live against the card (dry run — nothing written). 📎 attaches one.
+async function sdBackfillDialog() {
+  let rows;
+  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,customer,status,signed_at&status=eq.signed&order=id'); }
+  catch (e) { toast('Could not load signed contracts: ' + e.message); return; }
+  const latest = {};
+  rows.forEach(r => { latest[r.quote_ref] = r; });
+  const list = Object.values(latest).sort((a, b) => String(b.signed_at).localeCompare(String(a.signed_at)));
+  const old = document.getElementById('sd-dialog'); if (old) old.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'sd-dialog';
+  wrap.innerHTML =
+    '<div class="cw-modal-back" onmousedown="this._downOnBack=(event.target===this)" onclick="if(this._downOnBack&&event.target===this)document.getElementById(\'sd-dialog\').remove()">' +
+      '<div class="cw-modal" style="width:760px;max-width:95vw;max-height:88vh;overflow:auto">' +
+        '<h3>📎 Signed contracts in the CRM</h3>' +
+        '<div class="cw-modal-sub">Is each signed contract\'s PDF on its CRM card (any file naming the ref counts)? ' +
+          'Contracts signed from ' + sigDateOnly(sdAutoFrom()) + ' are attached automatically; for older ones, 📎 attaches one.</div>' +
+        (list.length ? '<table style="width:100%;border-collapse:collapse;font-size:12px">' +
+          '<tr style="text-align:left;color:var(--i3)"><th style="padding:4px">Ref</th><th>Client</th><th>Signed</th><th>On the card?</th><th></th></tr>' +
+          list.map(r => {
+            const rec = crmPushRec(r.quote_ref);
+            const k = cwEsc(r.quote_ref);
+            return '<tr style="border-top:1px solid var(--bd)"><td style="padding:5px 4px;font-family:\'DM Mono\',monospace">' + k + '</td>' +
+              '<td>' + cwEsc(r.customer || (rec && rec.customer) || '') + '</td><td>' + (r.signed_at ? sigDateOnly(r.signed_at) : '') + '</td>' +
+              '<td id="sd-st-' + k + '" style="color:var(--i3)">checking…</td><td id="sd-act-' + k + '" style="text-align:right"></td></tr>';
+          }).join('') + '</table>'
+          : '<em style="color:var(--i3)">No contracts have been signed online yet.</em>') +
+        '<div style="display:flex;justify-content:flex-end;margin-top:14px"><button class="btn btn-outline" onclick="document.getElementById(\'sd-dialog\').remove()">Close</button></div>' +
+      '</div></div>';
+  document.body.appendChild(wrap);
+  for (const r of list) {
+    if (!document.getElementById('sd-dialog')) return;   // closed — stop checking
+    await sdPaintRow(r.quote_ref);
+  }
+}
+async function sdPaintRow(ref) {
+  const st = document.getElementById('sd-st-' + ref), act = document.getElementById('sd-act-' + ref);
+  if (!st || !act) return;
+  const rec = crmPushRec(ref);
+  if (!rec || !rec.cardId) { st.innerHTML = '<span style="color:#B45309">no CRM card linked</span>'; act.innerHTML = ''; return; }
+  try {
+    const d = await sdCall(ref, { dryRun: true });
+    if (d.orphan || d.skipped) { st.textContent = d.warning || d.skipped; act.innerHTML = ''; return; }
+    if (d.attached) { st.innerHTML = '<span style="color:#15803D">✓ yes</span> <span style="color:var(--i3)">' + cwEsc(d.matches.join(', ')) + '</span>'; act.innerHTML = ''; return; }
+    st.innerHTML = '<span style="color:#B91C1C">✗ not attached</span>';
+    act.innerHTML = '<button class="btn btn-outline btn-sm" onclick="sdAttachNow(\'' + cwEsc(ref) + '\')">📎 Attach</button>';
+  } catch (e) { st.innerHTML = '<span style="color:#B91C1C">couldn\'t check: ' + cwEsc(e.message) + '</span>'; act.innerHTML = ''; }
+}
+async function sdAttachNow(ref) {
+  const st = document.getElementById('sd-st-' + ref), act = document.getElementById('sd-act-' + ref);
+  if (act) act.innerHTML = '';
+  if (st) st.textContent = 'making the PDF…';
+  try {
+    const d = await sdAttach(ref);
+    delete sdFailed[ref];
+    toast(d.attached ? '✓ ' + ref + ' attached to the CRM card' : ref + ' — ' + (d.skipped || d.warning || 'nothing attached'));
+  } catch (e) { toast('⚠ ' + ref + ' NOT attached: ' + e.message); }
+  sdPaintRow(ref);
+}
+
 // ── CONTRACTS PANEL (Saved Quotes header) ─────────────────────────────────────
 // The signing worklist — signing state is a SECOND AXIS from quote status (every
 // contract-stage quote is Accepted), so it gets its own panel instead of polluting
@@ -8964,6 +9157,7 @@ async function openContractsPanel(designMode) {
       '<div class="cw-modal" style="width:720px;max-width:95vw;max-height:88vh;overflow:auto">' +
         '<h3>✍ ' + (wantDesign ? 'Design contracts' : 'Contracts') + ' — e-signature overview</h3>' +
         '<div class="cw-modal-sub">' + (rows.length ? rows.length + ' signing request' + (rows.length === 1 ? '' : 's') + ' on record' : 'No ' + (wantDesign ? 'design ' : '') + 'contracts sent for signature yet') + '</div>' +
+        '<div style="margin:-4px 0 10px"><button class="btn btn-outline btn-sm" onclick="sdBackfillDialog()" title="Is each signed contract\'s PDF on its CRM card? Attach the ones that are missing">📎 Signed contracts in the CRM</button></div>' +
         // Needs attention is sub-grouped so the admin question "who do I chase?" is one
         // look (Neal, 2026-08-31). Groups render only when non-empty, never fold — this
         // section must not hide anything. Same buckets, same actions, presentation only.
