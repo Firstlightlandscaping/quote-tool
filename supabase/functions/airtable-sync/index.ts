@@ -574,10 +574,16 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!cm || !cm.generatedAt) throw new Error("No contract has been generated for " + ref);
       const f: Record<string, unknown> = { [Q.contractGenerated]: dateOnly(cm.generatedAt) };
       if (rec.isDesign) { f[Q.status] = rec.status; f[Q.value] = rec.valueInc; }
-      upsertRow(f, "Quotes row → Contract Generated" + (rec.isDesign ? ` (design, ${rec.status})` : ""));
+      // A regenerate after the quote's price changed (CRM 08/10, ZZZ-QT-0102 case 2): the Quotes
+      // row Value and the card's Quote Value follow the quote's current total. Before, only the
+      // design path wrote Value here, so an Accepted quote re-priced + regenerated kept its OLD
+      // figures in the CRM (Project Value moved, Quote Value didn't).
+      else f[Q.value] = rec.valueInc;
+      upsertRow(f, "Quotes row → Contract Generated" + (rec.isDesign ? ` (design, ${rec.status})` : ` (Value £${rec.valueInc})`));
       if (!rec.isDesign) {
         cardPatch[CARD.jobNumber] = ref;
         cardPatch[CARD.projectValue] = round2(Number(cm.total) || rec.valueInc);
+        cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter(rec.status));   // Σ Accepted (else Σ Sent) with THIS row at its new value
         // Card Name gets the QT ref in front (CRM, 24/09/26): Airtable shows a linked card only
         // by its name, so staff read the job number off the board and every linked chip. Only
         // when the name carries NO quote ref yet — an existing ref is never rewritten or
@@ -635,6 +641,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       const sched: any[] = Array.isArray(cm.scheduleStructured) ? cm.scheduleStructured : [];
       if (!sched.length) plan.warnings.push("Contract has no structured payment schedule — no Payments written");
       const seen = new Set<string>();
+      const keepPaid = new Set<string>();   // lines marked "Already paid": their existing row stays (see the removal sweep below)
       for (const e of sched) {
         const key = String(e.label || "").trim().toLowerCase();
         if (!key) continue;
@@ -642,7 +649,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         // Already paid = money already banked (a second deposit row would raise an invoice task
         // for it and leave the card's "contract ready" at 0).
         if (e.trigger === "ignore") continue;
-        if (e.trigger === "paid") { plan.notes.push(`${e.label} £${round2(Number(e.amount) || 0)} (paid): already received, not pushed`); continue; }
+        if (e.trigger === "paid") { keepPaid.add(key); plan.notes.push(`${e.label} £${round2(Number(e.amount) || 0)} (paid): already received, not pushed`); continue; }
         seen.add(key);
         const isCash = e.trigger === "cash";   // checked FIRST — a cash row carries its invoice sibling's Trigger List for information only
         const trigger = isCash ? "Cash / other" : e.triggerList ? "On Card Move" : e.trigger === "weekly" ? "On Date" : e.trigger === "onCompletion" ? "On Completion" : "Manual";
@@ -674,10 +681,26 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         if (curAmt !== fields[P.amount]) plan.writes.push({ table: T.payments, op: "patch", id: ex.id, label: `Payment "${e.label}" £${curAmt} → £${fields[P.amount]}`, fields: { [P.amount]: fields[P.amount] } });
         else plan.notes.push(`Payment "${e.label}" unchanged at £${curAmt}`);
       }
-      existing.forEach(p => {
-        const key = String(p.fields[P.name] || "").trim().toLowerCase();
-        if (key && !seen.has(key)) plan.warnings.push(`Existing payment "${p.fields[P.name]}" £${num(p.fields[P.amount])} from ${wantRef} is not in this schedule — left in place (dropped from the schedule; a person decides)`);
-      });
+      // Rows THIS contract wrote earlier that the regenerated schedule no longer has — a line
+      // removed or renamed, or wholly switched to Cash / other (its cash row, created above,
+      // replaces it). CRM 08/10 (ZZZ-QT-0102): this used to be a WARNING that held the whole
+      // push "for a person to decide", so a regenerate added the cash row beside the old invoice
+      // row (both full amount), and the next regenerate's patches never landed at all. Now a
+      // clean row is DELETED; a locked one (invoiced / completed / paid / invoice number) BLOCKS,
+      // nothing written — never remove a fact; a line now marked "Already paid" keeps its row
+      // (the money it records is real).
+      for (const p of existing) {
+        const nm = String(p.fields[P.name] || "").trim();
+        const key = nm.toLowerCase();
+        if (!key || seen.has(key) || keepPaid.has(key)) continue;
+        if (paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber])) {
+          const f = p.fields;
+          const what = f[P.datePaid] ? "paid" : f[P.completed] ? "completed" : str(f[P.invoiceNumber]) ? "invoiced (invoice " + str(f[P.invoiceNumber]) + ")" : "invoiced";
+          plan.blocked.push(`"${nm}" £${num(f[P.amount])} is already ${what} but is no longer in the regenerated schedule. Void it in Xero and clear the invoice number on the CRM card first, then push again — or keep that line in the schedule.`);
+          continue;
+        }
+        plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (no longer in the regenerated schedule)`, fields: {} });
+      }
       break;
     }
     case "contract_sent": {
