@@ -790,27 +790,35 @@ import { isDesigner, loginCheck } from "../_shared/caller.ts";
 
 // ── signed_doc (CRM, 08/10/26): the SIGNED contract as a PDF → Cards.Documents ────────────
 // The PDF is made by the staff app in the browser (html2pdf, image pages — no third party)
-// from the stored signed document, and sent here as base64. This function only:
-//   * checks the contract really is signed (latest contract_signing row status 'signed');
-//   * GUARD 1 (CRM): skips when the card's Documents already holds ANY file whose name
-//     contains the contract's ref ("QT-0109" / "QT 0109" / "QT0109") — many signed contracts
-//     are already there under older names; a skip still stamps, so the app never retries;
-//   * uploads via Airtable's uploadAttachment endpoint, which APPENDS to the field (existing
-//     attachments untouched; 5 MB per file);
-//   * stamps crm_pushed.signed_doc.
-// dryRun = the check only (no pdf needed; a real call without a pdf only stamps an already-attached one): { attached, matches[], filename } — the app's backfill
-// list. Sandbox: with AIRTABLE_TEST_CARD set, only contracts whose OWN card is the test card
-// are handled (the sandbox holds copies of real contracts; the redirect would pile them all
-// onto the test card).
+// from the stored signed document, and sent here as base64. One call = ONE SIGNING RECORD
+// (body.signingId — a contract regenerated and signed again on the same quote number is a
+// new signing and is attached too; CRM correction 08/10):
+//   * the signing row must belong to this ref and be signed;
+//   * dedupe PER SIGNING: crm_pushed["signed_doc:<id>"] set = already sent, never again;
+//   * filename carries the signed date (London): "Contract QT-0109 Katherine Gaunt signed 08-10-26.pdf";
+//   * mode "backfill" (signed BEFORE go-live — Trello-era copies are already on cards) ALSO
+//     skips when Documents holds ANY file whose name contains the ref (QT-0109 / QT 0109 /
+//     QT0109); the skip is stamped so it isn't asked again. New signings never use that rule;
+//   * upload via Airtable's uploadAttachment, which APPENDS — nothing on the card is ever
+//     removed or replaced (the newest signed date is the live contract);
+//   * dryRun = the check only: { sent, sentAt, matches[], filename, signedAt }.
+// Sandbox: with AIRTABLE_TEST_CARD set, only contracts whose OWN card is the test card are
+// handled (the sandbox holds copies of real contracts; the redirect would pile them all onto
+// the test card).
 async function signedDoc(ref: string, body: any) {
+  const signingId = Number(body.signingId);
+  if (!Number.isInteger(signingId) || signingId <= 0) return json(400, { ok: false, error: "Which signing? (signingId missing)" });
+  const backfill = body.mode === "backfill";
   const rec = await loadRecord(ref);
   if (!rec) return json(404, { ok: false, error: "Record not found: " + ref });
   if (!rec.cardId) return json(200, { ok: true, orphan: true, ref, event: "signed_doc", warning: "No CRM card linked to " + ref + " — link the client first (📇)." });
   const forcedCard = Deno.env.get("AIRTABLE_TEST_CARD") || "";
   const refPrefix = Deno.env.get("AIRTABLE_TEST_REF_PREFIX") || "";
   if (forcedCard && rec.cardId !== forcedCard) return json(200, { ok: true, skipped: "Sandbox: only contracts linked to the test card are attached", ref, event: "signed_doc" });
-  const sig = (await sbGet(`contract_signing?quote_ref=eq.${encodeURIComponent(ref)}&select=id,status,signed_at&order=id.desc&limit=1`))[0];
-  if (!sig || sig.status !== "signed") return json(409, { ok: false, error: ref + " has no signed online contract — nothing to attach." });
+  const sig = (await sbGet(`contract_signing?id=eq.${signingId}&quote_ref=eq.${encodeURIComponent(ref)}&select=id,status,signed_at`))[0];
+  if (!sig || sig.status !== "signed" || !sig.signed_at) return json(409, { ok: false, error: "Signing " + signingId + " of " + ref + " isn't a signed contract — nothing to attach." });
+  const key = "signed_doc:" + sig.id;
+  const sentAt = (rec.crmPushed || {})[key] || null;
   const A = at();
   const card = await A.get(T.cards, forcedCard || rec.cardId);
   if (!card) throw new Error("Card not found in the CRM");
@@ -819,14 +827,19 @@ async function signedDoc(ref: string, body: any) {
   const refRe = new RegExp("(^|[^A-Za-z])" + pre + "[-\\s_]?" + num + "(?![0-9])", "i");
   const matches = docs.map(d => String(d.filename || "")).filter(n => refRe.test(n));
   const clean = (t: string) => t.replace(/[\\/:*?"<>|]+/g, " ").replace(/\s+/g, " ").trim();
-  const filename = (rec.isDesign ? "Design contract " : "Contract ") + refPrefix + ref + (rec.customer ? " " + clean(rec.customer) : "") + " signed.pdf";
+  const p = Object.fromEntries(new Intl.DateTimeFormat("en-GB", { timeZone: "Europe/London", day: "2-digit", month: "2-digit", year: "2-digit" })
+    .formatToParts(new Date(sig.signed_at)).map(x => [x.type, x.value]));
+  const filename = (rec.isDesign ? "Design contract " : "Contract ") + refPrefix + ref + (rec.customer ? " " + clean(rec.customer) : "") +
+    " signed " + p.day + "-" + p.month + "-" + p.year + ".pdf";
   const cardInfo = { id: card.id, name: str((card.fields || {})[CARD.name]) || "" };
-  const pdf = typeof body.pdf === "string" ? body.pdf : "";
-  if (body.dryRun === true) return json(200, { ok: true, dryRun: true, ref, event: "signed_doc", attached: matches.length > 0, matches, filename, card: cardInfo, signedAt: sig.signed_at });
-  if (matches.length) {
-    const w = await stamp(ref, "signed_doc", "skipped");
-    return json(200, { ok: true, skipped: "Already on the card: " + matches.join(", "), ref, event: "signed_doc", matches, card: cardInfo, ...(w ? { warning: w } : {}) });
+  const base = { ref, event: "signed_doc", signingId: sig.id, signedAt: sig.signed_at, filename, matches, card: cardInfo };
+  if (body.dryRun === true) return json(200, { ok: true, dryRun: true, ...base, sent: !!sentAt, sentAt });
+  if (sentAt) return json(200, { ok: true, ...base, skipped: "This signing was already sent to the card (" + String(sentAt).slice(0, 10) + ")" });
+  if (backfill && matches.length) {
+    const w = await stamp(ref, key, "skipped");
+    return json(200, { ok: true, ...base, skipped: "Already on the card: " + matches.join(", "), ...(w ? { warning: w } : {}) });
   }
+  const pdf = typeof body.pdf === "string" ? body.pdf : "";
   if (!pdf) return json(400, { ok: false, error: "No PDF sent." });
   if (!/^JVBER/.test(pdf)) return json(400, { ok: false, error: "That isn't a PDF." });
   if (pdf.length * 0.75 > 5 * 1024 * 1024) return json(413, { ok: false, error: "PDF is over Airtable's 5 MB limit." });
@@ -836,8 +849,8 @@ async function signedDoc(ref: string, body: any) {
     body: JSON.stringify({ contentType: "application/pdf", file: pdf, filename }),
   });
   if (!r.ok) throw new Error(`Airtable upload: HTTP ${r.status} ${(await r.text()).slice(0, 200)}`);
-  const w = await stamp(ref, "signed_doc");
-  return json(200, { ok: true, attached: true, ref, event: "signed_doc", filename, card: cardInfo, ...(w ? { warning: w } : {}) });
+  const w = await stamp(ref, key);
+  return json(200, { ok: true, ...base, attached: true, ...(w ? { warning: w } : {}) });
 }
 
 Deno.serve(async (req: Request) => {
