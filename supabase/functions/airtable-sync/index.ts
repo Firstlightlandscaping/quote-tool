@@ -54,6 +54,7 @@ const CARD = {
   quoteBy: "fldxs0tD9u1WjxpHm",          // single select, same options as Quotes.Quoted By (CRM, 29/09)
   contractSigned: "fldKqw7Qgx0ae2Ala", designContractSigned: "fldl15deSE4g5eLPc",
   documents: "fldZCN98PNMG7TuGE",       // multipleAttachments — the signed contract PDF goes here (CRM, 08/10)
+  designPackage: "fldIOpkqL2PkB1Mmx",   // single select — filled from a design contract's package CODE, only when empty (CRM, 12/10)
   quotesLink: "fld1NVqi5tSRBZMLV",        // reverse link → Quotes rows on this card
   paymentsLink: "fld8tUhJLwxpK11DM",      // reverse link → Payments rows on this card (CRM, 05/09)
 };
@@ -101,6 +102,10 @@ const workStarted = (list: string | null) => !!list && BEYOND.has(list) && !PRE_
 const LIST = { quoteSent: "Quote Sent", accepted: "Quote Accepted", amendments: "Amendments" };
 const QUOTED_BY = new Set(["Neal Baker", "Liam Pickering"]);
 const TYPE = { qt: "Quote (QT)", dc: "Design Contract (DC)" };
+// Cards.Design Package by the contract line's package CODE (CRM, 12/10/26) — by code, not the
+// snapshotted name: older contracts carry old names ("Garden Design Service — Standard Plus
+// Package"). Any other code (GD03, SRV01-only, none) writes nothing; the office picks by hand.
+const DESIGN_PACKAGE_BY_CODE: Record<string, string> = { GD01: "The Standard Package", GD02: "The 3D Plus Package" };
 const EVENTS = new Set(["signed_doc", "figures", "sent", "superseded", "merged", "accepted", "declined", "contract_generated", "contract_sent", "contract_signed", "deleted"]);
 // Event 7 (CRM, 07/09): a signing link going out moves the card into the contract stage —
 // QT- → Contract Sent, DC- → Design Contract — unless it's already past the guard.
@@ -173,11 +178,12 @@ async function supersedesPath(fromRef: string, targetRef: string): Promise<strin
 async function loadRecord(ref: string) {
   const isDesign = ref.startsWith("DC-");
   if (isDesign) {
-    const row = (await sbGet(`design_contracts?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,airtable_card_id,contract_meta,last_pushed_at,crm_pushed`))[0];
+    const row = (await sbGet(`design_contracts?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,airtable_card_id,contract_meta,lines,last_pushed_at,crm_pushed`))[0];
     if (!row) return null;
     const cm = row.contract_meta || {};
+    const packageCodes = (Array.isArray(row.lines) ? row.lines : []).map((l: any) => String((l && l.code) || "").trim().toUpperCase()).filter(Boolean);
     return { ref, isDesign, customer: row.customer || "", cardId: row.airtable_card_id || null, cm, crmPushed: row.crm_pushed || {},
-             valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRefs: [] as string[] };
+             valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRefs: [] as string[], packageCodes };
   }
   const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,contract_meta,last_pushed_at,crm_pushed`))[0];
   if (!q) return null;
@@ -187,7 +193,7 @@ async function loadRecord(ref: string) {
            scope: stripHtml(q.summary_html || q.sum || "") || null,
            dateSent: dateOnly(q.status_changed_at) || dateOnly(q.date), quotedBy: q.sign || null,
            // one ref (revision) or a comma list (merge) — mirrors sqSupersedesList() in index.html
-           supersedesRefs: String(q.supersedes_ref || "").split(",").map((s: string) => s.trim()).filter(Boolean) };
+           supersedesRefs: String(q.supersedes_ref || "").split(",").map((s: string) => s.trim()).filter(Boolean), packageCodes: [] as string[] };
 }
 
 // ── Airtable ────────────────────────────────────────────────────────────────────
@@ -432,6 +438,18 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     else plan.notes.push(`Card Quote By not written — "${rec.quotedBy}" is not an Airtable option`);
   };
 
+  // Cards.Design Package (CRM, 12/10/26): on any DC- push, fill it from the first GD01/GD02 line
+  // IF THE BOX IS EMPTY. A value already there — whatever it is — is never overwritten, and an
+  // unmapped code never writes (no new option is ever created: this field is not typecast).
+  const cardDesignPackage = () => {
+    if (!rec.isDesign) return;
+    const cur = str(cf[CARD.designPackage]);
+    if (cur) { plan.notes.push(`Design Package already "${cur}" — left as it is`); return; }
+    const code = rec.packageCodes.find((c: string) => c in DESIGN_PACKAGE_BY_CODE);
+    if (!code) { plan.notes.push(`Design Package not set — no GD01/GD02 line (codes: ${rec.packageCodes.join(", ") || "none"}); pick it by hand`); return; }
+    cardPatch[CARD.designPackage] = DESIGN_PACKAGE_BY_CODE[code];
+    plan.notes.push(`Design Package "${DESIGN_PACKAGE_BY_CODE[code]}" from line ${code} (box was empty)`);
+  };
   switch (event) {
     case "figures": {
       // A SENT quote edited in place (Neal, 25/09: "forgot the tree" / "can you just change
@@ -607,7 +625,10 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         }
         else if (HAS_QT_REF.test(curName)) plan.notes.push(`Card Name "${curName}" already carries a QT ref — left as it is`);
         else cardPatch[CARD.name] = curName.trim() ? `${ref} ${curName.trim()}` : ref;
-      } else plan.notes.push("Design contract — Job Number / Project Value / Card Name are build-contract facts, not written");
+      } else {
+        plan.notes.push("Design contract — Job Number / Project Value / Card Name are build-contract facts, not written");
+        cardDesignPackage();
+      }
       // Payments: existing rows on this card via the card's reverse link (ids — a formula over
       // {Card} would see names, not ids), matched by milestone name WITHIN THIS CONTRACT'S ROWS
       // (Contract Ref = wantRef). Other contracts' rows (the design rows on a build push) and
@@ -712,6 +733,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (rec.isDesign) f[Q.status] = rec.status;          // DC rows mirror contract_meta.status (Generated → Sent)
       upsertRow(f, `Quotes row → signing ${sig.status}`);
       move(rec.isDesign ? LIST_CONTRACT_SENT.dc : LIST_CONTRACT_SENT.qt, "signing link sent");
+      cardDesignPackage();
       break;
     }
     case "contract_signed": {
@@ -727,6 +749,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         cardPatch[rec.isDesign ? CARD.designContractSigned : CARD.contractSigned] = true;
         plan.notes.push(rec.isDesign ? "DC- ref → Design Contract Signed ticked (signal, never a mover)" : "QT- ref → Contract Signed ticked (signal, never a mover)");
       } else plan.notes.push(`Signing status ${sig.status} — checkbox untouched`);
+      cardDesignPackage();
       break;
     }
   }
