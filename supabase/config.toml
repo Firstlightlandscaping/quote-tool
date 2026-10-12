@@ -421,3 +421,7 @@ verify_jwt = false
 # Same rule for RAMS operative signing — the per-operative token is the auth.
 [functions.sign-rams]
 verify_jwt = false
+
+# xero-invoice is called by an Airtable automation (no user): the x-crm-key header is the auth.
+[functions.xero-invoice]
+verify_jwt = false
