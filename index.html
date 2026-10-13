@@ -9863,9 +9863,19 @@ async function crmFetchCards(force) {
 // have no postcode at all, so partial prefill is the expected outcome, not a failure.
 // Postcode District is NEVER used for post — it's the outward code only (LS17, not
 // LS17 8JZ) and would print an incomplete postcode on a contract.
-function crmSplitAddress(blob) {
-  const segs = String(blob || '').split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
+// postcode (CRM, 13/10): the card's own Postcode field. Since 9 Oct most cards hold the
+// postcode THERE and not in Address, so the split found nothing and the post box came through
+// blank (Louise O'Flanagan). When given it is the post box, and a trailing copy of it is
+// stripped from the address text; when blank the split-from-Address behaviour is unchanged.
+function crmSplitAddress(blob, postcode) {
   const pcRe = /\b([A-Z]{1,2}\d[A-Z\d]?)[ ]*(\d[A-Z]{2})\b/i;
+  const pcField = String(postcode || '').trim();
+  let text = String(blob || '');
+  if (pcField) {
+    const esc = pcField.replace(/\s+/g, '').split('').map(ch => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s*');
+    text = text.replace(new RegExp('[\\s,]*' + esc + '[\\s,]*$', 'i'), '');
+  }
+  const segs = text.split(/[\n,]+/).map(s => s.trim()).filter(Boolean);
   let post = '';
   for (let i = segs.length - 1; i >= 0; i--) {
     const m = segs[i].match(pcRe);
@@ -9874,6 +9884,10 @@ function crmSplitAddress(blob) {
     segs[i] = segs[i].replace(m[0], '').replace(/[\s,]+$/, '').trim();
     if (!segs[i]) segs.splice(i, 1);
     break;
+  }
+  if (pcField) {   // the Postcode field is authoritative — normalised to "OUTWARD INWARD" when it parses
+    const m = pcField.match(pcRe);
+    post = m ? (m[1] + ' ' + m[2]).toUpperCase() : pcField.toUpperCase();
   }
   let city = '', addr1 = '';
   if (segs.length >= 2) { city = segs[segs.length - 1]; addr1 = segs.slice(0, -1).join(', '); }
@@ -10415,7 +10429,7 @@ async function crmApplyPick(i) {
     toast(ref + ' linked to ' + (c.name || 'card'));
     return;
   }
-  const a = crmSplitAddress(c.address);
+  const a = crmSplitAddress(c.address, c.postcode);
   const ids = target === 'dc' ? ['dc-cust', 'dc-a1', 'dc-city', 'dc-post'] : ['in-cust', 'in-a1', 'in-city', 'in-post'];
   const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
   let mode = 'refresh';

@@ -33,6 +33,8 @@ const F = {
   address: "fldfV5j0YprRWx4w2",  // Address
   district: "fldcf82l9M7jhj33q", // Postcode District (outward code only — display hint,
                                  // NEVER written to quotes.post; see the address split app-side)
+  postcode: "fldxL0AQUgFbL5lr9", // Postcode (full, e.g. "LS8 1PA") — since 9 Oct most cards hold
+                                 // it HERE and not in Address (CRM, 13/10); the app prefers it
 };
 
 const CORS = {
@@ -76,6 +78,7 @@ Deno.serve(async (req) => {
           phone: f[F.phone] || "",
           email: f[F.email] || "",
           address: f[F.address] || "",
+          postcode: String(f[F.postcode] || "").trim(),
           postcodeDistrict: f[F.district] || "",
         });
       }
