@@ -48,7 +48,7 @@ const CARD = {
 const XERO = "https://api.xero.com/api.xro/2.0/";
 const XERO_STATUS = { unpaid: "Unpaid" };   // exact single-select string (never typecast)
 
-type Reply = { ok: boolean; message: string; invoiceNumber?: string; invoiceId?: string; contactId?: string };
+type Reply = { ok: boolean; message: string; invoiceNumber?: string; invoiceId?: string; contactId?: string; reference?: string };
 const json = (status: number, body: Reply) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 const refuse = (message: string): Response => json(200, { ok: false, message });
@@ -231,6 +231,15 @@ function lineDescription(milestone: string): string {
   return d || "Payment";
 }
 const invNumberDigits = (n: string) => n.replace(/^\s*INV-?/i, "").replace(/\D/g, "");
+// The Reference carries a SHORT stage (CRM, 14/10 — the full wording ran too long): the cleaned
+// line up to the first " — ", " - ", ":" or " (", trimmed, capped at 40 characters. The invoice
+// LINE keeps the full wording. "Topographical Survey — payable on completion of the survey" →
+// "Topographical Survey"; "End of first week" → "End of first week".
+function refStage(line: string): string {
+  let stg = line.split(/\s+\u2014\s+|\s+-\s+|:|\s+\(/)[0].trim();
+  if (stg.length > 40) stg = stg.slice(0, 40).trim();
+  return stg || "Payment";
+}
 
 async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Promise<Response> {
   const kind = String(body.kind || "");
@@ -259,7 +268,8 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
 
   const contractRef = str(f[P.contractRef]).trim();
   const line = lineDescription(str(f[P.name]));
-  const reference = contractRef ? `${line} - ${contractRef}` : line;
+  const stage = refStage(line);
+  const reference = contractRef ? `${stage} - ${contractRef}` : stage;
   // design invoice → 205: a DC- contract, or the task is a "Design Invoice" action
   let design = /^DC-/i.test(contractRef);
   const taskId = String(body.taskId || "");
@@ -322,7 +332,7 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
       return json(200, { ok: false, message: msg, invoiceNumber, invoiceId, contactId: contact.contactId });
     }
   }
-  return json(200, { ok: true, message: messages[kind], invoiceNumber, invoiceId, contactId: contact.contactId });
+  return json(200, { ok: true, message: messages[kind], invoiceNumber, invoiceId, contactId: contact.contactId, reference });
 }
 
 Deno.serve(async (req: Request) => {
