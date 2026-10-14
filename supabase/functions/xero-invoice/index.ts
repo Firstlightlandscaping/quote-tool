@@ -79,7 +79,10 @@ function at() {
     async get(table: string, id: string, byName = false) {
       const r = await fetch(url(table, `/${id}${byName ? "" : "?returnFieldsByFieldId=true"}`), { headers: H });
       if (r.status === 404) return null;
-      if (!r.ok) throw new Error(`Airtable read ${table}: HTTP ${r.status} ${(await r.text()).slice(0, 160)}`);
+      const text = r.ok ? "" : await r.text();
+      // a deleted / unknown record id comes back as 403 INVALID_PERMISSIONS_OR_MODEL_NOT_FOUND — treat as "not found"
+      if (r.status === 403 && /MODEL_NOT_FOUND/.test(text)) return null;
+      if (!r.ok) throw new Error(`Airtable read ${table}: HTTP ${r.status} ${text.slice(0, 160)}`);
       return await r.json();
     },
     async patch(table: string, id: string, fields: Record<string, unknown>) {   // never typecast
