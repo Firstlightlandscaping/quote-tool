@@ -20,11 +20,11 @@
 //   * one LineItem, LineAmountTypes Inclusive, UnitAmount = Amount (VAT-inclusive £) so the
 //     invoice Total = the row's Amount to the penny; TaxType OUTPUT2; AccountCode 205 for a
 //     design invoice (DC- contract, or the task's Action Type "Design Invoice"), else 200
-//   * deposit / interim → AUTHORISED; completion → DRAFT; create is idempotent (Idempotency-Key
-//     = paymentId, so a double press cannot make two invoices)
-//   * interim is emailed BY XERO; completion is NOT numbered on the row (the office emails the
-//     PDF from Gmail and types the number/date — that closes the task); Invoice Sent is never
-//     ticked here (the CRM rule does that)
+//   * every kind → AUTHORISED (completion was DRAFT until 14/10); create is idempotent
+//     (Idempotency-Key = paymentId, so a double press cannot make two invoices)
+//   * interim is emailed BY XERO; completion is NOT emailed and gets NO Invoice Date on the row
+//     (the office emails the PDF from Gmail and types the date — number + date closes the
+//     task); Invoice Sent is never ticked here (the CRM rule does that)
 //   * never typecast, field ids as keys; attachments APPEND (uploadAttachment), never replace
 //
 // Secrets: XERO_CLIENT_ID, XERO_CLIENT_SECRET, CRM_XERO_KEY, AIRTABLE_SYNC_TOKEN, AIRTABLE_BASE_ID.
@@ -46,7 +46,7 @@ const CARD = {
   addressName: "Address", postcodeName: "Postcode",
 };
 const XERO = "https://api.xero.com/api.xro/2.0/";
-const XERO_STATUS = { unpaid: "Unpaid", draft: "Draft" };   // exact single-select strings (never typecast)
+const XERO_STATUS = { unpaid: "Unpaid" };   // exact single-select string (never typecast)
 
 type Reply = { ok: boolean; message: string; invoiceNumber?: string; invoiceId?: string; contactId?: string };
 const json = (status: number, body: Reply) =>
@@ -268,7 +268,7 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
   const theme = await brandingTheme();
   const today = londonDate();
   const due = kind === "deposit" ? today : londonDate(new Date(Date.now() + 2 * 86400_000));
-  const status = kind === "completion" ? "DRAFT" : "AUTHORISED";
+  const status = "AUTHORISED";   // every kind, since 14/10 (completion was DRAFT)
 
   const payload = { Invoices: [{
     Type: "ACCREC", Contact: { ContactID: contact.contactId }, Date: today, DueDate: due, Status: status,
@@ -289,12 +289,13 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
   const messages = {
     deposit: `Deposit invoice ${invLabel} created and approved in Xero (not emailed - the contract asks for the money).`,
     interim: `Invoice ${invLabel} created, approved and emailed by Xero to ${emailTo}.`,
-    completion: `Draft ${invLabel} created in Xero; PDF saved to the card's Documents. Approve it in Xero, email it from Gmail with the PDF, then type the number and date on the row.`,
+    completion: `Invoice ${invLabel} created and approved in Xero (not emailed). PDF saved to the card's Documents - send it from Gmail with the PDF, then type the invoice date on the row.`,
   } as Record<string, string>;
 
-  // write-back: ONE patch. Completion gets ids only (number/date typed by the office later).
-  const patch: Record<string, unknown> = { [P.xeroInvoiceId]: invoiceId, [P.xeroStatus]: kind === "completion" ? XERO_STATUS.draft : XERO_STATUS.unpaid, [P.xeroLastResult]: messages[kind] };
-  if (kind !== "completion") { patch[P.invoiceNumber] = digits; patch[P.invoiceDate] = today; }
+  // write-back: ONE patch. Completion gets NO Invoice Date (CRM, 14/10): the office types the
+  // date after emailing from Gmail — number + date together is what closes the CRM task.
+  const patch: Record<string, unknown> = { [P.xeroInvoiceId]: invoiceId, [P.xeroStatus]: XERO_STATUS.unpaid, [P.xeroLastResult]: messages[kind], [P.invoiceNumber]: digits };
+  if (kind !== "completion") patch[P.invoiceDate] = today;
   await A.patch(T.payments, paymentId, patch);
 
   if (kind === "interim") {
@@ -311,9 +312,9 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
       const r = await xero("Invoices/" + invoiceId, {}, "application/pdf");
       if (!r.ok) throw new Error(xeroErrorText(r.status, await r.text()));
       const pdf = b64(new Uint8Array(await r.arrayBuffer()));
-      await A.upload(cardId, CARD.documents, `${invoiceNumber || "INV-draft"} draft.pdf`, "application/pdf", pdf);
+      await A.upload(cardId, CARD.documents, `${invoiceNumber || "INV-" + digits}.pdf`, "application/pdf", pdf);
     } catch (e) {
-      const msg = `Draft ${invLabel} created in Xero but the PDF could not be saved to the card: ${(e as Error).message}. Download it from Xero by hand.`;
+      const msg = `Invoice ${invLabel} created and approved in Xero but the PDF could not be saved to the card: ${(e as Error).message}. Download it from Xero by hand.`;
       await A.patch(T.payments, paymentId, { [P.xeroLastResult]: msg }).catch(() => {});
       return json(200, { ok: false, message: msg, invoiceNumber, invoiceId, contactId: contact.contactId });
     }
