@@ -689,7 +689,8 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
             <div class="fg" style="flex:1"><label>Title (shown on quote)</label><input type="text" id="mc-desc" placeholder="e.g. Corten steel water bowl"></div>
           </div>
           <div class="mrow" style="margin-top:8px">
-            <div class="fg" style="flex:1"><label>Client description (shown on quote)</label><textarea id="mc-xdesc" rows="3" placeholder="Client-facing wording shown on the printed quote..." style="width:100%;resize:vertical"></textarea></div>
+            <div class="fg" style="flex:1"><label>Client description (shown on quote)</label><textarea id="mc-xdesc" rows="3" placeholder="Client-facing wording shown on the printed quote..." style="width:100%;resize:vertical"></textarea>
+              <label style="display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11px;font-weight:400;color:var(--i3);cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" id="mc-xdesc-cut" onchange="miscCutListPref(this.checked)" style="width:auto;margin:0"> Add each component to the client description (e.g. "2 × Fence post (each)")</label></div>
           </div>
           <div class="mrow" style="margin-top:10px">
             <div class="fg" style="width:70px"><label>Qty</label><input type="number" id="mc-qty" value="1" min="0.01" step="0.01"></div>
@@ -3271,7 +3272,15 @@ function addMplMaterialToMisc() {
 }
 
 // Append a line to the misc client description without ever deleting existing text.
+// Component lines on the client description are OFF by default (Neal 16/10 — they kept getting deleted,
+// or internal wording slipped onto the quote); the tick box under the description turns them on, and
+// the choice is remembered on this computer (Liam wants them).
+function miscCutListOn() { try { return localStorage.getItem('fl_misc_cutlist') === '1'; } catch (e) { return false; } }
+function miscCutListPref(on) { try { localStorage.setItem('fl_misc_cutlist', on ? '1' : '0'); } catch (e) {} }
+function miscCutListSync() { const cb = document.getElementById('mc-xdesc-cut'); if (cb) cb.checked = miscCutListOn(); }
 function appendMiscXdesc(text) {
+  const cb = document.getElementById('mc-xdesc-cut');
+  if (cb ? !cb.checked : !miscCutListOn()) return;
   const ta = document.getElementById('mc-xdesc');
   if (!ta || !text) return;
   const cur = ta.value;
@@ -3398,6 +3407,7 @@ function openMiscBuilder() {
   if (!df || !mb) return;
   df.style.display = 'none'; mb.style.display = '';
   const t = document.getElementById('add-line-title'); if (t) t.textContent = 'Add Custom Item';
+  miscCutListSync();   // tick box shows this computer's remembered choice (off unless set)
   // the old <details> ontoggle did this on open — keeps the two pickers populated
   if (typeof mcmFilterMpl === 'function') mcmFilterMpl();
   if (typeof mcdFilterDels === 'function') mcdFilterDels();
