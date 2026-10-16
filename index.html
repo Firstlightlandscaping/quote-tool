@@ -689,8 +689,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
             <div class="fg" style="flex:1"><label>Title (shown on quote)</label><input type="text" id="mc-desc" placeholder="e.g. Corten steel water bowl"></div>
           </div>
           <div class="mrow" style="margin-top:8px">
-            <div class="fg" style="flex:1"><label>Client description (shown on quote)</label><textarea id="mc-xdesc" rows="3" placeholder="Client-facing wording shown on the printed quote..." style="width:100%;resize:vertical"></textarea>
-              <label style="display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11px;font-weight:400;color:var(--i3);cursor:pointer;text-transform:none;letter-spacing:0"><input type="checkbox" id="mc-xdesc-cut" onchange="miscCutListPref(this.checked)" style="width:auto;margin:0"> Add each component to the client description (e.g. "2 × Fence post (each)")</label></div>
+            <div class="fg" style="flex:1"><label>Client description (shown on quote)</label><textarea id="mc-xdesc" rows="3" placeholder="Client-facing wording shown on the printed quote..." style="width:100%;resize:vertical"></textarea></div>
           </div>
           <div class="mrow" style="margin-top:10px">
             <div class="fg" style="width:70px"><label>Qty</label><input type="number" id="mc-qty" value="1" min="0.01" step="0.01"></div>
@@ -769,6 +768,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
           </div>
 
           <div style="margin-top:16px;padding-top:14px;border-top:1px solid var(--bd);display:flex;justify-content:flex-end;gap:8px;align-items:center">
+            <label style="margin-right:auto;display:flex;align-items:center;gap:7px;font-size:12px;font-weight:500;color:var(--i2);cursor:pointer;text-transform:none;letter-spacing:0" title="Ticked: each component is listed in the client description (e.g. &quot;2 × Fence post (each)&quot;) when you press + Add to Quote. Blank: the description stays exactly as you typed it."><input type="checkbox" id="mc-xdesc-cut" onchange="miscCutListPref(this.checked)" style="width:auto;margin:0"> Add these items to the quote description</label>
             <button type="button" class="btn btn-outline" onclick="closeMiscBuilder()" title="Discard this custom item and go back to adding deliverables (Esc)">Cancel</button>
             <button class="btn btn-primary" onclick="addMisc()" style="padding:11px 26px;font-size:14px">+ Add to Quote</button>
           </div>
@@ -3204,7 +3204,6 @@ function addDeliverableToMisc() {
       fromMpl: !!m.stockCode,   // has a stock code → price-list-sourced (supplier cost locked on edit)
       mplCode: m.stockCode || ''
     });
-    appendMiscXdesc(miscCutLine(qty, desc, unit));   // cutting-list line on the client description
     added++;
   });
   if (sel) sel.value = '';
@@ -3259,7 +3258,6 @@ function addMplMaterialToMisc() {
     mplCode: item.code
   });
   // Append a cutting-list line ("qty × name (unit)") to the client-facing description (never overwrite)
-  appendMiscXdesc(miscCutLine(qty, item.description || item.code, item.unit || 'item'));
   // Reset the picker
   sel.value = '';
   document.getElementById('mcm-qty').value = '';
@@ -3271,23 +3269,14 @@ function addMplMaterialToMisc() {
   toast('Added: ' + (item.description || item.code));
 }
 
-// Append a line to the misc client description without ever deleting existing text.
-// Component lines on the client description are OFF by default (Neal 16/10 — they kept getting deleted,
-// or internal wording slipped onto the quote); the tick box under the description turns them on, and
-// the choice is remembered on this computer (Liam wants them).
+// Component lines on the client description are OFF by default (Neal 16/10 — they kept getting
+// deleted, or internal wording slipped onto the quote). The tick box beside "+ Add to Quote" decides
+// at that moment: ticked = every component in the list is added as "qty × name (unit)" under the
+// typed description; blank = the description stays exactly as typed. The choice is remembered on
+// this computer (Liam wants it on).
 function miscCutListOn() { try { return localStorage.getItem('fl_misc_cutlist') === '1'; } catch (e) { return false; } }
 function miscCutListPref(on) { try { localStorage.setItem('fl_misc_cutlist', on ? '1' : '0'); } catch (e) {} }
 function miscCutListSync() { const cb = document.getElementById('mc-xdesc-cut'); if (cb) cb.checked = miscCutListOn(); }
-function appendMiscXdesc(text) {
-  const cb = document.getElementById('mc-xdesc-cut');
-  if (cb ? !cb.checked : !miscCutListOn()) return;
-  const ta = document.getElementById('mc-xdesc');
-  if (!ta || !text) return;
-  const cur = ta.value;
-  if (!cur) ta.value = text;
-  else if (cur.endsWith('\n')) ta.value = cur + text;
-  else ta.value = cur + '\n' + text;
-}
 // Format a component as a cutting-list line for the client description: "2 × Fence post (each)".
 function miscCutLine(qty, name, unit) { return (qty||0) + ' × ' + (name||'') + (unit ? ' (' + unit + ')' : ''); }
 
@@ -3310,9 +3299,6 @@ function saveMiscComponent() {
     miscComponents[editingCompIdx] = comp;
   } else {
     miscComponents.push(comp);
-    // Mirror the price-list picker: add a cutting-list line ("qty × name (unit)") to the
-    // client-facing description (never overwrites existing text).
-    appendMiscXdesc(miscCutLine(comp.qty, desc, comp.unit));
   }
   resetMiscCompForm();
   renderMiscComponents();
@@ -3460,7 +3446,11 @@ function addMisc() {
     const what = pendingManual ? '"' + pendingManual + '"' : 'a selected component';
     if (!confirm('You have ' + what + ' typed/selected in the components section but NOT added to this item (press "+ Add component" / "+ Add material" first).\n\nOK = add the misc item WITHOUT it (discard it)\nCancel = go back')) return;
   }
-  const xdesc = document.getElementById('mc-xdesc').value.trim()||desc;
+  let xdesc = document.getElementById('mc-xdesc').value.trim();
+  const cutCb = document.getElementById('mc-xdesc-cut');
+  if (cutCb && cutCb.checked && miscComponents.length)
+    xdesc = [xdesc, miscComponents.map(c => miscCutLine(c.qty, c.desc, c.unit)).join('\n')].filter(Boolean).join('\n');
+  xdesc = xdesc || desc;
   const qty = parseFloat(document.getElementById('mc-qty').value)||1;
   const matCost = parseFloat(document.getElementById('mc-mat').value)||0;
   const days = parseFloat(document.getElementById('mc-days').value)||0;
