@@ -3269,12 +3269,12 @@ function addMplMaterialToMisc() {
   toast('Added: ' + (item.description || item.code));
 }
 
-// Component lines on the client description are OFF by default (Neal 16/10 — they kept getting
-// deleted, or internal wording slipped onto the quote). The tick box beside "+ Add to Quote" decides
-// at that moment: ticked = every component in the list is added as "qty × name (unit)" under the
-// typed description; blank = the description stays exactly as typed. The choice is remembered on
-// this computer (Liam wants it on).
-function miscCutListOn() { try { return localStorage.getItem('fl_misc_cutlist') === '1'; } catch (e) { return false; } }
+// Component lines on the client description (Neal 16/10). The tick box beside "+ Add to Quote"
+// decides at that moment: ticked = every component in the list is added as "qty × name (unit)"
+// under the typed description; blank = the description stays exactly as typed. TICKED by default
+// (a forgotten tick can't be undone, a deleted line can); unticking is remembered on this computer
+// for every later item, so Neal unticks once and Liam's stays as it always was.
+function miscCutListOn() { try { return localStorage.getItem('fl_misc_cutlist') !== '0'; } catch (e) { return true; } }
 function miscCutListPref(on) { try { localStorage.setItem('fl_misc_cutlist', on ? '1' : '0'); } catch (e) {} }
 function miscCutListSync() { const cb = document.getElementById('mc-xdesc-cut'); if (cb) cb.checked = miscCutListOn(); }
 // Format a component as a cutting-list line for the client description: "2 × Fence post (each)".
