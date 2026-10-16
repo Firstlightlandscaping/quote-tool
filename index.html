@@ -3503,6 +3503,10 @@ function addTextNote() {
       <label style="font-size:11px;color:var(--i3);display:block;margin-bottom:3px">Note text</label>
       <textarea id="new-note-body" rows="6" placeholder="Type the note text shown on the printed quote..." style="width:100%;font-size:13px;padding:10px;border:1px solid var(--bd);border-radius:6px;font-family:inherit;line-height:1.5;resize:vertical;box-sizing:border-box"></textarea>
       <div style="display:flex;align-items:center;gap:8px;margin-top:14px">
+        <input type="checkbox" id="new-note-opt" style="cursor:pointer">
+        <label for="new-note-opt" style="cursor:pointer;font-weight:400;font-size:12px;color:var(--i2)">Optional extra — print it under the totals with the optional extras</label>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
         <input type="checkbox" id="new-note-save-template" style="cursor:pointer">
         <label for="new-note-save-template" style="cursor:pointer;font-weight:400;font-size:12px;color:var(--i2)">Save as template for future quotes</label>
       </div>
@@ -3528,8 +3532,9 @@ async function saveNewNote() {
   const head = (document.getElementById('new-note-head').value||'').trim();
   const body = (document.getElementById('new-note-body').value||'').trim();
   const saveTpl = document.getElementById('new-note-save-template');
+  const optCb = document.getElementById('new-note-opt');
   if (!head && !body) { toast('Enter a heading or note text'); return; }
-  pushLine({code:'',name:head,xdesc:body,notes:'',qty:0,unitPrice:0,matCost:0,labDays:0,labRate:0,labTotal:0,vat:0,optional:false,misc:false,note:true,unit:'',materials:[]});
+  pushLine({code:'',name:head,xdesc:body,notes:'',qty:0,unitPrice:0,matCost:0,labDays:0,labRate:0,labTotal:0,vat:0,optional:!!(optCb && optCb.checked),misc:false,note:true,unit:'',materials:[]});
   const dlg = document.getElementById('new-note-dialog');
   if (dlg) dlg.remove();
   toast('Text note added');
@@ -3917,7 +3922,7 @@ function setOptMode(id, mode) {
 // extras (they are not contracted work).
 function renderOptExtras() {
   const box = document.getElementById('opt-extras'); if (!box) return;
-  const extras = lines.filter(l => l.optional && !l.optionHidden && !l.groupMember && !l.note && !l.discount);
+  const extras = lines.filter(l => l.optional && !l.optionHidden && !l.groupMember && !l.discount);   // text notes too (16/10) — no price
   if (!extras.length) { box.style.display = 'none'; box.innerHTML = ''; return; }
   box.style.display = '';
   // Same layout as a works-table row: bold name + description on the left, the ex-VAT amount
@@ -3925,6 +3930,7 @@ function renderOptExtras() {
   // convention, so the document reads as one piece (Neal, 28/09: no purple, no tiny grey text).
   box.innerHTML = '<table class="opt-ex-table"><thead><tr><th>Optional extras — not included in the total above, priced individually</th><th class="r">Amount GBP</th></tr></thead><tbody>' +
     extras.map(l => {
+      if (l.note) return `<tr><td>${l.name ? '<div class="l-name">' + cwEsc(l.name) + '</div>' : ''}${l.xdesc ? '<div class="l-xdesc">' + cwEsc(l.xdesc) + '</div>' : ''}</td><td class="r opt-ex-amt"></td></tr>`;
       const ex = effectiveAmt(l), inc = ex * (1 + (l.vat || 0) / 100);
       return `<tr><td><div class="l-name">${cwEsc(l.name)}</div>${(l.xdesc && l.xdesc !== l.name) ? '<div class="l-xdesc">' + cwEsc(l.xdesc) + '</div>' : ''}</td><td class="r opt-ex-amt">£${ex.toFixed(2)}${l.vat ? ' <span class="opt-ex-inc">(£' + inc.toFixed(2) + ' inc VAT)</span>' : ''}</td></tr>`;
     }).join('') + '</tbody></table>';
@@ -3971,11 +3977,31 @@ function upXdesc(id,v) {
 
 // Optional bold heading for a text note (stored in l.name, printed via .l-name). Patches the
 // print-only heading div live and hides it when blank, so a note can be plain text or headed.
+// Optional text note (16/10): same "optional" flag as a priced line (saved in quote_lines.optional,
+// no schema change). In the builder the row turns purple; on the printout it leaves the list
+// (print CSS hides .lt tr.opt-row; the contract's cloneWorksTable strips it) and prints in the
+// optional extras block under the totals, price column blank. Never "hidden", never priced.
+function noteBannerHtml(l) {
+  return l.optional
+    ? '<div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#6D28D9;margin-bottom:4px">📝 Text note · optional extra <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--i3)">— prints under the totals, not in this list</span></div>'
+    : '<div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#B45309;margin-bottom:4px">📝 Text note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--i3)">— prints as text, not counted in totals</span></div>';
+}
+function setNoteOptional(id, on) {
+  const l = lines.find(x => x.id === id); if (!l || !l.note) return;
+  l.optional = !!on; l.optionHidden = false;
+  isDirty = true;
+  const tr = document.querySelector(`#lines-body tr[data-line-id="${id}"]`);
+  if (tr) { tr.classList.toggle('opt-row', l.optional); tr.style.background = l.optional ? '#FAF5FF' : '#FFFBEB'; }
+  const b = document.getElementById('note-banner-' + id); if (b) b.innerHTML = noteBannerHtml(l);
+  renderOptExtras();
+  toast(l.optional ? 'Note moved to the optional extras under the totals' : 'Note back in the main list');
+}
 function upNoteHead(id,v) {
   const l=lines.find(x=>x.id===id);
   if(!l) return;
   l.name=v;
   isDirty=true;
+  if (l.optional) renderOptExtras();
   const headDiv = document.getElementById('note-head-print-'+id);
   if (headDiv) { headDiv.textContent = v; headDiv.style.display = v ? '' : 'none'; }
 }
@@ -4130,18 +4156,19 @@ function renderLines() {
       const esc = s => (s||'').replace(/</g,'&lt;').replace(/>/g,'&gt;');
       const headText = esc(l.name);   // optional bold heading (stored in name)
       const bodyText = esc(l.xdesc);  // body text (stored in xdesc)
-      rendered += `<tr draggable="true" data-drag-id="${l.id}" data-drag-group="" data-line-id="${l.id}" style="background:#FFFBEB">
+      rendered += `<tr draggable="true" data-drag-id="${l.id}" data-drag-group="" data-line-id="${l.id}"${l.optional ? ' class="opt-row"' : ''} style="background:${l.optional ? '#FAF5FF' : '#FFFBEB'}">
         <td class="no-print" style="vertical-align:middle;padding:0 2px"><div class="drag-handle" title="Drag to reorder"><svg viewBox="0 0 10 16"><circle cx="3" cy="2.5" r="1.2"/><circle cx="7" cy="2.5" r="1.2"/><circle cx="3" cy="6.5" r="1.2"/><circle cx="7" cy="6.5" r="1.2"/><circle cx="3" cy="10.5" r="1.2"/><circle cx="7" cy="10.5" r="1.2"/><circle cx="3" cy="14.5" r="1.2"/><circle cx="7" cy="14.5" r="1.2"/></svg></div></td>
         <td class="no-print" style="vertical-align:middle"><div class="mv"><button onclick="mvUp(${l.id})">▲</button><button onclick="mvDn(${l.id})">▼</button></div></td>
         <td class="no-print" style="vertical-align:middle"><button class="del-btn" onclick="rmLine(${l.id})">×</button></td>
         <td style="min-width:200px">
           <div class="no-print">
-            <div style="font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#B45309;margin-bottom:4px">📝 Text note <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--i3)">— prints as text, not counted in totals</span></div>
+            <div id="note-banner-${l.id}">${noteBannerHtml(l)}</div>
             <input type="text" id="note-head-${l.id}" value="${(l.name||'').replace(/"/g,'&quot;')}" onchange="upNoteHead(${l.id},this.value)" placeholder="Optional bold heading (leave blank for plain text)..." style="font-size:12px;font-weight:600;color:var(--i1);border:1px dashed var(--bd);width:100%;padding:5px 7px;border-radius:4px;margin-bottom:4px">
             <div style="display:flex;align-items:flex-start;gap:4px">
               <textarea id="xdesc-input-${l.id}" onchange="upXdesc(${l.id},this.value)" placeholder="Note text shown on the printed quote..." rows="2" style="font-size:12px;color:var(--i1);border:1px dashed var(--bd);flex:1;font-family:inherit;line-height:1.5;resize:vertical;padding:5px 7px;border-radius:4px">${bodyText}</textarea>
               <button onclick="openXdescModal(${l.id})" style="background:none;border:1px solid var(--bd);border-radius:3px;cursor:pointer;font-size:10px;padding:2px 5px;color:var(--i3);white-space:nowrap" title="Expand editor">⤢</button>
             </div>
+            <label style="display:flex;align-items:center;gap:6px;margin-top:5px;font-size:11px;color:var(--i2);cursor:pointer"><input type="checkbox" ${l.optional ? 'checked' : ''} onchange="setNoteOptional(${l.id},this.checked)" style="width:auto;margin:0"> Optional extra — prints under the totals with the optional extras, not in this list</label>
           </div>
           <!-- PRINT ONLY: same structure as a deliverable row — bold heading (.l-name, hidden when
                blank) + body (.l-xdesc, hidden when blank). Both patched live by upNoteHead/upXdesc. -->
