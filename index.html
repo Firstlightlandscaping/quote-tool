@@ -3257,7 +3257,6 @@ function addMplMaterialToMisc() {
     fromMpl: true,              // provenance: came from the price list (Option 1) — supplier cost is locked on edit
     mplCode: item.code
   });
-  // Append a cutting-list line ("qty × name (unit)") to the client-facing description (never overwrite)
   // Reset the picker
   sel.value = '';
   document.getElementById('mcm-qty').value = '';
@@ -3393,7 +3392,7 @@ function openMiscBuilder() {
   if (!df || !mb) return;
   df.style.display = 'none'; mb.style.display = '';
   const t = document.getElementById('add-line-title'); if (t) t.textContent = 'Add Custom Item';
-  miscCutListSync();   // tick box shows this computer's remembered choice (off unless set)
+  miscCutListSync();   // tick box shows this computer's remembered choice (ticked unless unticked here before)
   // the old <details> ontoggle did this on open — keeps the two pickers populated
   if (typeof mcmFilterMpl === 'function') mcmFilterMpl();
   if (typeof mcdFilterDels === 'function') mcdFilterDels();
@@ -3965,8 +3964,6 @@ function upXdesc(id,v) {
   }
 }
 
-// Optional bold heading for a text note (stored in l.name, printed via .l-name). Patches the
-// print-only heading div live and hides it when blank, so a note can be plain text or headed.
 // Optional text note (16/10): same "optional" flag as a priced line (saved in quote_lines.optional,
 // no schema change). In the builder the row turns purple; on the printout it leaves the list
 // (print CSS hides .lt tr.opt-row; the contract's cloneWorksTable strips it) and prints in the
@@ -3986,6 +3983,8 @@ function setNoteOptional(id, on) {
   renderOptExtras();
   toast(l.optional ? 'Note moved to the optional extras under the totals' : 'Note back in the main list');
 }
+// Optional bold heading for a text note (stored in l.name, printed via .l-name). Patches the
+// print-only heading div live and hides it when blank, so a note can be plain text or headed.
 function upNoteHead(id,v) {
   const l=lines.find(x=>x.id===id);
   if(!l) return;
