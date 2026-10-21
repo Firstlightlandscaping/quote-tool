@@ -85,6 +85,8 @@ textarea{resize:vertical;min-height:50px}
 .l-xdesc{font-size:11px;color:var(--i2);line-height:1.5;margin-top:2px;font-weight:400;white-space:pre-line}
 .xd-inline{font-size:11px;color:var(--i2);border:1px dashed var(--bd);flex:1;font-family:inherit;line-height:1.4;padding:3px 5px;border-radius:3px;resize:none;overflow:hidden;height:24px;min-height:24px;box-sizing:border-box;background:var(--sf)}
 .l-notes{font-size:11px;color:var(--i3);line-height:1.4;margin-top:2px;font-style:italic}
+/* Component notes (21/10): multi-line so a pasted cutting list keeps its line breaks; grows with its content (compNotesGrow) */
+textarea.comp-notes{width:100%;box-sizing:border-box;font-family:inherit;font-size:12px;line-height:1.45;resize:vertical;min-height:38px;max-height:320px}
 .l-lab{font-size:10px;background:#F0FDF4;border:1px solid #BBF7D0;border-radius:3px;padding:2px 6px;color:#15803D;display:inline-block;margin-top:3px}
 .l-opt{font-size:9px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:#6D28D9;background:#EDE9FE;padding:1px 5px;border-radius:3px;margin-right:4px;cursor:pointer;user-select:none}
 .l-opt:hover{background:#DDD6FE}
@@ -756,7 +758,7 @@ body.sp-dragging .sp-newtask-zone{border-color:#86EFAC;color:#15803D;animation:s
                   <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="mcc-url" placeholder="https://..."></div>
                 </div>
                 <div style="margin-bottom:8px">
-                  <div class="fg" style="margin:0"><label style="font-size:11px">Notes</label><input type="text" id="mcc-notes" placeholder="e.g. check availability, order 2 weeks ahead..."></div>
+                  <div class="fg" style="margin:0"><label style="font-size:11px">Notes <span style="font-weight:400;color:var(--i3);text-transform:none;letter-spacing:0">(internal — paste a list, line breaks are kept)</span></label><textarea id="mcc-notes" class="comp-notes" rows="2" placeholder="e.g. check availability, order 2 weeks ahead..."></textarea></div>
                 </div>
                 <div style="display:flex;gap:6px;justify-content:flex-end">
                   <button class="btn btn-outline btn-sm" onclick="resetMiscCompForm()">Clear</button>
@@ -2777,7 +2779,7 @@ function showLineCompDialog(lineId, compIdx) {
       </div>
       <div class="fg" style="margin-bottom:16px">
         <label>Notes</label>
-        <input type="text" id="lcd-notes" value="${(c.notes||'').replace(/"/g,'&quot;')}" placeholder="e.g. order 2 weeks ahead">
+        <textarea id="lcd-notes" class="comp-notes" rows="${Math.min(14, Math.max(2, String(c.notes||'').split('\n').length + 1))}" placeholder="e.g. order 2 weeks ahead">${cwEsc(c.notes||'')}</textarea>
       </div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn btn-outline" onclick="document.getElementById('line-comp-dialog').remove()">Cancel</button>
@@ -2949,7 +2951,7 @@ function addComponentToLine(lineId) {
           <div class="fg" style="margin:0"><label style="font-size:11px">Supplier URL</label><input type="text" id="aclc-url" placeholder="https://..."></div>
         </div>
         <div style="margin-bottom:8px">
-          <div class="fg" style="margin:0"><label style="font-size:11px">Notes</label><input type="text" id="aclc-notes" placeholder="e.g. check availability, order 2 weeks ahead..."></div>
+          <div class="fg" style="margin:0"><label style="font-size:11px">Notes <span style="font-weight:400;color:var(--i3);text-transform:none;letter-spacing:0">(internal — paste a list, line breaks are kept)</span></label><textarea id="aclc-notes" class="comp-notes" rows="2" placeholder="e.g. check availability, order 2 weeks ahead..."></textarea></div>
         </div>
         <div style="display:flex;justify-content:flex-end"><button class="btn btn-primary btn-sm" onclick="aclcAddManual(${lineId})">+ Add component</button></div>
       </div>
@@ -3110,7 +3112,7 @@ function aclcAddManual(lineId) {
     // no fromMpl flag — manual component, supplier cost stays editable
   });
   // Clear the manual form and keep the dialog open
-  ['aclc-desc','aclc-unit','aclc-supplier','aclc-url','aclc-notes'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['aclc-desc','aclc-unit','aclc-supplier','aclc-url','aclc-notes'].forEach(id => { const el=document.getElementById(id); if(el) { el.value=''; el.style.height=''; } });
   const q=document.getElementById('aclc-qty'); if(q) q.value='1';
   const c=document.getElementById('aclc-cost'); if(c) c.value='0';
   const ch=document.getElementById('aclc-charged'); if(ch) ch.value='0.00';
@@ -3306,7 +3308,7 @@ function saveMiscComponent() {
 
 // Clear the manual component form back to its empty state (form is always visible now).
 function resetMiscCompForm() {
-  ['mcc-desc','mcc-unit','mcc-supplier','mcc-url','mcc-notes'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['mcc-desc','mcc-unit','mcc-supplier','mcc-url','mcc-notes'].forEach(id => { const el=document.getElementById(id); if(el) { el.value=''; el.style.height=''; } });
   const q=document.getElementById('mcc-qty'); if(q) q.value='1';
   const c=document.getElementById('mcc-cost'); if(c) c.value='0';
   const ch=document.getElementById('mcc-charged'); if(ch) ch.value='0.00';
@@ -3346,7 +3348,7 @@ function renderMiscComponents() {
         <div style="font-size:11px;color:var(--i3);display:flex;align-items:center;gap:8px;flex-wrap:wrap">
           ${c.supplier ? `<span>Supplier: ${cwEsc(c.supplier)}</span>` : ''}
           ${c.url ? `<a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Order link</a>` : ''}
-          ${c.notes ? `<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.textContent=this.textContent.includes('▶')?'📝 Notes ▼':'📝 Notes ▶'" style="background:none;border:none;cursor:pointer;font-size:10px;color:var(--i3);padding:0">📝 Notes ▶</button><div style="display:none;font-size:11px;color:var(--i2);font-style:italic;width:100%;margin-top:2px">${c.notes}</div>` : ''}
+          ${c.notes ? `<button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.textContent=this.textContent.includes('▶')?'📝 Notes ▼':'📝 Notes ▶'" style="background:none;border:none;cursor:pointer;font-size:10px;color:var(--i3);padding:0">📝 Notes ▶</button><div style="display:none;font-size:11px;color:var(--i2);font-style:italic;width:100%;margin-top:2px;white-space:pre-line">${cwEsc(c.notes)}</div>` : ''}
         </div>
       </div>
       <div style="display:flex;gap:4px">
@@ -3369,7 +3371,7 @@ function editMiscComponent(idx) {
 // manual fields). Without this, text typed into them lingered invisibly after
 // "+ Add to Quote" and greeted the NEXT misc item (2026-07-10 bug).
 function resetMiscEntryForms() {
-  ['mcc-desc','mcc-unit','mcc-supplier','mcc-url','mcc-notes','mcd-search','mcm-search'].forEach(id => { const el=document.getElementById(id); if(el) el.value=''; });
+  ['mcc-desc','mcc-unit','mcc-supplier','mcc-url','mcc-notes','mcd-search','mcm-search'].forEach(id => { const el=document.getElementById(id); if(el) { el.value=''; el.style.height=''; } });
   const q=document.getElementById('mcc-qty'); if(q) q.value='1';
   const c=document.getElementById('mcc-cost'); if(c) c.value='0';
   const ch=document.getElementById('mcc-charged'); if(ch) ch.value='0.00';
@@ -3930,6 +3932,10 @@ function renderOptExtras() {
 // includedRaj Green…" on QT-0075/0083/0090). It grows while you edit and shrinks back on blur.
 function xdGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 220) + 'px'; ta.style.overflowY = ta.scrollHeight + 2 > 220 ? 'auto' : 'hidden'; }
 function xdShrink(ta) { ta.style.height = ''; ta.style.overflowY = 'hidden'; }
+// Component notes boxes (21/10) grow with what's typed or pasted (CSS max-height then scrolls).
+// They were <input type="text">, which silently dropped every line break of a pasted cutting list.
+function compNotesGrow(ta) { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 2, 320) + 'px'; }
+document.addEventListener('input', e => { const t = e.target; if (t && t.classList && t.classList.contains('comp-notes')) compNotesGrow(t); });
 function upXdesc(id,v) {
   const l=lines.find(x=>x.id===id);
   if(!l) return;
@@ -4016,7 +4022,7 @@ function miscRowCompsHtml(l) {
                 ${c.cost ? `<div style="color:var(--i3)">Supplier: £${(c.supplierCost!==undefined?c.supplierCost:c.cost/1.1).toFixed(2)} · Charged: £${(+c.cost).toFixed(2)}/unit · Total: £${(c.qty*c.cost).toFixed(2)}</div>` : ''}
                 ${c.supplier ? `<div style="color:var(--i3)">Supplier: ${cwEsc(c.supplier)}</div>` : ''}
                 ${c.url ? `<div><a href="${safeUrl(c.url)}" target="_blank" rel="noopener noreferrer" style="color:var(--br)">🔗 Supplier link</a></div>` : ''}
-                ${c.notes ? `<div style="color:var(--i2);font-style:italic">${cwEsc(c.notes)}</div>` : ''}
+                ${c.notes ? `<div style="color:var(--i2);font-style:italic;white-space:pre-line">${cwEsc(c.notes)}</div>` : ''}
               </div>
             `).join('');
 }
