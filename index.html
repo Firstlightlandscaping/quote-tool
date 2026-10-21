@@ -243,6 +243,12 @@ tr.dragging td{background:var(--brp)!important}
   .qdoc{box-shadow:none;border:none}
   .tot-wrap,.tot-inner,.tot-row,.disclaim{break-inside:avoid;page-break-inside:avoid}
   .lt td,.lt th{padding:6px 10px}
+  /* Page-break fix (21/10, QT-0127 / QT-0132): Chrome can split a cell's TEXT across pages but not
+     its bottom PADDING, so a long line that fits on the page except for those last 6px was pushed
+     WHOLE to the next page, leaving a big gap. The 6px now sits on the content block inside the
+     cell instead — every printed row keeps exactly the same height (measured), only the break moves. */
+  .lt td{padding-bottom:0}
+  .lt td .print-only{padding-bottom:6px}
   .lt th.no-print,.lt td.no-print{display:none!important;width:0!important;min-width:0!important;max-width:0!important;padding:0!important;margin:0!important;border:none!important;overflow:hidden!important}
   .lt td input,.lt td select{display:none!important}
   td input{border:none!important;background:transparent!important}
