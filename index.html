@@ -5954,6 +5954,19 @@ function spSyncDeliveries(p) {
     row.alloc = row.alloc || [];
     delete row._drift;
   });
+  // A quote line that has LEFT the quote — deleted, or set to Optional extra / Hidden option —
+  // orders nothing, so its share comes off every delivery automatically, splits kept intact
+  // (2026-10-23, Neal's QT-0054: the hidden turf left 5,357 kg of grit on two split GH Brooks
+  // drops + a £0 "Mark turf" ghost, all flagged). Unambiguous, unlike a qty change, which still
+  // flags drift because the app can't know which drop the difference belongs to. Added items
+  // (lineId -1) are never touched.
+  if (lines.length) {
+    const live = new Set(lines.filter(l => !l.optional && !l.note && !l.discount).map(l => Number(l.id)));
+    p.deliveries.forEach(row => {
+      const kept = row.alloc.filter(a => !(Number(a.lineId) > 0) || live.has(Number(a.lineId)));
+      if (kept.length !== row.alloc.length) { row.alloc = kept; spDirty = true; }
+    });
+  }
   Object.keys(atoms).forEach(s => {
     if (!atoms[s].length) return;
     const rows = p.deliveries.filter(d => d.supplier === s);
