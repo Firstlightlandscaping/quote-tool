@@ -5979,6 +5979,27 @@ function spSyncDeliveries(p) {
       const fresh = atoms[s].map(a => ({ ...a }));
       if (JSON.stringify(rows[0].alloc) !== JSON.stringify(fresh)) { rows[0].alloc = fresh; spDirty = true; }
     } else {
+      // Material that NO drop of this split supplier holds at all — a line brought back into
+      // the quote (Optional/Hidden → Included), a newly added line, a new component — used to
+      // sit in the order total on no delivery: missing from every ☰ list and never pushed to
+      // TeamGantt, only a drift flag (Neal 26/10, QT-0054 turf). It now lands in ONE new
+      // delivery for this supplier, visible and undated; Neal moves it where he wants with
+      // ⑃ split (the emptied row then self-drops). A share that IS held somewhere but changed
+      // quantity is still only flagged below — the app can't know which drop it belongs to.
+      // Runs before the drift check so the new row's allocations count as held.
+      if (s !== SUP_UNASSIGNED) {
+        const held = new Set();
+        rows.forEach(r => r.alloc.forEach(a => held.add(a.lineId + '§' + a.key)));
+        const homeless = atoms[s].filter(a => a.qty > 0.0005 && !held.has(a.lineId + '§' + a.key));
+        if (homeless.length) {
+          let id = Date.now() + Math.floor(Math.random() * 1000);
+          while (p.deliveries.some(d => String(d.id) === String(id))) id++;
+          const nr = { id, supplier: s, label: s + ' — added to the quote', date: '', alloc: homeless.map(a => ({ ...a })) };
+          p.deliveries.splice(p.deliveries.lastIndexOf(rows[rows.length - 1]) + 1, 0, nr);
+          rows.push(nr);
+          spDirty = true;
+        }
+      }
       const sum = {}, truth = {};
       rows.forEach(r => r.alloc.forEach(a => { const k = a.lineId + '§' + a.key; sum[k] = (sum[k] || 0) + a.qty; }));
       atoms[s].forEach(a => { truth[a.lineId + '§' + a.key] = a.qty; });
