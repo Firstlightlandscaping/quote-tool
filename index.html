@@ -4785,6 +4785,34 @@ function spStockSpend() {
 // supplier OVERRIDES applied (plan.supplierOverrides = { itemKey: supplier }).
 // Overrides are plan-scope ONLY — the Price Manager, quote and Order List never
 // see them; they exist so unassigned materials can be bucketed for the push.
+// ── Plan memory of WHICH quote lines are planned (Neal 26/10, variations after planning) ──
+// p.seenLines: line ids already planned (set at the end of every sync). A line not in it is
+// NEW: its material goes into its own new delivery and it is never covered by an older edit.
+// e.lineQtys (+ e.lineQtysFor): per-line result of a whole-order qty edit, so hiding/deleting
+// a line takes its share out of the edit instead of the edit re-dealing it to other lines.
+// Older plans have neither: seed them ONCE from the saved plan itself — the lines its
+// deliveries/tasks/edits already reference — so a quote changed since the plan was last
+// saved is read against what was actually planned (QT-0054: the hidden lawn turf's 95 m²
+// edit stays bound to that line, not to the new edge turf).
+let spLastSeen = null, spLastEditLines = {};
+function spSeedPlanMemory(p) {
+  if (!p || !Array.isArray(p.deliveries) || Array.isArray(p.seenLines)) return;
+  const seen = new Set();
+  p.deliveries.forEach(r => (r.alloc || []).forEach(a => { if (Number(a.lineId) > 0) seen.add(Number(a.lineId)); }));
+  (p.tasks || []).forEach(t => (t.srcLineIds || []).forEach(id => { if (Number(id) > 0) seen.add(Number(id)); }));
+  Object.values(p.matEdits || {}).forEach(e => Object.keys((e && e.srcQtys) || {}).forEach(id => { if (Number(id) > 0) seen.add(Number(id)); }));
+  p.seenLines = [...seen];
+  Object.keys(p.matEdits || {}).forEach(key => {
+    const e = p.matEdits[key];
+    if (!e || e.srcQtys || e.lineQtys || e.qty == null || key.indexOf('extra:') === 0) return;
+    const per = {}; let tot = 0;
+    p.deliveries.forEach(r => (r.alloc || []).forEach(a => {
+      if (a.key === key && Number(a.lineId) > 0) { per[a.lineId] = Math.round(((per[a.lineId] || 0) + a.qty) * 1000) / 1000; tot += a.qty; }
+    }));
+    // only when the saved deliveries hold exactly the edited figure (no stock/remove/moves muddying it)
+    if (Object.keys(per).length && Math.abs(tot - e.qty) < 0.01) { e.lineQtys = per; e.lineQtysFor = e.qty; }
+  });
+}
 function spRollup() {
   const rollup = buildSupplierRollup({ matOverrides: true });
   const p = schedulePlan || {};
@@ -4812,6 +4840,17 @@ function spRollup() {
   // 3. material edits: plan-scope qty/desc/unit overrides (quote & Order List untouched).
   //    Qty scales the sources proportionally so existing splits keep their ratios.
   const edits = p.matEdits || {};
+  // An edit only ever covers the quote lines it was made on (Neal 26/10, QT-0054 variation):
+  // a line added to the quote AFTER planning ("new" = not in p.seenLines) keeps its own quote
+  // quantity on top of the edit — before, the 1,400 kg of grit on a new edge-turf line was
+  // swallowed by an old 8,000 kg grit edit, and a 95 m² turf edit made for the (now hidden)
+  // 90 m² lawn was applied to 20 m² of edge turf. Plans without seenLines (legacy, before the
+  // first sync) treat every line as planned, i.e. exactly the old behaviour.
+  spSeedPlanMemory(p);
+  const seenSet = Array.isArray(p.seenLines) ? new Set(p.seenLines.map(Number)) : null;
+  const isNewSrc = src => !!seenSet && Number(src.lineId) > 0 && !seenSet.has(Number(src.lineId));
+  spLastSeen = seenSet;
+  spLastEditLines = {};
   rollup.forEach(s => s.items.forEach(it => {
     const e = edits[it.key];
     if (!e) return;
@@ -4821,9 +4860,15 @@ function spRollup() {
     // plan-scope supplier-link override (e.g. specified product out of stock — point THIS
     // job at a substitute without touching the price list); empty = keep the mpl link
     if (e.url) { it.rawUrl = it.url; it.url = e.url; }
-    if (e.qty != null && it.totalQty > 0 && (e.qty !== it.totalQty || e.srcQtys)) {
+    // Per-line memory of a WHOLE-ORDER edit (lineQtys, valid only while e.qty is the figure it
+    // was recorded for) makes it behave like srcQtys: a line taken out takes its share with it.
+    const lineMem = e.srcQtys || ((e.lineQtys && e.lineQtysFor === e.qty) ? e.lineQtys : null);
+    const oldSrcs = it.sources.filter(src => !isNewSrc(src));
+    const freshQty = it.sources.filter(isNewSrc).reduce((s, x) => s + x.qty, 0);
+    const oldTot = freshQty ? Math.round(oldSrcs.reduce((s, x) => s + x.qty, 0) * 1000) / 1000 : it.totalQty;
+    if (e.qty != null && it.totalQty > 0 && oldSrcs.length && (e.qty !== oldTot || lineMem)) {
       const raw = it.totalQty;
-      if (e.srcQtys) {
+      if (lineMem) {
         // Row-scoped edits (2026-08-13, Neal's ballast case) remember EXACT per-source
         // quantities — a "this drop gets 2000" edit must not be re-dealt greedily, or
         // the change lands on whichever source pile happens to be largest.
@@ -4834,10 +4879,10 @@ function spRollup() {
         // proportions; assigning it to every source multiplied the order (Neal's
         // cement, 2026-08-13: editing a drop to 16 bags read as 48 → chip said 121).
         const byLine = {};
-        it.sources.forEach(src => { (byLine[src.lineId] = byLine[src.lineId] || []).push(src); });
+        oldSrcs.forEach(src => { (byLine[src.lineId] = byLine[src.lineId] || []).push(src); });
         Object.keys(byLine).forEach(lid => {
           const group = byLine[lid];
-          const target = e.srcQtys[lid] != null ? e.srcQtys[lid] : 0;
+          const target = lineMem[lid] != null ? lineMem[lid] : 0;
           const cur = group.reduce((s, x) => s + x.qty, 0);
           let left = target;
           group.forEach((src, gi) => {
@@ -4853,14 +4898,19 @@ function spRollup() {
         // Distribute the new total across the sources GREEDILY (largest first), not
         // proportionally — an edit of 3.5→3 over sources 2.5+1 becomes 2+1, never
         // 2.143+0.857 (Neal's grab case, 2026-07-17). The cost scales with the total.
-        const after = spGreedyQtys(it.sources.map(src => src.qty), e.qty);
-        it.sources.forEach((src, i) => { src.qty = after[i]; });
-        it.totalQty = e.qty;
+        // (only over the lines the edit covers — new lines keep their own quantity on top)
+        const after = spGreedyQtys(oldSrcs.map(src => src.qty), e.qty);
+        oldSrcs.forEach((src, i) => { src.qty = after[i]; });
+        it.totalQty = freshQty ? Math.round((e.qty + freshQty) * 1000) / 1000 : e.qty;
       }
       const f = it.totalQty / raw;
       it.totalCost = it.totalQty * (it.unitPrice || 0);
       it.supCost = (it.supCost || 0) * f;
     }
+    // Remember what this edit now gives each line (new lines at their quote figure), so
+    // spSyncDeliveries can fold newly planned lines into the edit's per-line memory.
+    const mem = spLastEditLines[it.key] = spLastEditLines[it.key] || {};
+    it.sources.forEach(src => { if (Number(src.lineId) > 0) mem[src.lineId] = Math.round(((mem[src.lineId] || 0) + src.qty) * 1000) / 1000; });
     it.edited = true;
   }));
   // 3b. supplier re-sourcing (plan-scope, quote and Price Manager untouched) — TWO grains:
@@ -5941,7 +5991,9 @@ function spDefaultDeliveries() {
 // - a SPLIT supplier is never silently rewritten: mismatches get a drift flag + reset offer
 // - suppliers with atoms but no row get a fresh row (e.g. new material/supplier on the quote)
 function spSyncDeliveries(p) {
+  const hadRows = (p.deliveries || []).some(d => d.supplier !== SUP_UNASSIGNED);
   const atoms = spAtoms();
+  const editNow = spLastEditLines, seenNow = spLastSeen;   // from the rollup spAtoms() just ran
   delete p.seededLineIds; // legacy — grey-out is now derived from task links
   p.deliveries = p.deliveries || [];
   p.deliveries.forEach(row => {
@@ -5954,12 +6006,23 @@ function spSyncDeliveries(p) {
     row.alloc = row.alloc || [];
     delete row._drift;
   });
-  // A quote line that has LEFT the quote — deleted, or set to Optional extra / Hidden option —
-  // orders nothing, so its share comes off every delivery automatically, splits kept intact
-  // (2026-10-23, Neal's QT-0054: the hidden turf left 5,357 kg of grit on two split GH Brooks
-  // drops + a £0 "Mark turf" ghost, all flagged). Unambiguous, unlike a qty change, which still
-  // flags drift because the app can't know which drop the difference belongs to. Added items
-  // (lineId -1) are never touched.
+  // ── Deliveries follow the quote (Neal 26/10/2026, variations after planning) ─────────────
+  // "If I hide or delete things they should be removed from whichever delivery they're on;
+  //  if I add things they go to their own new delivery at the bottom, never mixed with
+  //  existing ones, so I can drag them where I want." Rules, per supplier:
+  //  1. a quote line that has LEFT the quote (deleted / Optional extra / Hidden option) orders
+  //     nothing — its share comes off every delivery (f954dc3);
+  //  2. material a line no longer orders from this supplier (component swapped or removed,
+  //     qty 0, supplier changed) comes off too;
+  //  3. a material sitting on exactly ONE delivery follows the quote's quantity (unambiguous);
+  //  4. material NO delivery of this supplier holds — a new line, a new/swapped component, a
+  //     line switched back on — goes to ONE new undated "<supplier> — added to the quote"
+  //     delivery at the bottom (Neal drags it where he wants with ⑃ split; emptied rows drop);
+  //  5. a material SPLIT across several deliveries whose total changed is only flagged —
+  //     the app can't know which drop the difference belongs to.
+  // Placement actions (stock/restore, supplier moves, assigning, added items) place their
+  // material onto drops BEFORE rendering, so they are already held when this runs.
+  // The Unassigned bucket keeps its old behaviour: one derived row mirroring its items.
   if (lines.length) {
     const live = new Set(lines.filter(l => !l.optional && !l.note && !l.discount).map(l => Number(l.id)));
     p.deliveries.forEach(row => {
@@ -5967,45 +6030,66 @@ function spSyncDeliveries(p) {
       if (kept.length !== row.alloc.length) { row.alloc = kept; spDirty = true; }
     });
   }
+  const newRow = (s, alloc) => {
+    let id = Date.now() + Math.floor(Math.random() * 1000);
+    while (p.deliveries.some(d => String(d.id) === String(id))) id++;
+    const label = s === SUP_UNASSIGNED ? spUnRowDefaults().label : (hadRows ? s + ' — added to the quote' : s);
+    const row = { id, supplier: s, label, date: '', alloc };
+    const ui = p.deliveries.findIndex(d => d.supplier === SUP_UNASSIGNED);
+    if (s !== SUP_UNASSIGNED && ui >= 0) p.deliveries.splice(ui, 0, row); else p.deliveries.push(row);   // the bottom
+    spDirty = true;
+    return row;
+  };
+  const kOf = a => a.lineId + '§' + a.key;
   Object.keys(atoms).forEach(s => {
     if (!atoms[s].length) return;
     const rows = p.deliveries.filter(d => d.supplier === s);
-    if (!rows.length) {
-      const row = { id: Date.now() + Math.floor(Math.random() * 1000), supplier: s, label: s === SUP_UNASSIGNED ? spUnRowDefaults().label : s, date: '', alloc: atoms[s].map(a => ({ ...a })) };
-      const ui = p.deliveries.findIndex(d => d.supplier === SUP_UNASSIGNED);
-      if (s !== SUP_UNASSIGNED && ui >= 0) p.deliveries.splice(ui, 0, row); else p.deliveries.push(row);
-      spDirty = true;
-    } else if (rows.length === 1) {
+    if (!rows.length) { newRow(s, atoms[s].map(a => ({ ...a }))); return; }
+    if (s === SUP_UNASSIGNED && rows.length === 1) {
       const fresh = atoms[s].map(a => ({ ...a }));
       if (JSON.stringify(rows[0].alloc) !== JSON.stringify(fresh)) { rows[0].alloc = fresh; spDirty = true; }
-    } else {
-      // Material that NO drop of this split supplier holds at all — a line brought back into
-      // the quote (Optional/Hidden → Included), a newly added line, a new component — used to
-      // sit in the order total on no delivery: missing from every ☰ list and never pushed to
-      // TeamGantt, only a drift flag (Neal 26/10, QT-0054 turf). It now lands in ONE new
-      // delivery for this supplier, visible and undated; Neal moves it where he wants with
-      // ⑃ split (the emptied row then self-drops). A share that IS held somewhere but changed
-      // quantity is still only flagged below — the app can't know which drop it belongs to.
-      // Runs before the drift check so the new row's allocations count as held.
-      if (s !== SUP_UNASSIGNED) {
-        const held = new Set();
-        rows.forEach(r => r.alloc.forEach(a => held.add(a.lineId + '§' + a.key)));
-        const homeless = atoms[s].filter(a => a.qty > 0.0005 && !held.has(a.lineId + '§' + a.key));
-        if (homeless.length) {
-          let id = Date.now() + Math.floor(Math.random() * 1000);
-          while (p.deliveries.some(d => String(d.id) === String(id))) id++;
-          const nr = { id, supplier: s, label: s + ' — added to the quote', date: '', alloc: homeless.map(a => ({ ...a })) };
-          p.deliveries.splice(p.deliveries.lastIndexOf(rows[rows.length - 1]) + 1, 0, nr);
-          rows.push(nr);
-          spDirty = true;
-        }
-      }
-      const sum = {}, truth = {};
-      rows.forEach(r => r.alloc.forEach(a => { const k = a.lineId + '§' + a.key; sum[k] = (sum[k] || 0) + a.qty; }));
-      atoms[s].forEach(a => { truth[a.lineId + '§' + a.key] = a.qty; });
+      return;
+    }
+    const truth = {};
+    atoms[s].forEach(a => { truth[kOf(a)] = (truth[kOf(a)] || 0) + a.qty; });
+    // 2. drop what this supplier no longer supplies
+    rows.forEach(r => {
+      const kept = r.alloc.filter(a => (truth[kOf(a)] || 0) > 0.0005);
+      if (kept.length !== r.alloc.length) { r.alloc = kept; spDirty = true; }
+    });
+    // 3. single-holder materials follow the quote
+    const holders = {};
+    rows.forEach(r => r.alloc.forEach(a => { (holders[kOf(a)] = holders[kOf(a)] || new Set()).add(r); }));
+    Object.keys(holders).forEach(k => {
+      if (holders[k].size !== 1) return;
+      const r = [...holders[k]][0];
+      const frags = r.alloc.filter(a => kOf(a) === k);
+      const held = frags.reduce((x, a) => x + a.qty, 0);
+      if (Math.abs(held - truth[k]) <= 0.002) return;
+      const f = held > 0 ? truth[k] / held : 0;
+      let left = truth[k];
+      frags.forEach((a, i) => {
+        const v = i === frags.length - 1 ? Math.round(left * 1000) / 1000 : Math.round(a.qty * f * 1000) / 1000;
+        a.qty = v; left = Math.round((left - v) * 1000) / 1000;
+      });
+      spDirty = true;
+    });
+    // 4. anything no delivery holds → its own new delivery at the bottom
+    const homeless = atoms[s].filter(a => a.qty > 0.0005 && !holders[kOf(a)]);
+    if (homeless.length) rows.push(newRow(s, homeless.map(a => ({ ...a }))));
+    // 5. split materials whose total moved are flagged
+    if (rows.length > 1) {
+      const sum = {};
+      rows.forEach(r => r.alloc.forEach(a => { sum[kOf(a)] = (sum[kOf(a)] || 0) + a.qty; }));
       const drift = Object.keys({ ...sum, ...truth }).some(k => Math.abs((sum[k] || 0) - (truth[k] || 0)) > 0.002);
       if (drift) rows.forEach(r => r._drift = true);
     }
+  });
+  // Rows of a supplier that no longer appears at all (its material moved supplier or left the
+  // quote): what they hold isn't ordered from them any more — rule 2 — so they empty and go.
+  p.deliveries.forEach(row => {
+    if (atoms[row.supplier] || !row.alloc.length) return;
+    row.alloc = []; spDirty = true;
   });
   // A supplier whose EVERY item is stocked/removed (atoms exist but are empty): drop the
   // row — an empty delivery orders nothing. Since the row × was removed (2026-07-15) this
@@ -6013,16 +6097,11 @@ function spSyncDeliveries(p) {
   // an empty row can go.
   p.deliveries = p.deliveries.filter(row => {
     const a = atoms[row.supplier];
-    // Supplier absent from the rollup entirely (e.g. its only item moved to another
-    // supplier via the ✎ dialog): an EMPTY row of it is a shell — drop it. One still
-    // HOLDING allocations is kept for the stale-flag below, never silently deleted.
-    if (!a) { if (row.alloc.length) return true; spDirty = true; return false; }
-    if (!a.length) { spDirty = true; return false; }
+    if (!a || !a.length) { spDirty = true; return false; }
     // An emptied drop of a LIVE supplier is leftover scaffolding — everything in it was
     // split out, stocked, removed or re-sourced elsewhere (2026-08-13, Neal: an emptied
     // "GH Brooks — Build the decking" drop lingered at 0 items · £0 and looked like it
     // would push). Rows are derived from where materials live, so an empty delivery goes.
-    // Single-row suppliers can't reach here — the loop above refills their row from atoms.
     if (!row.alloc.length) { spDirty = true; return false; }
     return true;
   });
@@ -6035,10 +6114,28 @@ function spSyncDeliveries(p) {
     if (row.supplier === SUP_UNASSIGNED && !atoms[SUP_UNASSIGNED]) { spDirty = true; return false; }
     return true;
   });
-  // A REAL supplier row whose materials vanished (quote change): single rows empty out via
-  // auto-track above; anything left holding atoms for a vanished supplier is stale → flag it
-  // (deliberately a flag, not a rewrite — it may be a dated/split row the user built).
-  p.deliveries.forEach(row => { if (!atoms[row.supplier] && row.alloc.length) row._drift = true; });
+  // Edits learn newly planned lines at their quote figure, so the next render (when those
+  // lines count as planned) keeps them instead of folding them into the old edit.
+  Object.keys(p.matEdits || {}).forEach(key => {
+    const e = p.matEdits[key], now = editNow[key];
+    if (!e || !now || e.qty == null || key.indexOf('extra:') === 0) return;
+    const newIds = Object.keys(now).filter(lid => seenNow && !seenNow.has(Number(lid)));
+    if (e.srcQtys) {
+      if (!newIds.length) return;
+      newIds.forEach(lid => { e.srcQtys[lid] = now[lid]; });
+      e.qty = Math.round(Object.keys(now).reduce((x, lid) => x + (e.srcQtys[lid] || 0), 0) * 1000) / 1000;
+    } else {
+      if (e.lineQtys && e.lineQtysFor === e.qty && !newIds.length) return;
+      e.lineQtys = { ...now };
+      e.qty = e.lineQtysFor = Math.round(Object.values(now).reduce((x, v) => x + v, 0) * 1000) / 1000;
+    }
+    spDirty = true;
+  });
+  if (lines.length) {
+    const seenList = lines.filter(l => !l.optional && !l.note && !l.discount).map(l => Number(l.id)).sort((a, b) => a - b);
+    const prev = Array.isArray(p.seenLines) ? p.seenLines.map(Number).sort((a, b) => a - b) : null;
+    if (!prev || prev.join() !== seenList.join()) { p.seenLines = seenList; spDirty = true; }
+  }
   // Order (2026-07-16, Neal): DATED rows first sorted by date, undated after in their
   // existing order, Unassigned pinned last. Sorted in the PLAN (not just the display)
   // so the TeamGantt push order matches the screen. Array.sort is stable, so undated
