@@ -17,9 +17,11 @@
 //   * guards refuse plainly and create nothing: row missing · Paid by = Cash · Completed or
 //     Date Paid set · Xero Invoice ID already set ("Already in Xero (INV-n)") · Amount ≤ 0
 //   * nothing half-done: if the Xero create fails, nothing is written to Airtable
-//   * one LineItem, LineAmountTypes Inclusive, UnitAmount = Amount (VAT-inclusive £) so the
-//     invoice Total = the row's Amount to the penny; TaxType OUTPUT2; AccountCode 205 for a
-//     design invoice (DC- contract, or the task's Action Type "Design Invoice"), else 200
+//   * one LineItem per PART of the Milestone Name (a merged row "Completion of works: £100 +
+//     £50 extra paving" = two lines; an unmerged name = one line — see lineParts), Quantity 1,
+//     LineAmountTypes Inclusive, UnitAmount = the part's VAT-inclusive £, parts summing to the
+//     row's Amount to the penny (else one line as before); TaxType OUTPUT2; AccountCode 205 for
+//     a design invoice (DC- contract, or the task's Action Type "Design Invoice"), else 200
 //   * every kind → AUTHORISED (completion was DRAFT until 14/10); create is idempotent
 //     (Idempotency-Key = paymentId, so a double press cannot make two invoices)
 //   * interim is emailed BY XERO; completion is NOT emailed and gets NO Invoice Date on the row
@@ -230,6 +232,45 @@ function lineDescription(milestone: string): string {
   const d = milestone.replace(/:?\s*£[\s\S]*$/, "").trim();
   return d || "Payment";
 }
+// Merged payment rows → one line per part (CRM, 27/10/26). The CRM merges payments into ONE
+// row and keeps the breakdown in the NAME only, in a fixed shape:
+//   "Completion of works: £2,242.92 + £4,485.84 end of third week"      (Amount 6728.76)
+//   "Completion of works: £2,242.92 + £600 extra paving + £240 skip"    (Amount 3082.92)
+//   "End of third week: £4,922.90 + £500 extra fence"                   (Amount 5422.90)
+// Rule: strip a holdback suffix " - £… held back (…)" first (Amount is already net of it);
+// split on " + "; part 0 is "<stage>: £<amount>" or just "<stage>" — its description is the
+// stage as before, its amount the £ figure if present, else Amount minus the other parts;
+// every later part is "£<amount> <description>", first letter capitalised. Any later part
+// without a parsable £, or parts that don't add up to Amount to the penny → ONE line as
+// before. Never guess. A name with no " + " behaves exactly as before.
+type Part = { description: string; amount: number };
+const MONEY = /£\s*([\d,]+(?:\.\d+)?)/;
+const money = (s: string): number | null => {
+  const m = s.match(MONEY);
+  if (!m) return null;
+  const n = Number(m[1].replace(/,/g, ""));
+  return Number.isFinite(n) ? Math.round(n * 100) / 100 : null;
+};
+function lineParts(milestone: string, amount: number): Part[] {
+  const whole: Part[] = [{ description: lineDescription(milestone).replace(/\s*\+$/, "") || "Payment", amount }];
+  const name = milestone.replace(/\s+-\s+£[\s\S]*?held back[\s\S]*$/i, "").trim();
+  if (!/\s\+\s/.test(name)) return whole;
+  const bits = name.split(/\s+\+\s+/);
+  const later: Part[] = [];
+  let rest = 0;
+  for (let i = 1; i < bits.length; i++) {
+    const amt = money(bits[i]);
+    const desc = bits[i].replace(MONEY, "").trim();
+    if (amt == null || !desc) return whole;
+    later.push({ description: desc.charAt(0).toUpperCase() + desc.slice(1), amount: amt });
+    rest = Math.round((rest + amt) * 100) / 100;
+  }
+  const first = money(bits[0]);
+  const firstAmt = first != null ? first : Math.round((amount - rest) * 100) / 100;
+  if (!(firstAmt > 0)) return whole;
+  if (Math.abs(Math.round((firstAmt + rest) * 100) / 100 - amount) > 0.005) return whole;
+  return [{ description: lineDescription(bits[0]), amount: firstAmt }, ...later];
+}
 const invNumberDigits = (n: string) => n.replace(/^\s*INV-?/i, "").replace(/\D/g, "");
 // The Reference carries a SHORT stage (CRM, 14/10 — the full wording ran too long): the cleaned
 // line up to the first " — ", " - ", ":" or " (", trimmed, capped at 40 characters. The invoice
@@ -267,7 +308,8 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
   if (!contact.ok) return refuse(contact.message);
 
   const contractRef = str(f[P.contractRef]).trim();
-  const line = lineDescription(str(f[P.name]));
+  const parts = lineParts(str(f[P.name]), amount);   // one line per part of a merged row
+  const line = parts[0].description;
   const stage = refStage(line);
   const reference = contractRef ? `${stage} - ${contractRef}` : stage;
   // design invoice → 205: a DC- contract, or the task is a "Design Invoice" action
@@ -286,7 +328,7 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
   const payload = { Invoices: [{
     Type: "ACCREC", Contact: { ContactID: contact.contactId }, Date: today, DueDate: due, Status: status,
     LineAmountTypes: "Inclusive", Reference: reference, ...(theme ? { BrandingThemeID: theme } : {}),
-    LineItems: [{ Description: line, Quantity: 1, UnitAmount: amount, AccountCode: accountCode, TaxType: "OUTPUT2" }],
+    LineItems: parts.map(p => ({ Description: p.description, Quantity: 1, UnitAmount: p.amount, AccountCode: accountCode, TaxType: "OUTPUT2" })),
   }] };
   let inv: any;
   try {
