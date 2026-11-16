@@ -8523,7 +8523,7 @@ function sigBuildFrozenDoc(a, sig) {
   const clone = document.getElementById('contract-view').cloneNode(true);
   closeContract();
   const today = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
-  if (!sigStampCounter(clone, today, sig)) return null;
+  if (sig && !sigStampCounter(clone, today, sig)) return null;   // sig null (paper record, no company signature set up) = freeze unstamped
   const styles = Array.from(document.querySelectorAll('style')).map(s => s.textContent).join('\n');
   // Screen fixes for the frozen copy (print CSS already handles these when printing):
   // group rows must not carry the builder's blue highlight, and the signature cells'
@@ -8611,22 +8611,57 @@ async function sigMarkPaperSigned(ref) {
   // Kill any live online link — a paper-signed contract must not also be signable online.
   try { const rows = await sigFetchRows(ref); const act = rows.find(sigIsActive); if (act) await sigRevokeRow(act.id); }
   catch (e) { /* signing table unreachable — nothing to revoke */ }
-  a.cm.paperSigned = { date, recordedBy: (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || '', recordedAt: new Date().toISOString() };
+  const who = (typeof SESSION !== 'undefined' && SESSION && SESSION.email) || '';
+  const nowIso = new Date().toISOString();
+  a.cm.paperSigned = { date, recordedBy: who, recordedAt: nowIso };
   a.cm.status = 'Signed';
   try { await sigPersistCm(a); }
   catch (e) { toast('Could not save: ' + e.message); return; }
+  // A paper signature is a SIGNING EVENT, not a revoke (CRM, 16/11/26 — Richard Elam DC-0020:
+  // the revoke-only record left the card's Signed box unticked and the CRM's "not signed" task
+  // open). It writes a contract_signing row of status 'signed' with a paper signer (no token —
+  // there is no link to open), so the same contract_signed push an e-signature makes runs, and
+  // the CRM's nightly read of this table agrees with the card. The frozen document records WHAT
+  // was signed; the signed paper copy itself stays in the client's OneDrive folder.
+  let saved = null;
+  if (USE_SUPABASE) {
+    try {
+      let chosen = companySigns[0] || null;
+      try { const last = parseInt(localStorage.getItem('fl_countersig_last') || '', 10); chosen = companySigns.find(s => s.id === last) || chosen; } catch (e) {}
+      const doc = sigBuildFrozenDoc(a, chosen);
+      if (!doc) throw new Error('contract could not be frozen');
+      // signed_at = the date typed in the dialog (the CRM reads its date part); a signature dated
+      // today is stamped at the recording moment so it never post-dates its own CRM push.
+      const signedAt = date === nowIso.split('T')[0] ? nowIso : date + 'T12:00:00.000Z';
+      const row = {
+        quote_ref: ref, customer: a.customer || '', status: 'signed',
+        contract_html: doc, contract_hash: await sigSha256(doc),
+        terms_version: (a.cm && a.cm.termsVersion) || null,
+        signers: [{ name: a.customer || 'Client', method: 'paper', signed_at: signedAt, recorded_by: who, recorded_at: nowIso }],
+        sent_at: nowIso, signed_at: signedAt, created_by: who,
+        meta: { paper: true, recordedBy: who, recordedAt: nowIso }
+      };
+      const ins = await sb('POST', 'contract_signing', [row], '', true);
+      saved = (Array.isArray(ins) && ins[0]) || null;
+      if (saved) sigStatusMap[ref] = saved;   // so the CRM pending check sees it before the refresh lands
+    } catch (e) { toast('⚠ Paper signature recorded, but its signing record could not be written (' + e.message + ') — the CRM has not been told'); }
+  }
   removeSigDialog();
   await sigRefreshStatuses();   // repaints badges + the Contracts panel; paperSigned wins the derivation
   toast('✓ ' + ref + ' recorded as signed on paper');
+  if (saved) crmPushAuto(ref, 'contract_signed');   // Quotes row Signing Status signed + Signed date; card Contract Signed / Design Contract Signed ticked
 }
 async function sigUnmarkPaper(ref) {
   const a = sigRecordFor(ref);
   if (!a || !a.cm || !a.cm.paperSigned) return;
-  if (!confirm('Remove the paper-signed mark from ' + ref + '?\n\nThis does NOT restore any revoked online link.')) return;
+  if (!confirm('Remove the paper-signed mark from ' + ref + '?\n\nThis does NOT restore any revoked online link. The CRM is not told — untick the signed box on the card by hand.')) return;
   delete a.cm.paperSigned;
   a.cm.status = 'Generated';   // sigRefreshStatuses re-derives from any signing rows
   try { await sigPersistCm(a); }
   catch (e) { toast('Could not save: ' + e.message); return; }
+  // The paper signing row (if one was written) is revoked, not deleted — the record of the mistake stays.
+  try { const rows = await sigFetchRows(ref); const pr = rows.find(r => r.status === 'signed' && (r.signers || []).some(s => s.method === 'paper')); if (pr) await sigRevokeRow(pr.id); }
+  catch (e) { /* nothing to revoke */ }
   removeSigDialog();
   await sigRefreshStatuses();
   toast(ref + ' — paper-signed mark removed');
@@ -8865,7 +8900,7 @@ function sigBadge(ref) {
 async function sigRefreshStatuses() {
   if (!USE_SUPABASE) return;
   let rows;
-  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,status,sent_at,signed_at,expires_at&order=id'); }
+  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,status,sent_at,signed_at,expires_at,meta&order=id'); }   // meta: paper rows owe no contract_sent (crmPendingEvents)
   catch (e) { return; }                                        // table absent — feature not cut over yet
   sigStatusMap = {};
   rows.forEach(r => { sigStatusMap[r.quote_ref] = r; });       // ascending id → latest row wins
@@ -8936,14 +8971,22 @@ function sigInjectIntoDoc(doc, row) {
       audit.style.cssText = 'margin:26px 36px 10px;padding:12px 14px;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#475569;page-break-inside:avoid';
       // Keep this format in step with injectSignatures() in sign.html — the client's
       // copy and the office copy must read identically.
-      audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">Electronic signature record — ' + cwEsc(row.quote_ref) + '</div>' +
-        (row.sent_at ? '<div>Sent for signature: ' + sigDateTime(row.sent_at) + '</div>' : '') +
+      // A paper record (sigMarkPaperSigned) has no link, no evidence trail and no drawn image: say
+      // so plainly rather than dress it up as an e-signature. (sign.html never shows these rows —
+      // a paper signer has no token — so its injectSignatures needs no paper branch.)
+      const paper = (row.signers || []).some(s => s.method === 'paper');
+      audit.innerHTML = '<div style="font-weight:700;font-size:11px;margin-bottom:6px">' + (paper ? 'Signature record' : 'Electronic signature record') + ' — ' + cwEsc(row.quote_ref) + '</div>' +
+        (row.sent_at && !paper ? '<div>Sent for signature: ' + sigDateTime(row.sent_at) + '</div>' : '') +
         (row.signers || []).map(s => '<div>' + cwEsc(s.name) + ': ' +
-          (s.viewed_at ? 'opened ' + sigDateTime(s.viewed_at) + ' · ' : '') +
-          (s.signed_at ? 'signed ' + sigDateTime(s.signed_at) + (s.typed_name ? ' (' + (s.name_adopted ? 'confirmed name' : 'typed name') + ': ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed') +
+          (s.method === 'paper'
+            ? 'signed on a printed copy, ' + sigDateOnly(s.signed_at) + (s.recorded_by ? ' (recorded by ' + cwEsc(s.recorded_by) + (s.recorded_at ? ' on ' + sigDateOnly(s.recorded_at) : '') + ')' : '')
+            : (s.viewed_at ? 'opened ' + sigDateTime(s.viewed_at) + ' · ' : '') +
+              (s.signed_at ? 'signed ' + sigDateTime(s.signed_at) + (s.typed_name ? ' (' + (s.name_adopted ? 'confirmed name' : 'typed name') + ': ' + cwEsc(s.typed_name) + ')' : '') : 'not yet signed')) +
           '</div>').join('') +
         '<div id="esign-hash" style="margin-top:6px;color:#94a3b8"></div>' +
-        '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. Full evidence (date, time, network address, device) is held on record.</div>';
+        (paper
+          ? '<div style="color:#94a3b8">Signed on a printed copy of this document. The signed paper copy is held on file by First Light Landscaping.</div>'
+          : '<div style="color:#94a3b8">Signed electronically via the First Light Landscaping quoting system. Full evidence (date, time, network address, device) is held on record.</div>');
       sign.parentNode.insertBefore(audit, sign.nextSibling);
       sigSha256(row.contract_html).then(h => {
         const el = doc.getElementById('esign-hash');
@@ -9069,10 +9112,11 @@ function sdSentKey(r) { const rec = crmPushRec(r.quote_ref); return !!(rec && (r
 async function sdAutoAttach() {
   if (!USE_SUPABASE || sdBusy || document.body.classList.contains('designer-mode')) return;
   let rows;
-  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,status,signed_at&status=eq.signed&signed_at=gte.' + encodeURIComponent(sdAutoFrom()) + '&order=id'); }
+  try { rows = await sbAllPages('contract_signing', '?select=id,quote_ref,status,signed_at,meta&status=eq.signed&signed_at=gte.' + encodeURIComponent(sdAutoFrom()) + '&order=id'); }
   catch (e) { return; }
   const due = rows.filter(r => {
     if (sdFailed[r.id]) return false;
+    if (r.meta && r.meta.paper) return false;   // paper record: no drawn signature to show — the signed copy is on OneDrive, nothing to attach
     const rec = crmPushRec(r.quote_ref);
     return rec && rec.cardId && !sdSentKey(r);
   });
@@ -10108,7 +10152,8 @@ function crmPendingEvents(rec) {
   if (rec.cm && rec.cm.generatedAt && newer(rec.cm.generatedAt, 'contract_generated')) out.push('contract_generated');
   const sig = sigStatusMap[rec.ref];
   // Event 7: a live signing link (sent / viewed / signed) moves the card into the contract stage.
-  if (sig && sig.status !== 'revoked' && newer(sig.sent_at, 'contract_sent')) out.push('contract_sent');
+  // A paper signing record (meta.paper) was never a link: it owes only contract_signed.
+  if (sig && sig.status !== 'revoked' && !(sig.meta && sig.meta.paper) && newer(sig.sent_at, 'contract_sent')) out.push('contract_sent');
   if (sig && sig.status === 'signed' && newer(sig.signed_at, 'contract_signed')) out.push('contract_signed');
   return out;
 }
