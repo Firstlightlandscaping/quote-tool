@@ -6033,7 +6033,12 @@ function spSyncDeliveries(p) {
   const newRow = (s, alloc) => {
     let id = Date.now() + Math.floor(Math.random() * 1000);
     while (p.deliveries.some(d => String(d.id) === String(id))) id++;
-    const label = s === SUP_UNASSIGNED ? spUnRowDefaults().label : (hadRows ? s + ' — added to the quote' : s);
+    // "— added to the quote" only when the material comes from a quote line this plan has never
+    // seen (a genuinely new line). A row minted for other reasons — an Unassigned item assigned to
+    // a supplier with no delivery yet, a supplier move, a merge — keeps the plain supplier name
+    // (Neal, 16/11: Marcus Beale's "D tail and Ornamental trees — added to the quote" was neither).
+    const fromNewLine = hadRows && seenNow && alloc.some(a => Number(a.lineId) > 0 && !seenNow.has(Number(a.lineId)));
+    const label = s === SUP_UNASSIGNED ? spUnRowDefaults().label : (fromNewLine ? s + ' — added to the quote' : s);
     const row = { id, supplier: s, label, date: '', alloc };
     const ui = p.deliveries.findIndex(d => d.supplier === SUP_UNASSIGNED);
     if (s !== SUP_UNASSIGNED && ui >= 0) p.deliveries.splice(ui, 0, row); else p.deliveries.push(row);   // the bottom
