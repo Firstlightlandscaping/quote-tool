@@ -11084,10 +11084,12 @@ async function duplicateQuote(ref) {
   if (!(sq.lines || []).length) { toast(ref + ' has no lines to copy'); return; }
   // What is the copy? (Neal, 20/11/26 — the same three answers as at Send; replaced the
   // OK/Cancel "revised version" question, which superseded Liam's first option by mistake.)
-  // NOTHING is superseded here any more: the copy starts as a Draft and the original closes
-  // when the copy is marked Sent. Replacing = the copy's supersedes_ref (written by saveQuote);
-  // Alternative = both share option_group (written after the save); Separate job = the copy
-  // is not linked to this client's card.
+  // Replacing = the copy's supersedes_ref (written by saveQuote) AND the original is closed as
+  // Superseded RIGHT AFTER the copy saves (Neal 20/11, 2nd ruling — at Send the card stayed in
+  // Quote Sent for the week the revision was being worked on, so the CRM kept chasing the client
+  // about the OLD quote; now the card goes to Amendments, "revision owed", until the copy is
+  // sent). Alternative = both share option_group (written after the save); Separate job = the
+  // copy is not linked to this client's card.
   const srcStatus = sq.status || 'Draft';
   let rel = 'separate';
   if (!['Superseded', 'Merged', 'Estimate', 'Declined'].includes(srcStatus)) {
@@ -11141,8 +11143,11 @@ async function duplicateQuote(ref) {
       for (const r of [ref, newRef]) { await sqPatchRow(r, { option_group: grp }); const s = savedQuotes.find(x => x.ref === r); if (s) s.optionGroup = grp; }
     }
   } catch (e) { toast('⚠ Saved as ' + newRef + ', but its link to ' + ref + ' wasn\'t recorded (' + e.message + ') — you\'ll be asked again when it\'s marked Sent.'); renderSaved(); return; }
+  // Replacing: close the original NOW — only after the copy saved, so a failed save never
+  // supersedes anything (the 13/09 order). The dialog was the question, so no second confirm.
+  if (rel === 'replace') await updateQuoteStatus(ref, 'Superseded', { autoRevoke: true });
   renderSaved();
-  const how = { replace: ', replacing it when sent', option: ', an alternative option', separate: ', not linked to the CRM card — pick the new job\'s card' }[rel] || '';
+  const how = { replace: ', ' + ref + ' now Superseded', option: ', an alternative option', separate: ', not linked to the CRM card — pick the new job\'s card' }[rel] || '';
   toast('Saved as ' + newRef + ' (copy of ' + ref + how + ') — make your changes then Save Quote');
 }
 
@@ -11305,16 +11310,24 @@ function sqRelateDialog(ref, customer, open, live, mode) {
     const dup = mode === 'duplicate';
     const one = open.length === 1;
     const openNames = open.map(x => x.ref).join(', ');
-    const opt = (key, title, sub) => '<button class="sq-rel-opt" data-k="' + key + '" style="display:block;width:100%;text-align:left;background:white;border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-family:inherit">' +
-      '<div style="font-size:14px;font-weight:700;color:var(--i1)">' + title + '</div><div style="font-size:12px;color:var(--i2);margin-top:2px">' + sub + '</div></button>';
+    const opt = (key, title, sub, small) => '<button class="sq-rel-opt" data-k="' + key + '" style="display:block;width:100%;text-align:left;background:white;border:1px solid var(--bd);border-radius:8px;padding:10px 12px;margin-bottom:8px;cursor:pointer;font-family:inherit">' +
+      '<div style="font-size:14px;font-weight:700;color:var(--i1)">' + title + '</div><div style="font-size:12px;color:var(--i2);margin-top:2px">' + sub + '</div>' +
+      (small ? '<div style="font-size:11px;color:var(--i3);margin-top:3px">' + small + '</div>' : '') + '</button>';
+    // Duplicating as Replacing closes the original NOW (Neal 20/11, 2nd ruling); the way back
+    // is setting it to its old status again.
+    const dupReplaceSub = x => 'A new version of the same job. ' + cwEsc(x.ref) + ' is closed as Superseded now, and the card shows a revision is owed until you send this one.';
+    const dupReplaceSmall = x => 'Changed your mind? Set ' + cwEsc(x.ref) + ' back to ' + cwEsc(x.status || 'Draft') + '.';
     let opts = '';
     if (open.length) {
-      opts += opt('replace', one ? 'Replacing it' : 'Replacing them', 'A new version of the same job. ' + cwEsc(openNames) + (one ? ' is' : ' are') + ' closed as Superseded' + (dup ? ' when the copy is marked Sent.' : '.'));
+      opts += dup ? opt('replace', 'Replacing it', dupReplaceSub(open[0]), dupReplaceSmall(open[0]))
+                  : opt('replace', one ? 'Replacing it' : 'Replacing them', 'A new version of the same job. ' + cwEsc(openNames) + (one ? ' is' : ' are') + ' closed as Superseded.');
       opts += opt('option', 'An alternative option', 'The client chooses between them. All stay open; when one is accepted, the others close.');
     }
     // Only a LIVE job on the card: "Replacing it" = a re-quote of that job (the accepted quote
     // closes when this one is sent). Extra work on a running job is never a quote (Neal 20/11).
-    if (!open.length && live.length) opts += opt('replace', 'Replacing it — re-quote the job', 'A new version of ' + cwEsc(live.map(x => x.ref).join(', ')) + '\'s job. ' + cwEsc(live.map(x => x.ref).join(', ')) + (live.length === 1 ? ' is' : ' are') + ' closed as Superseded ' + (dup ? 'when the copy is marked Sent.' : 'once this is sent.'));
+    if (!open.length && live.length) opts += dup
+      ? opt('replace', 'Replacing it — re-quote the job', dupReplaceSub(live[0]), dupReplaceSmall(live[0]))
+      : opt('replace', 'Replacing it — re-quote the job', 'A new version of ' + cwEsc(live.map(x => x.ref).join(', ')) + '\'s job. ' + cwEsc(live.map(x => x.ref).join(', ')) + (live.length === 1 ? ' is' : ' are') + ' closed as Superseded once this is sent.');
     opts += opt('separate', 'A separate job — needs its own card', dup ? 'The copy is NOT linked to this client\'s card. Make the new job\'s card in the CRM, then pick it on the copy.'
                                                    : 'Not sent yet. Make the new job\'s card in the CRM, then pick it here.');
     const wrap = document.createElement('div');
@@ -11363,7 +11376,9 @@ async function sqRelateBeforeSend(q) {
   const others = savedQuotes.filter(x => x.ref !== q.ref && x.airtableCardId && x.airtableCardId === q.airtableCardId);
   // Already answered (at duplicate time, or a merge): the quotes this one replaces close after the send.
   let supersedeAfter = others.filter(x => replaces.includes(x.ref) && ['Draft', 'Sent', 'Accepted'].includes(x.status || 'Draft')).map(x => x.ref);
-  const unrelated = others.filter(x => !replaces.includes(x.ref) && !mates.has(x.ref));
+  // Quotes that REPLACE this one (its successors) are related too: setting a superseded
+  // original back to Sent ("changed your mind") must not ask about the copy that replaced it.
+  const unrelated = others.filter(x => !replaces.includes(x.ref) && !mates.has(x.ref) && !sqSupersedesList(x).includes(q.ref));
   const open = unrelated.filter(x => ['Draft', 'Sent'].includes(x.status || 'Draft'));
   const live = unrelated.filter(x => (x.status || '') === 'Accepted');
   // Closing an ACCEPTED quote that was answered EARLIER (at duplicate time) is a big step — say
