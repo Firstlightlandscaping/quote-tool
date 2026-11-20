@@ -6,7 +6,7 @@
 // as function secrets and never ship in the public page.
 //
 // Trigger: POST from the app (empty body). Returns:
-//   { cards: [{ id, name, phone, email, address, postcodeDistrict }] }
+//   { cards: [{ id, name, phone, email, address, postcode, postcodeDistrict, created }] }
 //
 // The view's FILTER decides who is quotable (Active + the quote/design lists) —
 // deliberately maintained in Airtable, not here, so changing who appears needs no
@@ -80,6 +80,10 @@ Deno.serve(async (req) => {
           address: f[F.address] || "",
           postcode: String(f[F.postcode] || "").trim(),
           postcodeDistrict: f[F.district] || "",
+          // the record's own created time (every Airtable record carries it — no field read):
+          // the picker shows "Nov 26" so an old job's card and a new enquiry's card for the
+          // same client can be told apart (Neal + CRM, 20/11/26)
+          created: r.createdTime || "",
         });
       }
       offset = data.offset || "";
