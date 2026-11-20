@@ -35,8 +35,6 @@
 //   * Quote relationships at Send (CRM + Neal, 20/11/26): a superseded Sent quote never goes
 //     to Amendments while another quote on the card is still Sent, or once our database holds
 //     its replacement as Sent/Accepted (order never matters); value recalculated there.
-//     Extra work on a live job (quotes.is_extra): never moves the card, never writes Quote
-//     Sent Date / Quote By, and has no contract (contract_generated blocks).
 //     On declined an EMPTY pool leaves the card's figure alone (CRM, 20/09/26) — no
 //     information is not zero, and pre-CRM cards hold a Trello value the push never owned
 //   * Quoted By omitted (and logged) unless it matches an option exactly
@@ -191,9 +189,9 @@ async function loadRecord(ref: string) {
     const packageCodes = (Array.isArray(row.lines) ? row.lines : []).map((l: any) => String((l && l.code) || "").trim().toUpperCase()).filter(Boolean);
     return { ref, isDesign, customer: row.customer || "", cardId: row.airtable_card_id || null, cm, crmPushed: row.crm_pushed || {},
              valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRefs: [] as string[], packageCodes,
-             optionGroup: null as string | null, isExtra: false };
+             optionGroup: null as string | null };
   }
-  const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,option_group,is_extra,contract_meta,last_pushed_at,crm_pushed`))[0];
+  const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,option_group,contract_meta,last_pushed_at,crm_pushed`))[0];
   if (!q) return null;
   const lines = await sbGet(`quote_lines?quote_ref=eq.${encodeURIComponent(ref)}&select=qty,unit_price,vat,group_id,group_member,is_note,is_discount,optional&limit=1000`);
   return { ref, isDesign, customer: q.customer || "", cardId: q.airtable_card_id || null, cm: q.contract_meta || null, crmPushed: q.crm_pushed || {},
@@ -203,7 +201,7 @@ async function loadRecord(ref: string) {
            // one ref (revision) or a comma list (merge) — mirrors sqSupersedesList() in index.html
            supersedesRefs: String(q.supersedes_ref || "").split(",").map((s: string) => s.trim()).filter(Boolean), packageCodes: [] as string[],
            // quote relationships at Send (CRM + Neal, 20/11/26) — see supabase/quote-options.sql
-           optionGroup: (q.option_group || null) as string | null, isExtra: !!q.is_extra };
+           optionGroup: (q.option_group || null) as string | null };
 }
 
 // ── Airtable ────────────────────────────────────────────────────────────────────
@@ -366,43 +364,9 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   // hand-added rows survive because the scope is this schedule's names only — and, since fix
   // #44, only rows whose Contract Ref is THIS quote's ref (another contract's row of the same
   // name, or a blank-ref hand-added row, is never deleted).
-  // EXTRA WORK's one payment row (CRM, 20/11/26): an Accepted extra has no contract, so nothing
-  // else would create its row and the money would rest on someone remembering the CRM's Add a
-  // payment form. ONE Manual / Standard row "Extra work: <ref> <short scope>" for its value inc
-  // VAT, stamped with its Contract Ref; matched on that ref + the "Extra work:" prefix (so a
-  // reworded scope never makes a second row). The CRM's "payments to sort" check lists it at
-  // completion. Declined → removeOwnRowsOrHold; superseded → deleteOwnPlanMilestones below.
-  const EXTRA_PREFIX = /^extra work:/i;
-  const extraMilestone = () => {
-    const first = String(rec.scope || "").split(/\n/).map(s => s.trim()).find(Boolean) || "";
-    const short = first.length > 50 ? first.slice(0, 50).replace(/\s+\S*$/, "") + "…" : first;
-    return `Extra work: ${ref}${short ? " " + short : ""}`;
-  };
-  const ensureExtraPayment = async () => {
-    const name = extraMilestone();
-    const amount = rec.valueInc;
-    const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
-    let mine: any = null;
-    for (const id of payIds) {
-      const p = await A.get(T.payments, id);
-      if (p && rowRef(p) === wantRef && EXTRA_PREFIX.test(String(p.fields[P.name] || "").trim())) { mine = p; break; }
-    }
-    if (!mine) {
-      plan.writes.push({ table: T.payments, op: "create", label: `Payment "${name}" £${amount} (Manual)`, fields: {
-        [P.name]: name, [P.card]: [cardId], [P.amount]: amount, [P.trigger]: "Manual", [P.terms]: "Standard", [P.contractRef]: wantRef } });
-      return;
-    }
-    const f = mine.fields;
-    if (paymentLocked(f) || str(f[P.invoiceNumber])) { plan.notes.push(`Payment "${str(f[P.name])}" is already invoiced / paid — left as it is`); return; }
-    const patch: Record<string, unknown> = {};
-    if (Math.abs(num(f[P.amount]) - amount) >= 0.005) patch[P.amount] = amount;
-    if (str(f[P.name]) !== name) patch[P.name] = name;
-    if (Object.keys(patch).length) plan.writes.push({ table: T.payments, op: "patch", id: mine.id, label: `Payment "${name}" → £${amount}`, fields: patch });
-    else plan.notes.push(`Payment "${name}" already up to date`);
-  };
   const deleteOwnPlanMilestones = async (why: string) => {
     const sched: any[] = rec.cm && Array.isArray(rec.cm.scheduleStructured) ? rec.cm.scheduleStructured : [];
-    if (!sched.length && !rec.isExtra) return;
+    if (!sched.length) return;
     const names = new Set(sched.map(e => String(e.label || "").trim().toLowerCase()).filter(Boolean));
     const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
     let otherRows = 0;
@@ -411,7 +375,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!p) continue;
       if (rowRef(p) !== wantRef) { otherRows++; continue; }
       const nm = String(p.fields[P.name] || "").trim();
-      if (!names.has(nm.toLowerCase()) && !(rec.isExtra && EXTRA_PREFIX.test(nm))) continue;
+      if (!names.has(nm.toLowerCase())) continue;
       if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
       plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (${why})`, fields: {} });
     }
@@ -564,13 +528,6 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       upsertRow(rowFieldsFull("Sent"), "Quotes row → Sent");   // Supersedes link added by upsertRow
       const all = statusAfter("Sent");
       cardPatch[CARD.quoteValue] = quoteValueFrom(all);
-      if (rec.isExtra) {
-        // EXTRA WORK on a live job (CRM e, 20/11): Quote Sent Date + Quote By belong to the main
-        // job (reports use them) and the card stays where the job is. No quote chase either —
-        // the CRM only chases cards in the quote columns.
-        plan.notes.push("Extra work on the job on this card — card not moved; Quote Sent Date and Quote By left as the main job's");
-        break;
-      }
       cardPatch[CARD.quoteSentDate] = rec.dateSent;
       cardQuoteBy();
       move(LIST.quoteSent, "quote sent");
@@ -670,11 +627,6 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       upsertRow(f, "Quotes row → Accepted");
       cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter("Accepted"));
-      if (rec.isExtra) {
-        plan.notes.push("Extra work on the job on this card — card not moved; Quote By left as the main job's");
-        await ensureExtraPayment();
-        break;
-      }
       cardQuoteBy();
       if (otherSent) plan.notes.push("Another quote on this card is still Sent — card stays put, chase continues");
       else move(LIST.accepted, "quote accepted");
@@ -703,10 +655,6 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     case "contract_generated": {
       const cm = rec.cm;
       if (!cm || !cm.generatedAt) throw new Error("No contract has been generated for " + ref);
-      // Extra work has no contract (CRM e, 20/11): its Project Value / Job Number would land on
-      // the MAIN job's card fields. Its payment goes in through the CRM's Add a payment form. The
-      // app refuses to generate one; this is the belt-and-braces stop.
-      if (rec.isExtra) { plan.blocked.push("This quote is extra work on a live job — it has no contract. Add its payment with the CRM's Add a payment form."); break; }
       const f: Record<string, unknown> = { [Q.contractGenerated]: dateOnly(cm.generatedAt) };
       if (rec.isDesign) { f[Q.status] = rec.status; f[Q.value] = rec.valueInc; }
       // A regenerate after the quote's price changed (CRM 08/10, ZZZ-QT-0102 case 2): the Quotes

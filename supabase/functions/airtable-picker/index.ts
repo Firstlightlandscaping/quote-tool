@@ -6,7 +6,7 @@
 // as function secrets and never ship in the public page.
 //
 // Trigger: POST from the app (empty body). Returns:
-//   { cards: [{ id, name, phone, email, address, postcode, postcodeDistrict, created }] }
+//   { cards: [{ id, name, phone, email, address, postcode, postcodeDistrict, created, list }] }
 //
 // The view's FILTER decides who is quotable (Active + the quote/design lists) —
 // deliberately maintained in Airtable, not here, so changing who appears needs no
@@ -35,6 +35,7 @@ const F = {
                                  // NEVER written to quotes.post; see the address split app-side)
   postcode: "fldxL0AQUgFbL5lr9", // Postcode (full, e.g. "LS8 1PA") — since 9 Oct most cards hold
                                  // it HERE and not in Address (CRM, 13/10); the app prefers it
+  list: "fldqEdoSsR6whYUXd",     // List (the card's column) — shown in the "is this quote for this job?" question (CRM, 20/11/26)
 };
 
 const CORS = {
@@ -84,6 +85,7 @@ Deno.serve(async (req) => {
           // the picker shows "Nov 26" so an old job's card and a new enquiry's card for the
           // same client can be told apart (Neal + CRM, 20/11/26)
           created: r.createdTime || "",
+          list: String(f[F.list] || ""),
         });
       }
       offset = data.offset || "";
