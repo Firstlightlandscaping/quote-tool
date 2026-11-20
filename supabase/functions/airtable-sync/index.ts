@@ -30,6 +30,13 @@
 //   * Declined: row only; the stage is never touched (archiving is a human tick)
 //   * Quote Value: Σ Accepted rows if any are Accepted, else Σ Sent rows ("follows the
 //     accepted quote"); recomputed on sent / accepted / declined, never on supersede.
+//     An OPTION SET (quotes.option_group) counts once, at its highest Sent option, and a
+//     quote's own Supersedes refs are left out of every figure it pushes (CRM, 20/11/26).
+//   * Quote relationships at Send (CRM + Neal, 20/11/26): a superseded Sent quote never goes
+//     to Amendments while another quote on the card is still Sent, or once our database holds
+//     its replacement as Sent/Accepted (order never matters); value recalculated there.
+//     Extra work on a live job (quotes.is_extra): never moves the card, never writes Quote
+//     Sent Date / Quote By, and has no contract (contract_generated blocks).
 //     On declined an EMPTY pool leaves the card's figure alone (CRM, 20/09/26) — no
 //     information is not zero, and pre-CRM cards hold a Trello value the push never owned
 //   * Quoted By omitted (and logged) unless it matches an option exactly
@@ -183,9 +190,10 @@ async function loadRecord(ref: string) {
     const cm = row.contract_meta || {};
     const packageCodes = (Array.isArray(row.lines) ? row.lines : []).map((l: any) => String((l && l.code) || "").trim().toUpperCase()).filter(Boolean);
     return { ref, isDesign, customer: row.customer || "", cardId: row.airtable_card_id || null, cm, crmPushed: row.crm_pushed || {},
-             valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRefs: [] as string[], packageCodes };
+             valueInc: round2(Number(cm.total) || 0), status: cm.status || "Generated", scope: null, dateSent: null, quotedBy: null, supersedesRefs: [] as string[], packageCodes,
+             optionGroup: null as string | null, isExtra: false };
   }
-  const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,contract_meta,last_pushed_at,crm_pushed`))[0];
+  const q = (await sbGet(`quotes?ref=eq.${encodeURIComponent(ref)}&select=ref,customer,status,status_changed_at,date,sign,summary_html,sum,airtable_card_id,supersedes_ref,option_group,is_extra,contract_meta,last_pushed_at,crm_pushed`))[0];
   if (!q) return null;
   const lines = await sbGet(`quote_lines?quote_ref=eq.${encodeURIComponent(ref)}&select=qty,unit_price,vat,group_id,group_member,is_note,is_discount,optional&limit=1000`);
   return { ref, isDesign, customer: q.customer || "", cardId: q.airtable_card_id || null, cm: q.contract_meta || null, crmPushed: q.crm_pushed || {},
@@ -193,7 +201,9 @@ async function loadRecord(ref: string) {
            scope: stripHtml(q.summary_html || q.sum || "") || null,
            dateSent: dateOnly(q.status_changed_at) || dateOnly(q.date), quotedBy: q.sign || null,
            // one ref (revision) or a comma list (merge) — mirrors sqSupersedesList() in index.html
-           supersedesRefs: String(q.supersedes_ref || "").split(",").map((s: string) => s.trim()).filter(Boolean), packageCodes: [] as string[] };
+           supersedesRefs: String(q.supersedes_ref || "").split(",").map((s: string) => s.trim()).filter(Boolean), packageCodes: [] as string[],
+           // quote relationships at Send (CRM + Neal, 20/11/26) — see supabase/quote-options.sql
+           optionGroup: (q.option_group || null) as string | null, isExtra: !!q.is_extra };
 }
 
 // ── Airtable ────────────────────────────────────────────────────────────────────
@@ -292,6 +302,31 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   }
   plan.quotesRow = { id: own ? own.id : null, status: own ? str(own.fields[Q.status]) : null, found: !!own, ref: wantRef };
   plan.siblings = rows.filter(r => r !== own).map(r => ({ ref: str(r.fields[Q.ref]) || "", status: str(r.fields[Q.status]), value: num(r.fields[Q.value]) }));
+
+  // Quote relationships (CRM + Neal, 20/11/26). Our database says which sibling quotes are
+  // ALTERNATIVE OPTIONS of one job (quotes.option_group) — Airtable has no such field — and
+  // which quote REPLACES this one (another quote's supersedes_ref lists this ref). Sibling refs
+  // carry the sandbox test prefix, so it is stripped before looking them up.
+  const plainRef = (r: string) => (refPrefix && r.startsWith(refPrefix) ? r.slice(refPrefix.length) : r).toUpperCase();
+  const optionGroupOf = new Map<string, string>();
+  {
+    const sibRefs = [...new Set(plan.siblings.map(s => plainRef(s.ref)).filter(r => /^QT-\d+$/.test(r)))];
+    if (sibRefs.length) {
+      const db = await sbGet(`quotes?ref=in.(${sibRefs.map(encodeURIComponent).join(",")})&select=ref,option_group`);
+      for (const d of db) if (d.option_group) optionGroupOf.set(String(d.ref).toUpperCase(), String(d.option_group));
+    }
+    if (rec.optionGroup) optionGroupOf.set(ref.toUpperCase(), rec.optionGroup);
+  }
+  // Quotes THIS quote replaces drop out of every figure it pushes (CRM b, 20/11): with
+  // "Replacing" the new quote's Sent push lands while the old row is still Sent in Airtable.
+  const replacedByThis = new Set(rec.supersedesRefs.map(r => r.toUpperCase()));
+  // This quote's replacement, if our database already holds it as Sent or Accepted (CRM d).
+  let replacement: { ref: string; status: string } | null = null;
+  if (!rec.isDesign) {
+    const cands = await sbGet(`quotes?supersedes_ref=ilike.*${encodeURIComponent(ref)}*&status=in.(Sent,Accepted)&select=ref,status,supersedes_ref`);
+    const hit = cands.find((c: any) => String(c.supersedes_ref || "").split(",").map((s: string) => s.trim().toUpperCase()).includes(ref.toUpperCase()));
+    if (hit) replacement = { ref: hit.ref, status: hit.status };
+  }
 
   // Supersedes link (multi): every original this quote replaces or combines that HAS a
   // Quotes row (by Ref). Resolved once, written on every write of this row — a revision's
@@ -396,17 +431,30 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     return `, Signing Status ${ss} → revoked`;
   };
   // Aggregates AFTER this event, from the Airtable rows + this row's new state.
-  const statusAfter = (newStatus: string | null) => {
-    const all = plan.siblings.map(s => ({ status: s.status, value: s.value, dateSent: null as string | null }));
-    if (newStatus) all.push({ status: newStatus, value: rec.valueInc, dateSent: rec.dateSent });
-    else if (own) all.push({ status: str(own.fields[Q.status]), value: num(own.fields[Q.value]), dateSent: null });
+  // Rows this quote replaces are left out (CRM b, 20/11) — they are on their way to Superseded.
+  type Agg = { ref: string; status: string | null; value: number; dateSent?: string | null };
+  const siblingAggs = (): Agg[] => plan.siblings
+    .filter(s => !replacedByThis.has(plainRef(s.ref)))
+    .map(s => ({ ref: plainRef(s.ref), status: s.status, value: s.value, dateSent: null }));
+  const statusAfter = (newStatus: string | null): Agg[] => {
+    const all = siblingAggs();
+    if (newStatus) all.push({ ref: ref.toUpperCase(), status: newStatus, value: rec.valueInc, dateSent: rec.dateSent });
+    else if (own) all.push({ ref: ref.toUpperCase(), status: str(own.fields[Q.status]), value: num(own.fields[Q.value]), dateSent: null });
     return all;
   };
-  const quoteValueFrom = (all: { status: string | null; value: number }[]) => {
+  // Σ Accepted if any is Accepted, else Σ Sent — where an OPTION SET (quotes.option_group)
+  // counts ONCE, at its highest open option (Neal + CRM a, 20/11: not the sum, no "likely").
+  const quoteValueFrom = (all: { ref?: string; status: string | null; value: number }[]) => {
     const acc = all.filter(a => a.status === "Accepted");
-    const pool = acc.length ? acc : all.filter(a => a.status === "Sent");
-    return round2(pool.reduce((s, a) => s + a.value, 0));
+    if (acc.length) return round2(acc.reduce((s, a) => s + a.value, 0));
+    const best = new Map<string, number>();
+    all.filter(a => a.status === "Sent").forEach((a, i) => {
+      const key = (a.ref && optionGroupOf.get(a.ref)) ? "set:" + optionGroupOf.get(a.ref) : "one:" + (a.ref || i);
+      best.set(key, Math.max(best.get(key) ?? -Infinity, a.value));
+    });
+    return round2([...best.values()].reduce((s, v) => s + v, 0));
   };
+  const poolHasValue = (all: { status: string | null }[]) => all.some(a => a.status === "Accepted" || a.status === "Sent");
   const cardPatch: Record<string, unknown> = {};
   // ignoreGuard: the supersede re-quote rule moves the card even from Contract Sent / the
   // pre-start JOBS columns (Neal + CRM, 05/09) — every other move respects the 12-list guard.
@@ -468,7 +516,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (Object.keys(rowF).length) plan.writes.push({ table: T.quotes, op: "patch", id: own.id, label: `Quotes row figures (£${num(own.fields[Q.value])} → £${rec.valueInc})`, fields: rowF });
       else plan.notes.push("Quotes row figures already match");
       // Quote Value from the Airtable rows, with THIS row at its new value and its own status.
-      const all = [...plan.siblings.map(s => ({ status: s.status, value: s.value })), { status: str(own.fields[Q.status]), value: rec.valueInc }];
+      const all = [...siblingAggs(), { ref: ref.toUpperCase(), status: str(own.fields[Q.status]), value: rec.valueInc }];
       cardPatch[CARD.quoteValue] = quoteValueFrom(all);
       if (resent) {
         cardPatch[CARD.quoteSentDate] = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/London" });
@@ -482,6 +530,13 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       upsertRow(rowFieldsFull("Sent"), "Quotes row → Sent");   // Supersedes link added by upsertRow
       const all = statusAfter("Sent");
       cardPatch[CARD.quoteValue] = quoteValueFrom(all);
+      if (rec.isExtra) {
+        // EXTRA WORK on a live job (CRM e, 20/11): Quote Sent Date + Quote By belong to the main
+        // job (reports use them) and the card stays where the job is. No quote chase either —
+        // the CRM only chases cards in the quote columns.
+        plan.notes.push("Extra work on the job on this card — card not moved; Quote Sent Date and Quote By left as the main job's");
+        break;
+      }
       cardPatch[CARD.quoteSentDate] = rec.dateSent;
       cardQuoteBy();
       move(LIST.quoteSent, "quote sent");
@@ -491,11 +546,29 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!own) return { skipped: `${ref} was never pushed to the CRM (no Quotes row) — an unsent option, nothing to do`, ref, event };
       const prior = str(own.fields[Q.status]);
       upsertRow({ [Q.status]: "Superseded" }, `Quotes row ${prior} → Superseded`);
+      const afterSup = statusAfter("Superseded");
+      let valueWritten = false;
+      const recalcValue = () => { if (poolHasValue(afterSup)) { cardPatch[CARD.quoteValue] = quoteValueFrom(afterSup); valueWritten = true; } };
       if (prior === "Sent" || prior === "Accepted") {
         if (otherAccepted) {
           // Options flow: the losing option goes; the re-check below concludes the story.
           plan.notes.push("Another quote on this card is Accepted — the job is won");
-          strandingCheck(statusAfter("Superseded"));
+          strandingCheck(afterSup);
+        } else if (replacement && !workStarted(list)) {
+          // ORDER NEVER MATTERS (CRM d, 20/11): our database already holds this quote's
+          // replacement as Sent or Accepted, so this is not a revision still owed — never
+          // Amendments, even when the replacement's own push hasn't landed yet. A replaced SENT
+          // quote leaves the card where the replacement put it; a replaced ACCEPTED quote (a
+          // re-quote after acceptance) moves to where the replacement stands, past the guard as
+          // the re-quote rule does, so either push order ends in the same column.
+          if (prior === "Sent") plan.notes.push(`Replaced by ${replacement.ref} (${replacement.status}) — card not moved to Amendments`);
+          else move(replacement.status === "Accepted" ? LIST.accepted : LIST.quoteSent, `accepted quote replaced by ${replacement.ref}, which is ${replacement.status}`, true);
+          recalcValue();
+        } else if (prior === "Sent" && otherSent) {
+          // Safety net (CRM Q5 + c, 20/11): another quote on this card is still out with the
+          // client, so the card stays put (not Amendments); the superseded figure drops out.
+          plan.notes.push("Another quote on this card is still Sent — card stays where it is (not Amendments)");
+          recalcValue();
         } else if (!workStarted(list)) {
           // Re-quote rule (Neal, 05/09): signed or paid makes no difference before work starts.
           move(LIST.amendments, prior === "Sent" ? "sent quote superseded — revision owed" : "accepted quote superseded — re-quote", true);
@@ -511,7 +584,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
           };
         }
       } else plan.notes.push(`Prior status ${prior} — card not moved`);
-      plan.notes.push("No financial write on supersede (figure stays until a replacement is sent)");
+      if (!valueWritten) plan.notes.push("No financial write on supersede (figure stays until a replacement is sent)");
       await deleteOwnPlanMilestones("superseded schedule, never invoiced");
       break;
     }
@@ -563,6 +636,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       upsertRow(f, "Quotes row → Accepted");
       cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter("Accepted"));
+      if (rec.isExtra) { plan.notes.push("Extra work on the job on this card — card not moved; Quote By left as the main job's"); break; }
       cardQuoteBy();
       if (otherSent) plan.notes.push("Another quote on this card is still Sent — card stays put, chase continues");
       else move(LIST.accepted, "quote accepted");
@@ -591,6 +665,10 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
     case "contract_generated": {
       const cm = rec.cm;
       if (!cm || !cm.generatedAt) throw new Error("No contract has been generated for " + ref);
+      // Extra work has no contract (CRM e, 20/11): its Project Value / Job Number would land on
+      // the MAIN job's card fields. Its payment goes in through the CRM's Add a payment form. The
+      // app refuses to generate one; this is the belt-and-braces stop.
+      if (rec.isExtra) { plan.blocked.push("This quote is extra work on a live job — it has no contract. Add its payment with the CRM's Add a payment form."); break; }
       const f: Record<string, unknown> = { [Q.contractGenerated]: dateOnly(cm.generatedAt) };
       if (rec.isDesign) { f[Q.status] = rec.status; f[Q.value] = rec.valueInc; }
       // A regenerate after the quote's price changed (CRM 08/10, ZZZ-QT-0102 case 2): the Quotes
