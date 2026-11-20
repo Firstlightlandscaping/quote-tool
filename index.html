@@ -10603,7 +10603,7 @@ function crmOpenPicker(target, ref) {
       '<h3 style="margin:0 0 4px">' + (isList ? 'Link ' + cwEsc(ref || '') + ' to a client' : 'Pick a client from the CRM') + '</h3>' +
       '<div style="font-size:12px;color:var(--i2);margin-bottom:8px">' + (isList
         ? 'Attaches the client\'s CRM card to this quote. The quote\'s own name and address are <strong>not changed</strong>.'
-        : 'Pick the client\'s card. You\'ll then be asked whether this ' + (target === 'dc' ? 'design contract' : 'quote') + ' is for the job on that card.') + '</div>' +
+        : 'Picking a card links this ' + (target === 'dc' ? 'design contract' : 'quote') + ' to that job\'s card. A separate job needs its own card — make it in the CRM first.') + '</div>' +
       '<div style="display:flex;gap:6px;margin-bottom:8px"><input type="text" id="crm-pick-search" placeholder="Search by name…" oninput="crmPaintList()" style="flex:1;padding:7px 9px;border:1px solid var(--bd);border-radius:5px;font-size:13px">' +
       '<button class="btn btn-outline btn-sm" onclick="crmReload()" title="Reload the list from the CRM">↻</button></div>' +
       '<div id="crm-pick-list" style="max-height:50vh;overflow-y:auto;font-size:13px;color:var(--i2)">⏳ Loading clients…</div>' +
@@ -10653,50 +10653,40 @@ function crmPaintList() {
     '</div>';
   }).join('');
 }
-// Resolves 'refresh' (link + fill), 'link' (link, keep the fields), 'copy' (fill, leave the
-// record UNLINKED — an existing link is removed too; the Davies case 20/11/26) or null = do
-// NOTHING, no link change either (mis-picking card B on a quote linked to card A must be
-// abortable — × on the chip deletes the link rather than restoring A). Backdrop = nothing.
-// A YES/NO question (CRM + Neal 20/11/26 — the "Link to …? Linking connects this…" wording was
-// misread on first sight): "Is this quote for the job on this card?" with the card's column and
-// month/year so an old job's card is recognisable. Yes = link ('refresh' fills an empty form;
-// a form that already has details keeps them — 'link' — unless the small tick asks to replace
-// them, so a sent quote never silently changes from the PDF the client has). No = 'copy'.
-function crmPickModeDialog(card, alreadyLinked, hasDetails, target) {
+// The ONE check when the picked card already has a quote or a live job on it (Neal + CRM
+// 20/11/26, 3rd round — "Copy details only" removed: a separate job gets its own card FIRST,
+// then that card is picked; a quick quote with no card just types the name). Resolves true =
+// link to this job, false = pick another card (the picker stays open; backdrop = false).
+function crmPickExistingDialog(card, existing, target) {
   return new Promise(resolve => {
     const old = document.getElementById('crm-mode-dialog'); if (old) old.remove();
     const what = target === 'dc' ? 'design contract' : 'quote';
-    const made = card.created ? new Date(card.created).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : '';
-    const meta = [card.list, made ? 'created ' + made : ''].filter(Boolean).join(', ');
+    const list = existing.map(x => cwEsc(x.ref) + ' (' + ((x.status || 'Draft') === 'Accepted' ? 'Accepted, a live job' : cwEsc(x.status || 'Draft')) + ')').join(', ');
     const wrap = document.createElement('div');
     wrap.id = 'crm-mode-dialog';
     wrap.innerHTML =
-      '<div class="cw-modal-back"><div class="cw-modal" style="width:500px;max-width:95vw">' +
-        '<h3 style="margin:0 0 6px">Is this ' + what + ' for the job on this card?</h3>' +
-        '<div style="font-size:14px;font-weight:600;color:var(--i1);margin-bottom:14px">' + cwEsc(card.name || '(no name)') + (meta ? ' <span style="font-weight:400;color:var(--i3)">(' + cwEsc(meta) + ')</span>' : '') +
-          (alreadyLinked ? ' <span style="font-size:11px;font-weight:600;color:#15803D">· already linked</span>' : '') + '</div>' +
-        '<button class="btn btn-primary" id="crm-mode-yes" style="display:block;width:100%;margin-bottom:6px">Yes — link it to this job</button>' +
-        (hasDetails ? '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--i3);margin:0 0 12px 2px;cursor:pointer"><input type="checkbox" id="crm-mode-refill"> also replace the name and address on this ' + what + ' with the card\'s</label>' : '<div style="height:8px"></div>') +
-        '<button class="btn btn-outline" id="crm-mode-copy" style="display:block;width:100%">No — it\'s a new separate job (copy the name and address only)</button>' +
-        '<div style="font-size:11px;color:var(--i3);margin:5px 2px 0">Make the new job\'s card in the CRM, then link this ' + what + ' to it.</div>' +
-        '<div class="cw-modal-btns"><button class="btn btn-outline" id="crm-mode-cancel">Cancel</button></div>' +
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:480px;max-width:95vw">' +
+        '<h3 style="margin:0 0 8px">Is this ' + what + ' for that job?</h3>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:14px;line-height:1.6"><strong style="color:var(--i1)">' + cwEsc(card.name || '(no name)') + '</strong> already has ' + list + '.</div>' +
+        '<div class="cw-modal-btns" style="justify-content:flex-start;gap:8px;flex-wrap:wrap">' +
+          '<button class="btn btn-primary" id="crm-mode-yes">Yes — link it</button>' +
+          '<button class="btn btn-outline" id="crm-mode-no">No — pick another card</button>' +
+        '</div>' +
+        '<div style="font-size:11px;color:var(--i3);margin-top:8px">If the right card doesn\'t exist yet, make it in the CRM first, then pick it here.</div>' +
       '</div></div>';
     document.body.appendChild(wrap);
     const done = v => { wrap.remove(); resolve(v); };
-    document.getElementById('crm-mode-yes').onclick = () => {
-      const refill = document.getElementById('crm-mode-refill');
-      done(!hasDetails || (refill && refill.checked) ? 'refresh' : 'link');
-    };
-    document.getElementById('crm-mode-copy').onclick = () => done('copy');
-    document.getElementById('crm-mode-cancel').onclick = () => done(null);
-    wrap.querySelector('.cw-modal-back').onmousedown = e => { if (e.target === e.currentTarget) done(null); };
+    document.getElementById('crm-mode-yes').onclick = () => done(true);
+    document.getElementById('crm-mode-no').onclick = () => done(false);
+    wrap.querySelector('.cw-modal-back').onmousedown = e => { if (e.target === e.currentTarget) done(false); };
     document.getElementById('crm-mode-yes').focus();
   });
 }
-// TWO MODES (Neal, 30/07): an EMPTY form fills name/address (the point of the picker);
-// a form that already has client details gets the three-way dialog above — retro-linking
-// a sent quote must not make it differ from the PDF the client received, so overwriting
-// is always a deliberate, separate choice and never the default.
+// Picking a card (Neal + CRM 20/11/26): no quotes on it → link straight away; a quote or live
+// job already on it → the one check above. Filling the name/address: an empty form always
+// fills; a form with typed details is NEVER silently overwritten on a quote that has already
+// been sent (it must keep matching the PDF the client has) — a Draft/new quote fills from the
+// card; a design contract with typed details keeps them.
 async function crmApplyPick(i) {
   const dlg = document.getElementById('crm-pick-dialog');
   const target = (dlg && dlg.dataset.target) || 'quote';
@@ -10723,22 +10713,15 @@ async function crmApplyPick(i) {
   const a = crmSplitAddress(c.address, c.postcode);
   const ids = target === 'dc' ? ['dc-cust', 'dc-a1', 'dc-city', 'dc-post'] : ['in-cust', 'in-a1', 'in-city', 'in-post'];
   const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
-  const linkedId = target === 'dc' ? dcCrmLink.cardId : crmLink.cardId;
-  const mode = await crmPickModeDialog(c, !!linkedId && c.id === linkedId, hasDetails, target);
-  if (!mode) return;   // do nothing — the picker stays open for a different card (or its own Cancel)
-  const fill = mode === 'refresh' || mode === 'copy';
+  const myRef = target === 'quote' ? g('in-ref') : '';
+  const existing = savedQuotes.filter(x => x.ref !== myRef && x.airtableCardId === c.id && ['Draft', 'Sent', 'Accepted'].includes(x.status || 'Draft'));
+  if (existing.length && !(await crmPickExistingDialog(c, existing, target))) return;   // "No" — the picker stays open
+  const mine = myRef ? savedQuotes.find(x => x.ref === myRef) : null;
+  const alreadySent = target === 'dc' || (!!mine && !['Draft', 'Estimate'].includes(mine.status || 'Draft'));
+  const fill = !hasDetails || !alreadySent;
   if (fill) {
     const vals = [c.name || '', a.addr1, a.city, a.post];
     ids.forEach((id, k) => { const el = document.getElementById(id); if (el) el.value = vals[k]; });
-  }
-  if (mode === 'copy') {
-    // Details only: the record is left UNLINKED (never writes airtable_card_id / client_email).
-    if (target === 'dc') dcCrmLink = { cardId: '', email: '' };
-    else { crmLink.cardId = ''; crmLink.email = ''; isDirty = true; syncH(); }
-    crmPaintChip();
-    crmRemovePicker();
-    toast('Details copied from ' + (c.name || 'the card') + ' — not linked to any CRM card' + (a.post ? '' : ' (no postcode on the card, fill it in)'));
-    return;
   }
   if (target === 'dc') {
     dcCrmLink = { cardId: c.id, email: c.email || '' };
