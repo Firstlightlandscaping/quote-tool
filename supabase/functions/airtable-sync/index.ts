@@ -795,7 +795,21 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (sig.status === "revoked") { plan.notes.push("Latest signing link is revoked — nothing to move"); break; }
       const f: Record<string, unknown> = { [Q.signingStatus]: sig.status };
       if (rec.isDesign) f[Q.status] = rec.status;          // DC rows mirror contract_meta.status (Generated → Sent)
-      upsertRow(f, `Quotes row → signing ${sig.status}`);
+      // A NEW version going out after a regenerate over a SIGNED contract (CRM option A,
+      // 20/11/26): the row still says "signed" from the old version, so the CRM would never
+      // chase the new signature. Untick the card's Contract Signed (Design Contract Signed for
+      // DC-) and clear the row's Signed date — the CRM then chases it like any first send, and
+      // contract_signed ticks it again when the new version is signed. Only when the latest
+      // signing row is NOT itself signed, so a re-push after signing never unticks.
+      const priorSigned = !!own && String(own.fields[Q.signingStatus] || "").toLowerCase() === "signed";
+      let resign = "";
+      if (priorSigned && sig.status !== "signed") {
+        f[Q.signed] = null;
+        cardPatch[rec.isDesign ? CARD.designContractSigned : CARD.contractSigned] = false;
+        resign = " — new version out after a signed one: Signed date cleared";
+        plan.notes.push(`Was signed — the new version needs a new signature: ${rec.isDesign ? "Design Contract Signed" : "Contract Signed"} unticked, Signed date cleared`);
+      }
+      upsertRow(f, `Quotes row → signing ${sig.status}${resign}`);
       move(rec.isDesign ? LIST_CONTRACT_SENT.dc : LIST_CONTRACT_SENT.qt, "signing link sent");
       cardDesignPackage();
       break;
