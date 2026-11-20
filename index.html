@@ -1815,7 +1815,6 @@ async function loadFromSupabase() {
       clientEmail: q.client_email || '',
       supersedesRef: q.supersedes_ref || '',
       optionGroup: q.option_group || '',            // quote-options.sql (20/11/26) — absent column → ''
-      isExtra: !!q.is_extra,
       contractMeta: q.contract_meta || null,
       schedulePlan: q.schedule_plan || null,
       lastPushedAt: q.last_pushed_at || null,       // CRM Phase 3 (crm-push.sql) — absent pre-cutover → null
@@ -8182,7 +8181,7 @@ function cdRefresh(){
 // labour then come from the saved record; the builder is only involved if the user
 // actually clicks Generate/Regenerate (doGenerateContract loads the quote at that point).
 let cwDialogRef = null, cwDialogTotal = 0;
-function openContractDialog(refArg){
+async function openContractDialog(refArg){
   const ref = refArg || g('in-ref');
   if (!ref) {
     if (!lines.length) { toast('Add items or load a quote first'); return; }
@@ -8191,13 +8190,13 @@ function openContractDialog(refArg){
   const sq = savedQuotes.find(q => q.ref === ref);
   if (refArg && !sq) { toast('Quote ' + ref + ' not found'); return; }
   if (!refArg && !lines.length) { toast('Add items or load a quote first'); return; }
-  // Extra work on a live job has no contract (CRM, 20/11/26): its figures would overwrite the
-  // main job's Project Value / Job Number on the card. Payment goes in through the CRM.
-  if (sq && sq.isExtra) { alert(ref + ' is extra work on a live job, so it has no contract.\n\nAdd its payment in the CRM with the Add a payment form.'); return; }
   const status = sq ? (sq.status || 'Draft') : 'Draft';
   if (status !== 'Accepted') {
     if (!confirm('Quote ' + ref + ' isn\'t marked Accepted.\n\nMark it Accepted and generate the contract?')) return;
-    updateQuoteStatus(ref, 'Accepted');
+    // Awaited (20/11/26): accepting an alternative option asks its own question first; a
+    // Cancel there leaves the quote un-accepted, so no contract dialog opens.
+    await updateQuoteStatus(ref, 'Accepted');
+    if (sq && (sq.status || '') !== 'Accepted') return;
   }
   removeContractDialog();
   // Builder total when this quote is the one loaded (it may carry unsaved edits);
@@ -10224,7 +10223,7 @@ async function crmPushAuto(ref, event) {
   if (d.orphan) { crmHoldBanner(ref, event, d.warning); return false; }
   if (d.skipped) {   // decided no-op — stamp quietly (the figures prompt was a click, so say why)
     try { await crmPushCall(ref, event, {}); crmMarkPushed(ref, event); } catch (e) {}
-    if (event === 'figures') crmNoticeBanner('busy', '📇 CRM not updated — ' + d.skipped, 8000);
+    crmNoticeBanner('note', '📇 CRM: ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event).toLowerCase() + ' — not pushed: ' + d.skipped, 10000);
     return true;
   }
   if ((d.hold || []).length || (d.blocked || []).length || d.needsDecision) { crmHoldBanner(ref, event, (d.hold || [])[0] || (d.blocked || [])[0] || 'needs a look'); return false; }
@@ -10234,7 +10233,7 @@ async function crmPushAuto(ref, event) {
     if (r.held) { crmHoldBanner(ref, event, (r.hold || [])[0] || 'needs a look'); return false; }
     crmMarkPushed(ref, event);
     if (r.parked) { crmNoticeBanner('busy', '📇 Recorded — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + '. Live CRM pushing starts on switch-on day; Trello is the truth until then.', 6000); return true; }
-    crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's') + (r.card && r.card.name ? ' · ' + r.card.name : ''), 8000);
+    crmNoticeBanner('ok', '✓ CRM: ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event).toLowerCase() + ' — ' + crmPlainResult(r), 12000);
     return true;
   } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); return false; }
 }
@@ -10372,18 +10371,48 @@ function crmHoldBanner(ref, event, reason) {
 // Result strip (Neal, 07/09: the toast "isn't prominent"): grey while pushing, green when
 // done, same top-of-page slot as the hold banner so the eye has one place to look. One
 // notice at a time; autoHide ms (0 = stays until replaced/closed).
+// kind 'ok' (green) and 'note' (grey, e.g. "not pushed — …") are RESULT lines: results that
+// arrive within 15 s of each other STACK in one banner (a Send that also closes the old quote
+// pushes twice — CRM + Neal 20/11/26: "say what the CRM did", so the first result mustn't be
+// wiped by the second). 'busy' is the in-progress line and doesn't stack.
+let crmRecentResults = { lines: [], at: 0 };
 function crmNoticeBanner(kind, text, autoHide) {
   const old = document.getElementById('crm-notice-banner'); if (old) { clearTimeout(old._t); old.remove(); }
   const hold = document.getElementById('crm-hold-banner'); if (hold && kind === 'ok') hold.remove();
+  const result = kind === 'ok' || kind === 'note';
+  let lines = [{ text, ok: kind === 'ok' }];
+  if (result) {
+    if (Date.now() - crmRecentResults.at < 15000) lines = crmRecentResults.lines.concat(lines);
+    crmRecentResults = { lines, at: Date.now() };
+  }
   const d = document.createElement('div');
   d.id = 'crm-notice-banner';
   d.className = 'no-print';
-  const col = kind === 'ok' ? { bg: '#F0FDF4', bd: '#22C55E', fg: '#166534' } : { bg: '#F4F4F5', bd: '#A1A1AA', fg: '#3F3F46' };
+  const green = result && lines.every(l => l.ok);
+  const col = green ? { bg: '#F0FDF4', bd: '#22C55E', fg: '#166534' } : { bg: '#F4F4F5', bd: '#A1A1AA', fg: '#3F3F46' };
   d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:' + col.bg + ';border-bottom:2px solid ' + col.bd + ';color:' + col.fg + ';font-size:14px;font-weight:700;padding:10px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
-  d.innerHTML = '<span>' + cwEsc(text) + '</span>' +
-    (kind === 'ok' ? '<button onclick="document.getElementById(\'crm-notice-banner\').remove()" style="background:none;border:1px solid ' + col.bd + ';border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:' + col.fg + '">ok</button>' : '');
+  d.innerHTML = '<span>' + lines.map(l => cwEsc(l.text)).join('<br>') + '</span>' +
+    (result ? '<button onclick="document.getElementById(\'crm-notice-banner\').remove()" style="background:none;border:1px solid ' + col.bd + ';border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:' + col.fg + '">ok</button>' : '');
   document.body.appendChild(d);
   if (autoHide) d._t = setTimeout(() => { if (d.parentNode) d.remove(); }, autoHide);
+}
+// What a push DID, in plain words, from its executed plan (Neal set a quote Accepted and said
+// "nothing happened" — the push had moved the card and set the value): "card moved to Quote
+// Accepted, value £2,400.00" / "card stays in Contract Sent" / "+ 5 payment rows".
+const CRM_CARD_VALUE_FIELD = 'fld6I3tOHbq8DNG69';   // Cards.Quote Value
+function crmPlainResult(r) {
+  const writes = (r && Array.isArray(r.writes)) ? r.writes : [];
+  const cardW = writes.find(w => w.label === 'Card' && w.fields);
+  const f = cardW ? cardW.fields : {};
+  const parts = [];
+  if (f[CRM_CARD_LIST_FIELD]) parts.push('card moved to ' + f[CRM_CARD_LIST_FIELD]);
+  else if (r && r.card && r.card.list) parts.push('card stays in ' + r.card.list);
+  if (CRM_CARD_VALUE_FIELD in f) parts.push('value £' + Number(f[CRM_CARD_VALUE_FIELD] || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+  const made = writes.filter(w => w.op === 'create' && /^Payment "/.test(w.label || '')).length;
+  const gone = writes.filter(w => w.op === 'delete').length;
+  if (made) parts.push(made + ' payment row' + (made === 1 ? '' : 's') + ' added');
+  if (gone) parts.push(gone + ' payment row' + (gone === 1 ? '' : 's') + ' removed');
+  return parts.length ? parts.join(', ') : 'nothing needed changing';
 }
 function crmFieldsHtml(fields) {
   return Object.entries(fields).map(([k, v]) => {
@@ -10477,7 +10506,7 @@ async function crmPushPanel(ref, event) {
         '<div style="font-size:12px;margin-top:8px">' + (r.executed || []).map(x => '· ' + cwEsc(x)).join('<br>') + '</div>' +
         ((r.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px">' + r.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +
         btns(nextBtn + closeBtn);
-      crmNoticeBanner('ok', '✓ CRM updated — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + ' · ' + (r.executed || []).length + ' write' + ((r.executed || []).length === 1 ? '' : 's'), 8000);
+      crmNoticeBanner('ok', '✓ CRM: ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event).toLowerCase() + ' — ' + crmPlainResult(r), 12000);
     } catch (e) {
       bodyEl().innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ Push failed: ' + cwEsc(e.message) + '</div>' + btns('<button class="btn btn-primary" onclick="crmPushPanel(\'' + ref + '\',\'' + event + '\')">Retry</button>' + closeBtn);
     }
@@ -10552,7 +10581,7 @@ function crmOpenPicker(target, ref) {
       '<h3 style="margin:0 0 4px">' + (isList ? 'Link ' + cwEsc(ref || '') + ' to a client' : 'Pick a client from the CRM') + '</h3>' +
       '<div style="font-size:12px;color:var(--i2);margin-bottom:8px">' + (isList
         ? 'Attaches the client\'s CRM card to this quote. The quote\'s own name and address are <strong>not changed</strong>.'
-        : 'Picking a card links this ' + (target === 'dc' ? 'design contract' : 'quote') + ' to that job\'s card. To take just the name and address, choose "Copy details only" after picking.') + '</div>' +
+        : 'Pick the client\'s card. You\'ll then be asked whether this ' + (target === 'dc' ? 'design contract' : 'quote') + ' is for the job on that card.') + '</div>' +
       '<div style="display:flex;gap:6px;margin-bottom:8px"><input type="text" id="crm-pick-search" placeholder="Search by name…" oninput="crmPaintList()" style="flex:1;padding:7px 9px;border:1px solid var(--bd);border-radius:5px;font-size:13px">' +
       '<button class="btn btn-outline btn-sm" onclick="crmReload()" title="Reload the list from the CRM">↻</button></div>' +
       '<div id="crm-pick-list" style="max-height:50vh;overflow-y:auto;font-size:13px;color:var(--i2)">⏳ Loading clients…</div>' +
@@ -10602,45 +10631,44 @@ function crmPaintList() {
     '</div>';
   }).join('');
 }
-// Three-way choice when the form already has client details: 'link' (keep the fields),
-// 'refresh' (overwrite them from the card), or null = do NOTHING — no link change
-// either. The null exit matters: mis-picking card B on a quote already linked to card
-// A must be abortable, because × on the chip deletes the link rather than restoring A.
-// Backdrop click = do nothing, same convention as the app's other modals.
-// "Copy details only — don't link" (Neal + CRM, 20/11/26 — the Davies case: the picker was
-// used for the details and silently linked the new job to the live job's card): resolves
-// 'copy' = fill the fields and leave the record UNLINKED (an existing link is removed too).
-// An EMPTY form now also gets the dialog (fill + link is still the first button).
-function crmPickModeDialog(cardName, alreadyLinked, hasDetails) {
+// Resolves 'refresh' (link + fill), 'link' (link, keep the fields), 'copy' (fill, leave the
+// record UNLINKED — an existing link is removed too; the Davies case 20/11/26) or null = do
+// NOTHING, no link change either (mis-picking card B on a quote linked to card A must be
+// abortable — × on the chip deletes the link rather than restoring A). Backdrop = nothing.
+// A YES/NO question (CRM + Neal 20/11/26 — the "Link to …? Linking connects this…" wording was
+// misread on first sight): "Is this quote for the job on this card?" with the card's column and
+// month/year so an old job's card is recognisable. Yes = link ('refresh' fills an empty form;
+// a form that already has details keeps them — 'link' — unless the small tick asks to replace
+// them, so a sent quote never silently changes from the PDF the client has). No = 'copy'.
+function crmPickModeDialog(card, alreadyLinked, hasDetails, target) {
   return new Promise(resolve => {
     const old = document.getElementById('crm-mode-dialog'); if (old) old.remove();
+    const what = target === 'dc' ? 'design contract' : 'quote';
+    const made = card.created ? new Date(card.created).toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }) : '';
+    const meta = [card.list, made ? 'created ' + made : ''].filter(Boolean).join(', ');
     const wrap = document.createElement('div');
     wrap.id = 'crm-mode-dialog';
     wrap.innerHTML =
-      '<div class="cw-modal-back"><div class="cw-modal" style="width:470px;max-width:95vw">' +
-        // Re-picking the card it's ALREADY linked to isn't a change — the useful path
-        // there is "Link + refresh details" to re-pull a corrected address from the CRM.
-        '<h3 style="margin:0 0 6px">' + (alreadyLinked ? 'Already linked to ' + cwEsc(cardName || 'this card') : 'Link to ' + cwEsc(cardName || 'this card') + '?') + '</h3>' +
-        '<div style="font-size:13px;color:var(--i2);margin-bottom:14px">' + (hasDetails
-          ? 'This form already has client details. Linking connects it to this CRM card — the choice is what happens to the name and address fields on the form.'
-          : 'Linking connects this to that job\'s CRM card. For a different job, copy the details only and pick the new job\'s card once it exists.') + '</div>' +
-        '<div class="cw-modal-btns" style="flex-wrap:wrap;gap:8px">' +
-          (hasDetails
-            ? '<button class="btn btn-primary" id="crm-mode-link" title="Store the card link; the name/address on the form stay exactly as they are — use this on quotes already sent">Link only — keep details</button>' +
-              '<button class="btn btn-outline" id="crm-mode-refresh" title="Store the card link AND overwrite the form\'s name/address with the card\'s details">Link + refresh details</button>'
-            : '<button class="btn btn-primary" id="crm-mode-refresh" title="Fill the name and address from the card and link to it">Link and fill details</button>') +
-          '<button class="btn btn-outline" id="crm-mode-copy" title="Fill the name and address from the card but DON\'T link — the record is left unlinked">Copy details only — don\'t link</button>' +
-          '<button class="btn btn-outline" id="crm-mode-cancel" title="Change nothing — no link, no field changes">Cancel — do nothing</button>' +
-        '</div>' +
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:500px;max-width:95vw">' +
+        '<h3 style="margin:0 0 6px">Is this ' + what + ' for the job on this card?</h3>' +
+        '<div style="font-size:14px;font-weight:600;color:var(--i1);margin-bottom:14px">' + cwEsc(card.name || '(no name)') + (meta ? ' <span style="font-weight:400;color:var(--i3)">(' + cwEsc(meta) + ')</span>' : '') +
+          (alreadyLinked ? ' <span style="font-size:11px;font-weight:600;color:#15803D">· already linked</span>' : '') + '</div>' +
+        '<button class="btn btn-primary" id="crm-mode-yes" style="display:block;width:100%;margin-bottom:6px">Yes — link it to this job</button>' +
+        (hasDetails ? '<label style="display:flex;gap:6px;align-items:center;font-size:12px;color:var(--i3);margin:0 0 12px 2px;cursor:pointer"><input type="checkbox" id="crm-mode-refill"> also replace the name and address on this ' + what + ' with the card\'s</label>' : '<div style="height:8px"></div>') +
+        '<button class="btn btn-outline" id="crm-mode-copy" style="display:block;width:100%">No — it\'s a new separate job (copy the name and address only)</button>' +
+        '<div style="font-size:11px;color:var(--i3);margin:5px 2px 0">Make the new job\'s card in the CRM, then link this ' + what + ' to it.</div>' +
+        '<div class="cw-modal-btns"><button class="btn btn-outline" id="crm-mode-cancel">Cancel</button></div>' +
       '</div></div>';
     document.body.appendChild(wrap);
     const done = v => { wrap.remove(); resolve(v); };
-    const lk = document.getElementById('crm-mode-link'); if (lk) lk.onclick = () => done('link');
-    document.getElementById('crm-mode-refresh').onclick = () => done('refresh');
+    document.getElementById('crm-mode-yes').onclick = () => {
+      const refill = document.getElementById('crm-mode-refill');
+      done(!hasDetails || (refill && refill.checked) ? 'refresh' : 'link');
+    };
     document.getElementById('crm-mode-copy').onclick = () => done('copy');
     document.getElementById('crm-mode-cancel').onclick = () => done(null);
     wrap.querySelector('.cw-modal-back').onmousedown = e => { if (e.target === e.currentTarget) done(null); };
-    (lk || document.getElementById('crm-mode-refresh')).focus();
+    document.getElementById('crm-mode-yes').focus();
   });
 }
 // TWO MODES (Neal, 30/07): an EMPTY form fills name/address (the point of the picker);
@@ -10674,7 +10702,7 @@ async function crmApplyPick(i) {
   const ids = target === 'dc' ? ['dc-cust', 'dc-a1', 'dc-city', 'dc-post'] : ['in-cust', 'in-a1', 'in-city', 'in-post'];
   const hasDetails = ids.some(id => ((document.getElementById(id) || {}).value || '').trim());
   const linkedId = target === 'dc' ? dcCrmLink.cardId : crmLink.cardId;
-  const mode = await crmPickModeDialog(c.name, !!linkedId && c.id === linkedId, hasDetails);
+  const mode = await crmPickModeDialog(c, !!linkedId && c.id === linkedId, hasDetails, target);
   if (!mode) return;   // do nothing — the picker stays open for a different card (or its own Cancel)
   const fill = mode === 'refresh' || mode === 'copy';
   if (fill) {
@@ -11089,12 +11117,10 @@ async function duplicateQuote(ref) {
     if (rel === 'option') {
       const grp = sq.optionGroup || ref;
       for (const r of [ref, newRef]) { await sqPatchRow(r, { option_group: grp }); const s = savedQuotes.find(x => x.ref === r); if (s) s.optionGroup = grp; }
-    } else if (rel === 'extra') {
-      await sqPatchRow(newRef, { is_extra: true }); const s = savedQuotes.find(x => x.ref === newRef); if (s) s.isExtra = true;
     }
   } catch (e) { toast('⚠ Saved as ' + newRef + ', but its link to ' + ref + ' wasn\'t recorded (' + e.message + ') — you\'ll be asked again when it\'s marked Sent.'); renderSaved(); return; }
   renderSaved();
-  const how = { replace: ', replacing it when sent', option: ', an alternative option', extra: ', extra work on its job', separate: ', not linked to the CRM card — pick the new job\'s card' }[rel] || '';
+  const how = { replace: ', replacing it when sent', option: ', an alternative option', separate: ', not linked to the CRM card — pick the new job\'s card' }[rel] || '';
   toast('Saved as ' + newRef + ' (copy of ' + ref + how + ') — make your changes then Save Quote');
 }
 
@@ -11130,7 +11156,7 @@ async function saveQuote() {
   // plan, which a schedule save would write over the stored one) and the CRM push stamps
   // (false "to push" badges; the Draft block read {} and let a pushed quote back to Draft).
   if (existing>=0) { const prev = savedQuotes[existing]; q.schedulePlan = prev.schedulePlan || null; q.lastPushedAt = prev.lastPushedAt || null; q.crmPushed = prev.crmPushed || {};
-    q.optionGroup = prev.optionGroup || ''; q.isExtra = !!prev.isExtra; }   // quote relationships (20/11/26) — written by their own PATCHes, never by a save
+    q.optionGroup = prev.optionGroup || ''; }   // quote relationships (20/11/26) — written by their own PATCHes, never by a save
   let savedOk = false;   // the Sent-quote CRM figures check runs only after a save that reached the database
   if (existing>=0) savedQuotes[existing]=q; else savedQuotes.unshift(q);
   if (USE_SUPABASE) {
@@ -11201,11 +11227,44 @@ function sqSupersedesList(sq) { return String((sq && sq.supersedesRef) || '').sp
 function sqSuccessorOf(ref) { return savedQuotes.find(x => sqSupersedesList(x).includes(ref)) || null; }
 // ── Quote relationships (CRM + Neal, 20/11/26) ─────────────────────────────────────────────
 // ALTERNATIVE OPTIONS of one job share quotes.option_group; accepting one closes the others
-// (Superseded). EXTRA WORK on a live job carries quotes.is_extra: it never moves the card, and
-// has no contract. Both are set by a question when a quote is marked Sent (or duplicated) and
-// written straight to the row (saveQuote never writes them).
+// (Superseded). Set by a question when a quote is marked Sent (or duplicated) and written
+// straight to the row (saveQuote never writes it). Extra work on a running job is NOT a quote
+// (Neal 20/11/26 — quoted by email, it goes on the CRM card as a payment row).
 function sqOptionMates(sq) { return sq && sq.optionGroup ? savedQuotes.filter(x => x.ref !== sq.ref && x.optionGroup === sq.optionGroup) : []; }
-function sqChosenOption(sq) { return sqOptionMates(sq).find(x => (x.status || '') === 'Accepted') || null; }
+// The option the client CHOSE: the mate that is Accepted, or the mate that was accepted and has
+// since been re-quoted (its replacement chain reaches a live quote) — sandbox QT-0114/0115: the
+// client chose QT-0116, which was then replaced by QT-0117, and the chip went amber.
+function sqChosenOption(sq) {
+  const mates = sqOptionMates(sq);
+  const direct = mates.find(x => (x.status || '') === 'Accepted');
+  if (direct) return direct;
+  return mates.find(m => {
+    let s = m;
+    for (let i = 0; i < 10 && s && (s.status || '') === 'Superseded'; i++) s = sqSuccessorOf(s.ref);
+    return !!s && s !== m && ['Sent', 'Accepted'].includes(s.status || '');
+  }) || null;
+}
+// The app's own yes/no box (CRM + Neal 20/11/26 — the plain "localhost says" browser boxes read
+// as errors). Resolves true / false; backdrop and Cancel = false. `body` is HTML (escape inputs).
+function appConfirm(title, body, okLabel, cancelLabel) {
+  return new Promise(resolve => {
+    const old = document.getElementById('app-confirm-dialog'); if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'app-confirm-dialog';
+    wrap.innerHTML = '<div class="cw-modal-back" style="z-index:17700"><div class="cw-modal" style="width:480px;max-width:95vw">' +
+      '<h3 style="margin:0 0 8px">' + title + '</h3>' +
+      '<div style="font-size:13px;color:var(--i2);line-height:1.6">' + body + '</div>' +
+      '<div class="cw-modal-btns"><button class="btn btn-primary" id="app-confirm-ok">' + (okLabel || 'OK') + '</button>' +
+      '<button class="btn btn-outline" id="app-confirm-no">' + (cancelLabel || 'Cancel') + '</button></div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('app-confirm-ok').onclick = () => done(true);
+    document.getElementById('app-confirm-no').onclick = () => done(false);
+    wrap.querySelector('.cw-modal-back').onmousedown = e => { if (e.target === e.currentTarget) done(false); };
+    document.getElementById('app-confirm-ok').focus();
+  });
+}
 async function sqPatchRow(ref, patch) { if (USE_SUPABASE) await sb('PATCH', 'quotes', patch, '?ref=eq.' + encodeURIComponent(ref)); }
 function sqRelLine(x) {
   const st = x.status || 'Draft';
@@ -11215,8 +11274,9 @@ function sqRelLine(x) {
 }
 // ONE question (Neal, 20/11/26): asked when a quote is marked Sent and its CRM card already
 // holds another OPEN quote (Draft / Sent) or a LIVE job (Accepted). Resolves 'replace' |
-// 'option' | 'extra' | 'separate' | null (cancel — nothing changes, nothing is sent).
-// `mode` 'duplicate' asks the same thing about a copy (no Extra answer, no "not sent" wording).
+// 'option' | 'separate' | null (cancel — nothing changes, nothing is sent). With only a live
+// job on the card the answers are Replacing it (re-quote the job) / A separate job.
+// `mode` 'duplicate' asks the same thing about a copy (no "not sent" wording).
 function sqRelateDialog(ref, customer, open, live, mode) {
   return new Promise(resolve => {
     const old = document.getElementById('sq-relate-dialog'); if (old) old.remove();
@@ -11230,12 +11290,11 @@ function sqRelateDialog(ref, customer, open, live, mode) {
       opts += opt('replace', one ? 'Replacing it' : 'Replacing them', 'A new version of the same job. ' + cwEsc(openNames) + (one ? ' is' : ' are') + ' closed as Superseded' + (dup ? ' when the copy is marked Sent.' : '.'));
       opts += opt('option', 'An alternative option', 'The client chooses between them. All stay open; when one is accepted, the others close.');
     }
-    // Duplicating an ACCEPTED quote: "Replacing it" = a re-quote after acceptance (it closes
-    // when the copy is marked Sent).
-    if (dup && !open.length && live.length) opts += opt('replace', 'Replacing it', 'A new version of the same job. ' + cwEsc(live[0].ref) + ' is closed as Superseded when the copy is marked Sent.');
-    if (live.length) opts += opt('extra', 'Extra work on that job', 'Added to ' + cwEsc(live.map(x => x.ref).join(', ')) + '\'s job. The card stays where it is. No contract: its payment goes in through the CRM.');
-    opts += opt('separate', 'A separate job', dup ? 'The copy is NOT linked to this client\'s card. Make the new job\'s card in the CRM, then pick it on the copy.'
-                                                   : 'Not sent yet. A separate job needs its own CRM card. Make it in the CRM, then pick it here.');
+    // Only a LIVE job on the card: "Replacing it" = a re-quote of that job (the accepted quote
+    // closes when this one is sent). Extra work on a running job is never a quote (Neal 20/11).
+    if (!open.length && live.length) opts += opt('replace', 'Replacing it — re-quote the job', 'A new version of ' + cwEsc(live.map(x => x.ref).join(', ')) + '\'s job. ' + cwEsc(live.map(x => x.ref).join(', ')) + (live.length === 1 ? ' is' : ' are') + ' closed as Superseded ' + (dup ? 'when the copy is marked Sent.' : 'once this is sent.'));
+    opts += opt('separate', 'A separate job — needs its own card', dup ? 'The copy is NOT linked to this client\'s card. Make the new job\'s card in the CRM, then pick it on the copy.'
+                                                   : 'Not sent yet. Make the new job\'s card in the CRM, then pick it here.');
     const wrap = document.createElement('div');
     wrap.id = 'sq-relate-dialog';
     wrap.innerHTML = '<div class="cw-modal-back" style="z-index:17600"><div class="cw-modal" style="width:540px;max-width:95vw">' +
@@ -11284,32 +11343,32 @@ async function sqRelateBeforeSend(q) {
   let supersedeAfter = others.filter(x => replaces.includes(x.ref) && ['Draft', 'Sent', 'Accepted'].includes(x.status || 'Draft')).map(x => x.ref);
   const unrelated = others.filter(x => !replaces.includes(x.ref) && !mates.has(x.ref));
   const open = unrelated.filter(x => ['Draft', 'Sent'].includes(x.status || 'Draft'));
-  const live = q.isExtra ? [] : unrelated.filter(x => (x.status || '') === 'Accepted' && !x.isExtra);
+  const live = unrelated.filter(x => (x.status || '') === 'Accepted');
+  // Closing an ACCEPTED quote that was answered EARLIER (at duplicate time) is a big step — say
+  // so once before it happens. An answer given in the question below needs no second ask.
+  const closingAccepted = supersedeAfter.filter(r => ((savedQuotes.find(x => x.ref === r) || {}).status || '') === 'Accepted');
+  if (closingAccepted.length && !(await appConfirm('Mark ' + cwEsc(q.ref) + ' Sent?',
+      'Marking ' + cwEsc(q.ref) + ' Sent will close ' + cwEsc(closingAccepted.join(', ')) + ' (Accepted) as Superseded — ' + cwEsc(q.ref) + ' replaces ' + (closingAccepted.length === 1 ? 'it' : 'them') + '.',
+      'Mark it Sent', 'Cancel'))) return { ok: false };
   if (open.length || live.length) {
     const ans = await sqRelateDialog(q.ref, q.customer, open, live, 'send');
     if (!ans) return { ok: false };
     if (ans === 'separate') { sqSeparateJobNotice(q.ref); return { ok: false }; }
     try {
       if (ans === 'replace') {
-        const list = [...new Set([...replaces, ...open.map(x => x.ref)])].join(',');
+        const targets = open.length ? open : live;   // only a live job on the card → re-quote it
+        const list = [...new Set([...replaces, ...targets.map(x => x.ref)])].join(',');
         await sqPatchRow(q.ref, { supersedes_ref: list });
         q.supersedesRef = list;
         if (g('in-ref') === q.ref) crmLink.supersedes = list;   // saveQuote writes supersedes_ref from the builder's link
-        supersedeAfter = [...new Set([...supersedeAfter, ...open.map(x => x.ref)])];
+        supersedeAfter = [...new Set([...supersedeAfter, ...targets.map(x => x.ref)])];
       } else if (ans === 'option') {
         const grp = q.optionGroup || (open.find(x => x.optionGroup) || {}).optionGroup || [q, ...open].map(x => x.ref).sort()[0];
         const refs = [...new Set([q.ref, ...open.map(x => x.ref), ...open.flatMap(x => sqOptionMates(x).map(y => y.ref))])];
         for (const r of refs) { await sqPatchRow(r, { option_group: grp }); const s = savedQuotes.find(x => x.ref === r); if (s) s.optionGroup = grp; }
-      } else if (ans === 'extra') {
-        await sqPatchRow(q.ref, { is_extra: true });
-        q.isExtra = true;
       }
     } catch (e) { toast('⛔ ' + q.ref + ' NOT marked Sent — could not save the answer: ' + e.message); return { ok: false }; }
   }
-  // Closing an ACCEPTED quote (a re-quote after acceptance, answered at duplicate time) is a
-  // big step — say so once before it happens.
-  const closingAccepted = supersedeAfter.filter(r => ((savedQuotes.find(x => x.ref === r) || {}).status || '') === 'Accepted');
-  if (closingAccepted.length && !confirm('Marking ' + q.ref + ' Sent will close ' + closingAccepted.join(', ') + ' (Accepted) as Superseded — ' + q.ref + ' replaces ' + (closingAccepted.length === 1 ? 'it' : 'them') + '.\n\nContinue?')) return { ok: false };
   return { ok: true, supersedeAfter };
 }
 // Saved-list chips for the revision / merge links. An original shows where it went
@@ -11326,6 +11385,9 @@ function sqLinkChipHtml(sq) {
     const chosen = !merged && !succ ? sqChosenOption(sq) : null;
     if (succ) h += `<span class="no-print" title="${merged ? 'The combined quote this one was merged into' : 'The revised copy that replaced this quote'}" style="margin-left:6px;font-size:11px;color:var(--i3)">→ ${merged ? 'merged into' : 'replaced by'} ${cwEsc(succ.ref)}</span>`;
     else if (chosen) h += `<span class="no-print" title="This was an alternative option — the client accepted the other one" style="margin-left:6px;font-size:11px;color:var(--i3)">→ client chose ${cwEsc(chosen.ref)}</span>`;
+    // An option closed when another was chosen is never "missing a replacement", even if the
+    // chosen one can't be traced any more (declined / deleted later) — no amber tripwire.
+    else if (!merged && sqOptionMates(sq).length) h += `<span class="no-print" title="This was an alternative option that the client did not choose" style="margin-left:6px;font-size:11px;color:var(--i3)">→ option not chosen</span>`;
     else if (sqSupersedeTracked(sq)) h += `<span class="no-print" title="${merged
         ? 'Marked Merged, but no quote says it was built from this one — the combined quote may never have been saved. Merge again, or set the status back.'
         : 'Marked Superseded, but no quote says it replaces this one — the copy may never have been saved. Duplicate it again, or set the status back.'}" style="margin-left:6px;font-size:11px;font-weight:600;color:#B45309;background:#FFFBEB;border:1px solid #F59E0B;border-radius:8px;padding:0 6px">⚠ no ${merged ? 'combined quote' : 'replacement'} saved</span>`;
@@ -11334,7 +11396,6 @@ function sqLinkChipHtml(sq) {
     const mates = sqOptionMates(sq).filter(x => ['Draft', 'Sent'].includes(x.status || 'Draft'));
     if (mates.length) h += `<span class="no-print" title="Alternative options of one job — the client chooses one; accepting it closes the others" style="margin-left:6px;font-size:11px;color:var(--i3)">⑂ option with ${mates.map(x => cwEsc(x.ref)).join(', ')}</span>`;
   }
-  if (sq.isExtra) h += `<span class="no-print" title="Extra work on the live job on this CRM card — no contract; its payment goes in through the CRM" style="margin-left:6px;font-size:11px;color:var(--i3)">＋ extra work</span>`;
   const from = sqSupersedesList(sq);
   if (from.length > 1) h += `<span class="no-print" title="Built by merging these quotes — each original is kept in full, marked Merged" style="margin-left:6px;font-size:11px;color:var(--i3)">⧉ combines ${from.map(r => cwEsc(r) + (savedQuotes.some(x => x.ref === r) ? '' : ' <span style="color:#B45309">(deleted)</span>')).join(' + ')}</span>`;
   return h;
@@ -12754,7 +12815,9 @@ async function updateQuoteStatus(ref, status, opts) {
   }
   if (status === 'Accepted' && (q.status || 'Draft') !== 'Accepted') {
     acceptCloses = sqOptionMates(q).filter(x => ['Draft', 'Sent'].includes(x.status || 'Draft')).map(x => x.ref);
-    if (acceptCloses.length && !confirm('Mark ' + ref + ' Accepted?\n\nIts alternative option' + (acceptCloses.length === 1 ? ' ' + acceptCloses[0] + ' will be' : 's ' + acceptCloses.join(', ') + ' will be') + ' closed as Superseded.')) { renderSaved(); return; }
+    if (acceptCloses.length && !(await appConfirm('Mark ' + cwEsc(ref) + ' Accepted?',
+        'Its alternative option' + (acceptCloses.length === 1 ? ' ' + cwEsc(acceptCloses[0]) + ' will be' : 's ' + cwEsc(acceptCloses.join(', ')) + ' will be') + ' closed as Superseded.',
+        'Mark it Accepted', 'Cancel'))) { renderSaved(); return; }
   }
   const willPush = (q.status || 'Draft') !== status && !!q.airtableCardId && !(opts && opts.autoRevoke);
   // Live signing link looked up FIRST (2026-10-04): the Declined confirm below names it, so one
@@ -12796,7 +12859,7 @@ async function updateQuoteStatus(ref, status, opts) {
     const keeps = (succ && ['Sent', 'Accepted'].includes(succ.status || '')) || ((q.status || '') === 'Sent' && stillOut.length);
     const what = keeps ? 'The card stays where it is — ' + (succ && ['Sent', 'Accepted'].includes(succ.status || '') ? succ.ref + ' replaces it.' : stillOut.map(x => x.ref).join(', ') + ' is still with the client.')
                        : 'This will move the card to Amendments.';
-    if (!confirm('Mark ' + ref + ' as Superseded?\n\n' + what + ' Continue?')) { renderSaved(); return; }
+    if (!(await appConfirm('Mark ' + cwEsc(ref) + ' as Superseded?', cwEsc(what), 'Mark it Superseded', 'Cancel'))) { renderSaved(); return; }
   }
   // A dead status must not leave a live signing link out there. Decided BEFORE anything
   // is written, so Cancel genuinely cancels; revoke + status change succeed or fail
