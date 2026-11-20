@@ -366,9 +366,43 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
   // hand-added rows survive because the scope is this schedule's names only — and, since fix
   // #44, only rows whose Contract Ref is THIS quote's ref (another contract's row of the same
   // name, or a blank-ref hand-added row, is never deleted).
+  // EXTRA WORK's one payment row (CRM, 20/11/26): an Accepted extra has no contract, so nothing
+  // else would create its row and the money would rest on someone remembering the CRM's Add a
+  // payment form. ONE Manual / Standard row "Extra work: <ref> <short scope>" for its value inc
+  // VAT, stamped with its Contract Ref; matched on that ref + the "Extra work:" prefix (so a
+  // reworded scope never makes a second row). The CRM's "payments to sort" check lists it at
+  // completion. Declined → removeOwnRowsOrHold; superseded → deleteOwnPlanMilestones below.
+  const EXTRA_PREFIX = /^extra work:/i;
+  const extraMilestone = () => {
+    const first = String(rec.scope || "").split(/\n/).map(s => s.trim()).find(Boolean) || "";
+    const short = first.length > 50 ? first.slice(0, 50).replace(/\s+\S*$/, "") + "…" : first;
+    return `Extra work: ${ref}${short ? " " + short : ""}`;
+  };
+  const ensureExtraPayment = async () => {
+    const name = extraMilestone();
+    const amount = rec.valueInc;
+    const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
+    let mine: any = null;
+    for (const id of payIds) {
+      const p = await A.get(T.payments, id);
+      if (p && rowRef(p) === wantRef && EXTRA_PREFIX.test(String(p.fields[P.name] || "").trim())) { mine = p; break; }
+    }
+    if (!mine) {
+      plan.writes.push({ table: T.payments, op: "create", label: `Payment "${name}" £${amount} (Manual)`, fields: {
+        [P.name]: name, [P.card]: [cardId], [P.amount]: amount, [P.trigger]: "Manual", [P.terms]: "Standard", [P.contractRef]: wantRef } });
+      return;
+    }
+    const f = mine.fields;
+    if (paymentLocked(f) || str(f[P.invoiceNumber])) { plan.notes.push(`Payment "${str(f[P.name])}" is already invoiced / paid — left as it is`); return; }
+    const patch: Record<string, unknown> = {};
+    if (Math.abs(num(f[P.amount]) - amount) >= 0.005) patch[P.amount] = amount;
+    if (str(f[P.name]) !== name) patch[P.name] = name;
+    if (Object.keys(patch).length) plan.writes.push({ table: T.payments, op: "patch", id: mine.id, label: `Payment "${name}" → £${amount}`, fields: patch });
+    else plan.notes.push(`Payment "${name}" already up to date`);
+  };
   const deleteOwnPlanMilestones = async (why: string) => {
     const sched: any[] = rec.cm && Array.isArray(rec.cm.scheduleStructured) ? rec.cm.scheduleStructured : [];
-    if (!sched.length) return;
+    if (!sched.length && !rec.isExtra) return;
     const names = new Set(sched.map(e => String(e.label || "").trim().toLowerCase()).filter(Boolean));
     const payIds: string[] = Array.isArray(cf[CARD.paymentsLink]) ? cf[CARD.paymentsLink] : [];
     let otherRows = 0;
@@ -377,7 +411,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (!p) continue;
       if (rowRef(p) !== wantRef) { otherRows++; continue; }
       const nm = String(p.fields[P.name] || "").trim();
-      if (!names.has(nm.toLowerCase())) continue;
+      if (!names.has(nm.toLowerCase()) && !(rec.isExtra && EXTRA_PREFIX.test(nm))) continue;
       if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
       plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (${why})`, fields: {} });
     }
@@ -636,7 +670,11 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       upsertRow(f, "Quotes row → Accepted");
       cardPatch[CARD.quoteValue] = quoteValueFrom(statusAfter("Accepted"));
-      if (rec.isExtra) { plan.notes.push("Extra work on the job on this card — card not moved; Quote By left as the main job's"); break; }
+      if (rec.isExtra) {
+        plan.notes.push("Extra work on the job on this card — card not moved; Quote By left as the main job's");
+        await ensureExtraPayment();
+        break;
+      }
       cardQuoteBy();
       if (otherSent) plan.notes.push("Another quote on this card is still Sent — card stays put, chase continues");
       else move(LIST.accepted, "quote accepted");
