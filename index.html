@@ -10682,11 +10682,41 @@ function crmPickExistingDialog(card, existing, target) {
     document.getElementById('crm-mode-yes').focus();
   });
 }
-// Picking a card (Neal + CRM 20/11/26): no quotes on it → link straight away; a quote or live
-// job already on it → the one check above. Filling the name/address: an empty form always
-// fills; a form with typed details is NEVER silently overwritten on a quote that has already
-// been sent (it must keep matching the PDF the client has) — a Draft/new quote fills from the
-// card; a design contract with typed details keeps them.
+// The form already has client details typed in: the choice Neal had from 03/08 until 20/11,
+// put back EXACTLY as it was (Neal, 25/11/26 — "it worked just fine"). Resolves 'link' (keep
+// what is typed), 'refresh' (the card's name and address replace it) or null (do nothing; the
+// picker stays open).
+function crmPickModeDialog(cardName, alreadyLinked) {
+  return new Promise(resolve => {
+    const old = document.getElementById('crm-mode-dialog'); if (old) old.remove();
+    const wrap = document.createElement('div');
+    wrap.id = 'crm-mode-dialog';
+    wrap.innerHTML =
+      '<div class="cw-modal-back"><div class="cw-modal" style="width:470px;max-width:95vw">' +
+        // Re-picking the card it's ALREADY linked to isn't a change — the useful path
+        // there is "Link + refresh details" to re-pull a corrected address from the CRM.
+        '<h3 style="margin:0 0 6px">' + (alreadyLinked ? 'Already linked to ' + cwEsc(cardName || 'this card') : 'Link to ' + cwEsc(cardName || 'this card') + '?') + '</h3>' +
+        '<div style="font-size:13px;color:var(--i2);margin-bottom:14px">This form already has client details. Linking connects it to the CRM card either way — the choice is what happens to the name and address fields on the form.</div>' +
+        '<div class="cw-modal-btns" style="flex-wrap:wrap;gap:8px">' +
+          '<button class="btn btn-primary" id="crm-mode-link" title="Store the card link; the name/address on the form stay exactly as they are — use this on quotes already sent">Link only — keep details</button>' +
+          '<button class="btn btn-outline" id="crm-mode-refresh" title="Store the card link AND overwrite the form\'s name/address with the card\'s details">Link + refresh details</button>' +
+          '<button class="btn btn-outline" id="crm-mode-cancel" title="Change nothing — no link, no field changes">Cancel — do nothing</button>' +
+        '</div>' +
+      '</div></div>';
+    document.body.appendChild(wrap);
+    const done = v => { wrap.remove(); resolve(v); };
+    document.getElementById('crm-mode-link').onclick = () => done('link');
+    document.getElementById('crm-mode-refresh').onclick = () => done('refresh');
+    document.getElementById('crm-mode-cancel').onclick = () => done(null);
+    wrap.querySelector('.cw-modal-back').onmousedown = e => { if (e.target === e.currentTarget) done(null); };
+    document.getElementById('crm-mode-link').focus();
+  });
+}
+// Picking a card: no quotes on it → link straight away; a quote or live job already on it →
+// the one check above (Neal + CRM 20/11/26). Filling the name/address (Neal, 25/11/26 — back
+// to how it worked before 20/11): an EMPTY form fills from the card with no question; a form
+// with ANYTHING typed gets the "Link only / Link + refresh details" choice, quote or design
+// contract, sent or not. Nothing is ever kept or overwritten without the user choosing.
 async function crmApplyPick(i) {
   const dlg = document.getElementById('crm-pick-dialog');
   const target = (dlg && dlg.dataset.target) || 'quote';
@@ -10716,9 +10746,13 @@ async function crmApplyPick(i) {
   const myRef = target === 'quote' ? g('in-ref') : '';
   const existing = savedQuotes.filter(x => x.ref !== myRef && x.airtableCardId === c.id && ['Draft', 'Sent', 'Accepted'].includes(x.status || 'Draft'));
   if (existing.length && !(await crmPickExistingDialog(c, existing, target))) return;   // "No" — the picker stays open
-  const mine = myRef ? savedQuotes.find(x => x.ref === myRef) : null;
-  const alreadySent = target === 'dc' || (!!mine && !['Draft', 'Estimate'].includes(mine.status || 'Draft'));
-  const fill = !hasDetails || !alreadySent;
+  let fill = true;
+  if (hasDetails) {
+    const linkedId = target === 'dc' ? dcCrmLink.cardId : crmLink.cardId;
+    const mode = await crmPickModeDialog(c.name, !!linkedId && c.id === linkedId);
+    if (!mode) return;   // do nothing — the picker stays open for a different card (or its own Cancel)
+    fill = mode === 'refresh';
+  }
   if (fill) {
     const vals = [c.name || '', a.addr1, a.city, a.post];
     ids.forEach((id, k) => { const el = document.getElementById(id); if (el) el.value = vals[k]; });
