@@ -41,6 +41,11 @@
 //   * Payments on (re)generation: create missing; update Amount on a name match ONLY if
 //     Invoice Sent and Completed are both unticked; never touch invoiced/completed rows,
 //     never delete, list dropped milestones — never guess at money. Trigger Date untouched.
+//     EXCEPT (CRM + Neal, 25/11/26) a row that is INVOICED BUT NOT PAID (Invoice Sent ticked,
+//     no Date Paid, not Completed): a changed amount / a dropped line no longer blocks — one
+//     patch un-invoices the row and fills "Invoice to void" (CHANGED|no|old amount, or
+//     DROPPED|…) so the CRM asks the office to void the old invoice. Paid / Completed rows
+//     block exactly as before.
 //   * DC- contract_generated: Quotes row + Payments only (no Job Number / Project Value)
 //   * QT- contract_generated also prefixes the Card Name with the ref ("QT-0080 Philippa
 //     Barber") — only when the name carries no QT ref yet; an existing one is never touched
@@ -82,11 +87,22 @@ const P = {
   // Cash / other rows (30/09/26, CRM cases A+B): the exact Milestone Name of the invoice
   // figure on the same schedule line; blank when the line has no invoice part.
   pairedInvoice: "fldbo214fdExqdc82",
-  invoiceNumber: "fldB61sGUQVKzh9rx",   // read only — named in the paid-deposit hold message when set
+  invoiceNumber: "fldB61sGUQVKzh9rx",   // read — and BLANKED (with Invoice Sent) by the regenerate void hand-over below, nowhere else
+  // Regenerate over an invoiced-not-paid row (CRM + Neal, 25/11/26): "CHANGED|<old invoice
+  // number>|<old amount>" or "DROPPED|…". The CRM reads it, raises the office's "Void invoice"
+  // task, then clears it (and deletes a DROPPED row itself). We only ever WRITE it.
+  invoiceToVoid: "fldYOFe4YgCzk43V1",
 };
 const rowRef = (p: any) => String((p.fields || {})[P.contractRef] || "").trim();
 // A milestone is a FACT (never updated, never deleted) once any of these is set.
 const paymentLocked = (f: any) => !!f[P.invoiceSent] || !!f[P.completed] || !!f[P.datePaid];
+// Invoiced but the money has not arrived: Invoice Sent ticked, no Date Paid, not Completed.
+// On a REGENERATE these no longer block (25/11/26) — the row is handed to the CRM to void.
+const invoicedNotPaid = (f: any) => !!f[P.invoiceSent] && !f[P.datePaid] && !f[P.completed];
+const money2 = (n: number) => round2(n).toFixed(2);   // the marker: plain 1200.00
+const moneyGB = (n: number) => round2(n).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });   // wording: 1,200.00
+const voidMarker = (f: any) => String(f[P.invoiceToVoid] || "").trim();
+const droppedPending = (f: any) => voidMarker(f).startsWith("DROPPED|");
 // ⚠ STAGE NAMES SHORTENED 19/09/26 (Airtable's kanban headers cut names over ~15 chars; Neal
 // approved the short set): every List option on Cards was renamed by hand in Airtable. The
 // strings below are the NEW exact names — case and spacing matter, never the old
@@ -719,7 +735,9 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       }
       if (blankRows) plan.notes.push(`${blankRows} payment row${blankRows === 1 ? "" : "s"} with no Contract Ref (hand-added or pre-CRM) left alone`);
       const byName = new Map<string, any>();
-      existing.forEach(p => byName.set(String(p.fields[P.name] || "").trim().toLowerCase(), p));
+      // A row already handed over as DROPPED (waiting for the CRM to void + delete it) is the
+      // CRM's: a line of the same name gets a fresh row, and the sweep below leaves it alone.
+      existing.forEach(p => { if (!droppedPending(p.fields)) byName.set(String(p.fields[P.name] || "").trim().toLowerCase(), p); });
       // Safety net (CRM, 30/09): a deposit already PAID under another contract on this card
       // (a superseded contract's deposit). If this schedule would CREATE an invoiced deposit
       // row, hold and say so — the line should be marked "Already paid" instead.
@@ -759,6 +777,18 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
         if (locked) {
           const what = ex.fields[P.datePaid] ? "paid" : ex.fields[P.completed] ? "completed" : "invoiced";
           if (Math.abs(curAmt - Number(fields[P.amount])) < 0.005) { plan.notes.push(`Payment "${e.label}" already ${what} at £${curAmt} — unchanged`); continue; }
+          // Invoiced, NOT paid (CRM + Neal, 25/11/26): no longer a block. ONE patch takes the
+          // row to the new amount and back to "not invoiced", and names the old invoice in
+          // "Invoice to void" — the CRM asks the office to void it in Xero and raise the new
+          // one. The milestones still sum to the contract (the 05/09 reason for blocking).
+          // Invoice Date / Xero Invoice ID are the CRM's to clear. Paid / Completed: block, below.
+          if (invoicedNotPaid(ex.fields)) {
+            const oldNo = String(ex.fields[P.invoiceNumber] ?? "").trim();
+            plan.writes.push({ table: T.payments, op: "patch", id: ex.id, label: `Payment "${e.label}" £${money2(curAmt)} → £${money2(Number(fields[P.amount]))} — was invoiced${oldNo ? " (invoice " + oldNo + ")" : ""}, office to void`,
+              fields: { [P.amount]: fields[P.amount], [P.invoiceNumber]: null, [P.invoiceSent]: false, [P.invoiceToVoid]: `CHANGED|${oldNo}|${money2(curAmt)}` } });
+            plan.notes.push(`"${e.label}" was invoiced at £${moneyGB(curAmt)}${oldNo ? " (invoice " + oldNo + ")" : ""}. The office will be asked to void that invoice in Xero and raise a new one at £${moneyGB(Number(fields[P.amount]))}.`);
+            continue;
+          }
           // BLOCK, not warn (Neal, 05/09): pushing past this always leaves the milestones not
           // summing to the contract. The way through is to make the fact untrue first.
           plan.blocked.push(`"${e.label}" is already ${what} at £${curAmt} but the regenerated schedule says £${fields[P.amount]}. If that invoice was voided in Xero, untick Invoice Sent on the milestone in the CRM, then push again. Otherwise keep the deposit as invoiced and regenerate without changing it.`);
@@ -778,7 +808,19 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       for (const p of existing) {
         const nm = String(p.fields[P.name] || "").trim();
         const key = nm.toLowerCase();
+        if (droppedPending(p.fields)) { plan.notes.push(`Payment "${nm}" is waiting for the office to void its invoice — left for the CRM to remove`); continue; }
         if (!key || seen.has(key) || keepPaid.has(key)) continue;
+        // Invoiced, NOT paid, and gone from the schedule (removed or renamed) — 25/11/26: not a
+        // block and NOT deleted here. ONE patch un-invoices the row and marks it DROPPED; the
+        // CRM raises the void task and deletes the row itself. A renamed line got its new row above.
+        if (invoicedNotPaid(p.fields)) {
+          const f = p.fields;
+          const oldNo = String(f[P.invoiceNumber] ?? "").trim();
+          plan.writes.push({ table: T.payments, op: "patch", id: p.id, label: `Payment "${nm}" £${money2(num(f[P.amount]))} no longer in the schedule — was invoiced${oldNo ? " (invoice " + oldNo + ")" : ""}, office to void`,
+            fields: { [P.invoiceNumber]: null, [P.invoiceSent]: false, [P.invoiceToVoid]: `DROPPED|${oldNo}|${money2(num(f[P.amount]))}` } });
+          plan.notes.push(`"${nm}" £${moneyGB(num(f[P.amount]))}${oldNo ? " (invoice " + oldNo + ")" : ""} is no longer in the schedule. The office will be asked to void that invoice in Xero.`);
+          continue;
+        }
         if (paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber])) {
           const f = p.fields;
           const what = f[P.datePaid] ? "paid" : f[P.completed] ? "completed" : str(f[P.invoiceNumber]) ? "invoiced (invoice " + str(f[P.invoiceNumber]) + ")" : "invoiced";
