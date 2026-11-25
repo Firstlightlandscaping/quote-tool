@@ -10135,6 +10135,7 @@ const CRM_FIELD_NAMES = {
   fldM3ovzmOliPJC63: 'Status', fldsLDEQLn5OAOu5l: 'Date Sent', flddo51TtLkOmGE2J: 'Quoted By', fldz8wvktIqMF2Mb5: 'Signing Status',
   fldZYmQH5s4YiggpB: 'Signed', fldru1tIQZ8q02iGi: 'Contract Generated', fldXmzVIJwGnmtDHC: 'Supersedes',
   fldoGJkWMYyZuHQeu: 'Milestone', fldiJjezHUzJ9Aael: 'Card', fldQwX5mVfQcTUTD8: 'Amount', fldZsRzUQgyR8Sjjf: 'Trigger', fld4HqE9lpB6tBmPP: 'Trigger List', fldE0l2zKsDNyXBil: 'Terms',
+  fldB61sGUQVKzh9rx: 'Invoice Number', fldiHkoBIlajLleVc: 'Invoice Sent', fldYOFe4YgCzk43V1: 'Invoice to void',   // the void hand-over (25/11/26)
 };
 const CRM_MONEY_FIELDS = new Set(['fld6I3tOHbq8DNG69', 'fldlBfNkxOUZS7mvV', 'fldAt1fIqtuED67u1', 'fldQwX5mVfQcTUTD8']);
 // A quote / design contract as the push sees it: {ref, isDesign, cardId, status, statusChangedAt, cm, crmPushed}.
@@ -10233,7 +10234,7 @@ async function crmPushAuto(ref, event) {
     if (r.held) { crmHoldBanner(ref, event, (r.hold || [])[0] || 'needs a look'); return false; }
     crmMarkPushed(ref, event);
     if (r.parked) { crmNoticeBanner('busy', '📇 Recorded — ' + ref + ' · ' + (CRM_PUSH_EVENT_LABEL[event] || event) + '. Live CRM pushing starts on switch-on day; Trello is the truth until then.', 6000); return true; }
-    crmNoticeBanner('ok', '✓ CRM: ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event).toLowerCase() + ' — ' + crmPlainResult(r), 12000);
+    crmResultBanner(ref, event, r);
     return true;
   } catch (e) { crmHoldBanner(ref, event, 'Push failed: ' + e.message); return false; }
 }
@@ -10391,7 +10392,7 @@ function crmNoticeBanner(kind, text, autoHide) {
   const green = result && lines.every(l => l.ok);
   const col = green ? { bg: '#F0FDF4', bd: '#22C55E', fg: '#166534' } : { bg: '#F4F4F5', bd: '#A1A1AA', fg: '#3F3F46' };
   d.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:30000;background:' + col.bg + ';border-bottom:2px solid ' + col.bd + ';color:' + col.fg + ';font-size:14px;font-weight:700;padding:10px 14px;display:flex;align-items:center;gap:12px;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.12)';
-  d.innerHTML = '<span>' + lines.map(l => cwEsc(l.text)).join('<br>') + '</span>' +
+  d.innerHTML = '<span>' + lines.map(l => cwEsc(l.text).split(String.fromCharCode(10)).join('<br>')).join('<br>') + '</span>' +
     (result ? '<button onclick="document.getElementById(\'crm-notice-banner\').remove()" style="background:none;border:1px solid ' + col.bd + ';border-radius:5px;cursor:pointer;font-size:12px;padding:4px 10px;color:' + col.fg + '">ok</button>' : '');
   document.body.appendChild(d);
   if (autoHide) d._t = setTimeout(() => { if (d.parentNode) d.remove(); }, autoHide);
@@ -10414,10 +10415,31 @@ function crmPlainResult(r) {
   if (gone) parts.push(gone + ' payment row' + (gone === 1 ? '' : 's') + ' removed');
   return parts.length ? parts.join(', ') : 'nothing needed changing';
 }
+// Invoices the push handed to the office to void (CRM + Neal, 25/11/26): regenerating a
+// contract over a payment that was invoiced but not paid no longer blocks — the CRM raises
+// a "Void invoice" task. ONE plain line per payment, in the bar that already says what the
+// push did. Nothing else on screen (Neal): no pop-up, no button, no confirm. The fn sends
+// them as data (plan.voids); an older fn sends none → no line.
+function crmVoidLines(r) {
+  const money = n => '£' + Number(n || 0).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return ((r && Array.isArray(r.voids)) ? r.voids : []).map(v => {
+    const inv = v.invoice ? ' (invoice ' + v.invoice + ')' : '';
+    return v.kind === 'dropped'
+      ? v.label + ' ' + money(v.oldAmount) + inv + ' is no longer in the contract — the office has a task to void that invoice.'
+      : v.label + ' was invoiced at ' + money(v.oldAmount) + inv + ' — the office has a task to void it and raise a new one at ' + money(v.newAmount) + '.';
+  });
+}
+// The green bar after a push that went through. Stays up longer when it carries void lines
+// (they are the one thing in it somebody has to act on), still with its "ok" to close.
+function crmResultBanner(ref, event, r) {
+  const voids = crmVoidLines(r);
+  crmNoticeBanner('ok', '✓ CRM: ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event).toLowerCase() + ' — ' + crmPlainResult(r) +
+    (voids.length ? String.fromCharCode(10) + voids.join(String.fromCharCode(10)) : ''), voids.length ? 30000 : 12000);
+}
 function crmFieldsHtml(fields) {
   return Object.entries(fields).map(([k, v]) => {
     const name = CRM_FIELD_NAMES[k] || k;
-    let val = Array.isArray(v) ? v.join(', ') : (typeof v === 'boolean' ? (v ? '☑' : '☐') : String(v));
+    let val = Array.isArray(v) ? v.join(', ') : (typeof v === 'boolean' ? (v ? '☑' : '☐') : (v == null ? '(blank)' : String(v)));
     if (CRM_MONEY_FIELDS.has(k) && typeof v === 'number') val = '£' + v.toFixed(2);
     if (val.length > 90) val = val.slice(0, 88) + '…';
     return '<span style="display:inline-block;margin:1px 8px 1px 0"><span style="color:var(--i3)">' + cwEsc(name) + ':</span> ' + cwEsc(val) + '</span>';
@@ -10506,7 +10528,7 @@ async function crmPushPanel(ref, event) {
         '<div style="font-size:12px;margin-top:8px">' + (r.executed || []).map(x => '· ' + cwEsc(x)).join('<br>') + '</div>' +
         ((r.warnings || []).length ? '<div style="font-size:12px;color:#B45309;margin-top:8px">' + r.warnings.map(n => '⚠ ' + cwEsc(n)).join('<br>') + '</div>' : '') +
         btns(nextBtn + closeBtn);
-      crmNoticeBanner('ok', '✓ CRM: ' + ref + ' ' + (CRM_PUSH_EVENT_LABEL[event] || event).toLowerCase() + ' — ' + crmPlainResult(r), 12000);
+      crmResultBanner(ref, event, r);
     } catch (e) {
       bodyEl().innerHTML = '<div style="color:#DC2626;font-size:13px">⚠ Push failed: ' + cwEsc(e.message) + '</div>' + btns('<button class="btn btn-primary" onclick="crmPushPanel(\'' + ref + '\',\'' + event + '\')">Retry</button>' + closeBtn);
     }
