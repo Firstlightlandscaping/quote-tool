@@ -22,8 +22,14 @@
 //     LineAmountTypes Inclusive, UnitAmount = the part's VAT-inclusive £, parts summing to the
 //     row's Amount to the penny (else one line as before); TaxType OUTPUT2; AccountCode 205 for
 //     a design invoice (DC- contract, or the task's Action Type "Design Invoice"), else 200
-//   * every kind → AUTHORISED (completion was DRAFT until 14/10); create is idempotent
-//     (Idempotency-Key = paymentId, so a double press cannot make two invoices)
+//   * every kind → AUTHORISED (completion was DRAFT until 14/10); create is idempotent:
+//     Idempotency-Key = paymentId + amount in pence + today's date, so a double press cannot
+//     make two invoices, while a row RE-INVOICED after its first invoice was voided (CRM,
+//     25/11/26 — a regenerated contract changes the amount, the CRM clears Xero Invoice ID
+//     and reopens the task) is a NEW invoice, not Xero's remembered answer for the old one.
+//     Belt and braces: the invoice Xero answers with is read back; if it is VOIDED or DELETED
+//     (the old one handed back — a same-day, same-amount re-raise) it counts as "not
+//     created" and ONE more try is made with a fresh key. Never more than one retry.
 //   * interim is emailed BY XERO; completion is NOT emailed and gets NO Invoice Date on the row
 //     (the office emails the PDF from Gmail and types the date — number + date closes the
 //     task); Invoice Sent is never ticked here (the CRM rule does that)
@@ -333,11 +339,29 @@ async function invoice(A: ReturnType<typeof at>, body: any, cardId: string): Pro
     LineAmountTypes: "Inclusive", Reference: reference, ...(theme ? { BrandingThemeID: theme } : {}),
     LineItems: parts.map(p => ({ Description: p.description, Quantity: 1, UnitAmount: p.amount, AccountCode: accountCode, TaxType: "OUTPUT2" })),
   }] };
+  // The "only once" key (CRM, 25/11/26): row + amount + day. See the header note.
+  const baseKey = `${paymentId}-${Math.round(amount * 100)}-${today}`;
+  const create = async (key: string) => {
+    const made = await xeroJson("Invoices", { method: "POST", headers: { "Idempotency-Key": key }, body: JSON.stringify(payload) });
+    const got = (made.Invoices || [])[0];
+    if (!got || !got.InvoiceID) throw new Error("Xero did not return the invoice");
+    return got;
+  };
+  // Is the invoice Xero answered with a dead one? A remembered answer carries the status it
+  // had WHEN FIRST MADE, so the reply alone cannot tell — ask Xero for it as it is now.
+  const isDead = (st: unknown) => /^(VOIDED|DELETED)$/i.test(String(st || "").trim());
+  const deadNow = async (got: any): Promise<boolean> => {
+    if (isDead(got.Status)) return true;
+    const cur = await xeroJson("Invoices/" + String(got.InvoiceID));
+    return isDead(((cur.Invoices || [])[0] || {}).Status);
+  };
   let inv: any;
   try {
-    const made = await xeroJson("Invoices", { method: "POST", headers: { "Idempotency-Key": paymentId }, body: JSON.stringify(payload) });
-    inv = (made.Invoices || [])[0];
-    if (!inv || !inv.InvoiceID) throw new Error("Xero did not return the invoice");
+    inv = await create(baseKey);
+    if (await deadNow(inv)) {
+      inv = await create(baseKey + "-2");   // ONE retry, fresh key
+      if (await deadNow(inv)) return refuse("Xero handed back an invoice that is already voided, twice. Nothing has been written - raise this one in Xero by hand and tell Neal.");
+    }
   } catch (e) {
     return refuse("Xero would not create the invoice: " + (e as Error).message);   // nothing written to Airtable
   }
