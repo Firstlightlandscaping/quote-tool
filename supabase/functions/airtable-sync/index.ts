@@ -96,9 +96,11 @@ const P = {
 const rowRef = (p: any) => String((p.fields || {})[P.contractRef] || "").trim();
 // A milestone is a FACT (never updated, never deleted) once any of these is set.
 const paymentLocked = (f: any) => !!f[P.invoiceSent] || !!f[P.completed] || !!f[P.datePaid];
-// Invoiced but the money has not arrived: Invoice Sent ticked, no Date Paid, not Completed.
+// Invoiced but the money has not arrived: Invoice Sent ticked OR an Invoice Number on the row
+// (CRM 25/11, 2nd round: a completion invoice raised in Xero carries its number before the
+// office ticks Sent), no Date Paid, not Completed.
 // On a REGENERATE these no longer block (25/11/26) — the row is handed to the CRM to void.
-const invoicedNotPaid = (f: any) => !!f[P.invoiceSent] && !f[P.datePaid] && !f[P.completed];
+const invoicedNotPaid = (f: any) => (!!f[P.invoiceSent] || !!String(f[P.invoiceNumber] ?? "").trim()) && !f[P.datePaid] && !f[P.completed];
 const money2 = (n: number) => round2(n).toFixed(2);   // the marker: plain 1200.00
 const moneyGB = (n: number) => round2(n).toLocaleString("en-GB", { minimumFractionDigits: 2, maximumFractionDigits: 2 });   // wording: 1,200.00
 const voidMarker = (f: any) => String(f[P.invoiceToVoid] || "").trim();
@@ -279,6 +281,9 @@ type Plan = {
   blocked: string[]; needsDecision: { key: string; question: string; options: { value: string; label: string }[] } | null; hold: string[];
   // "figures" event only: what the CRM holds vs the saved quote, so the app can say so.
   figures?: { crmRow: number; crmCard: number; quote: number };
+  // contract_generated only (25/11/26): every invoiced-not-paid row this push hands to the
+  // CRM to void — the app says one plain line per payment in its after-push bar.
+  voids?: { kind: "changed" | "dropped"; label: string; invoice: string; oldAmount: number; newAmount?: number }[];
 };
 
 async function buildPlan(ref: string, event: string, cardOverride?: string, decision?: string, resent = false): Promise<Plan | { skipped: string; ref: string; event: string } | { orphan: true; ref: string; event: string; warning: string }> {
@@ -393,6 +398,8 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       const nm = String(p.fields[P.name] || "").trim();
       if (!names.has(nm.toLowerCase())) continue;
       if (paymentLocked(p.fields)) { plan.notes.push(`Payment "${nm}" is ${p.fields[P.datePaid] ? "paid" : p.fields[P.completed] ? "completed" : "invoiced"} — kept (a fact)`); continue; }
+      // A void request the CRM has not picked up yet (25/11/26): never delete it unprocessed.
+      if (voidMarker(p.fields)) { plan.notes.push(`Payment "${nm}" is waiting for the office to void its invoice — kept`); continue; }
       plan.writes.push({ table: T.payments, op: "delete", id: p.id, label: `Delete payment "${nm}" £${num(p.fields[P.amount])} (${why})`, fields: {} });
     }
     if (otherRows) plan.notes.push(`${otherRows} payment row${otherRows === 1 ? "" : "s"} not written by ${wantRef} (other contracts or hand-added) left alone`);
@@ -414,7 +421,15 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
       if (rowRef(p) !== wantRef) { otherRows++; continue; }
       mine.push(p);
     }
+    // A void request the CRM has not picked up yet (25/11/26) locks the contract's rows too:
+    // deleting the row would delete the request. Its own wording — nothing is left to void by hand.
+    const voidWaiting = mine.filter(p => !!voidMarker(p.fields) && !(paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber])));
     const lockedRows = mine.filter(p => paymentLocked(p.fields) || !!str(p.fields[P.invoiceNumber]));
+    if (voidWaiting.length && !lockedRows.length) {
+      voidWaiting.forEach(p => plan.notes.push(`Payment "${str(p.fields[P.name])}" £${num(p.fields[P.amount])} is waiting for the office to void its invoice`));
+      plan.blocked.push(`The CRM is still dealing with an invoice to void on this contract ("${str(voidWaiting[0].fields[P.name])}"). Give it a minute, then ${againVerb} again — if this keeps coming up, tell the office.`);
+      return false;
+    }
     if (lockedRows.length) {
       lockedRows.forEach(p => {
         const f = p.fields;
@@ -772,7 +787,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
           }
           plan.writes.push({ table: T.payments, op: "create", label: `Payment "${e.label}" £${fields[P.amount]} (${trigger})`, fields }); continue;
         }
-        const locked = paymentLocked(ex.fields);
+        const locked = paymentLocked(ex.fields) || invoicedNotPaid(ex.fields);   // a number with Sent unticked is invoiced too (25/11)
         const curAmt = num(ex.fields[P.amount]);
         if (locked) {
           const what = ex.fields[P.datePaid] ? "paid" : ex.fields[P.completed] ? "completed" : "invoiced";
@@ -786,6 +801,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
             const oldNo = String(ex.fields[P.invoiceNumber] ?? "").trim();
             plan.writes.push({ table: T.payments, op: "patch", id: ex.id, label: `Payment "${e.label}" £${money2(curAmt)} → £${money2(Number(fields[P.amount]))} — was invoiced${oldNo ? " (invoice " + oldNo + ")" : ""}, office to void`,
               fields: { [P.amount]: fields[P.amount], [P.invoiceNumber]: null, [P.invoiceSent]: false, [P.invoiceToVoid]: `CHANGED|${oldNo}|${money2(curAmt)}` } });
+            (plan.voids ||= []).push({ kind: "changed", label: String(e.label), invoice: oldNo, oldAmount: round2(curAmt), newAmount: Number(fields[P.amount]) });
             plan.notes.push(`"${e.label}" was invoiced at £${moneyGB(curAmt)}${oldNo ? " (invoice " + oldNo + ")" : ""}. The office will be asked to void that invoice in Xero and raise a new one at £${moneyGB(Number(fields[P.amount]))}.`);
             continue;
           }
@@ -818,6 +834,7 @@ async function buildPlan(ref: string, event: string, cardOverride?: string, deci
           const oldNo = String(f[P.invoiceNumber] ?? "").trim();
           plan.writes.push({ table: T.payments, op: "patch", id: p.id, label: `Payment "${nm}" £${money2(num(f[P.amount]))} no longer in the schedule — was invoiced${oldNo ? " (invoice " + oldNo + ")" : ""}, office to void`,
             fields: { [P.invoiceNumber]: null, [P.invoiceSent]: false, [P.invoiceToVoid]: `DROPPED|${oldNo}|${money2(num(f[P.amount]))}` } });
+          (plan.voids ||= []).push({ kind: "dropped", label: nm, invoice: oldNo, oldAmount: round2(num(f[P.amount])) });
           plan.notes.push(`"${nm}" £${moneyGB(num(f[P.amount]))}${oldNo ? " (invoice " + oldNo + ")" : ""} is no longer in the schedule. The office will be asked to void that invoice in Xero.`);
           continue;
         }
